@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <optional>
 
 #include <spdlog/spdlog.h>
 
@@ -50,6 +51,9 @@ struct DressiAD::Impl {
     // Image uploads to fuse into the next execute's single submit (the
     // eager binding path; borrowed views valid for the execStep call)
     std::vector<std::pair<Variable, CpuImageView>> batch_uploads;
+    // Optional outputs copied after the render plan in the same submit.
+    Variables batch_downloads;
+    std::optional<CpuImage> batch_download_result;
 
     void ensureCtx() {
         if (!ctx) {
@@ -438,8 +442,22 @@ void DressiAD::execStep() {
     }
     timer.mark("upload");
 
-    // 7) Execute the command buffer (fusing uploads when on the fast path)
-    if (!fused.empty()) {
+    // 7) Execute the command buffer (fusing steady-state transfers)
+    if (!im.batch_downloads.empty()) {
+        std::vector<std::pair<vkw::ImagePackPtr, VType>> downloads;
+        downloads.reserve(im.batch_downloads.size());
+        for (const auto& var : im.batch_downloads) {
+            DRESSI_CHECK(var, "combined recv: null Variable");
+            auto it = im.plan.imgs.find(var);
+            DRESSI_CHECK(it != im.plan.imgs.end(),
+                         "combined recv: the Variable has no GPU image");
+            downloads.emplace_back(it->second, var.getVType());
+        }
+        auto download = PrepareStackedImageDownload(*im.ctx, downloads);
+        ExecuteGpuPlanWithTransfers(*im.ctx, im.plan, fused, download);
+        im.batch_download_result =
+                ResolveStackedImageDownload(*im.ctx, download);
+    } else if (!fused.empty()) {
         ExecuteGpuPlanWithUploads(*im.ctx, im.plan, fused);
     } else {
         ExecuteGpuPlan(*im.ctx, im.plan);
@@ -561,6 +579,23 @@ void DressiAD::execStepWithSends(
     }
     execStep();
     im.batch_uploads.clear();
+}
+
+CpuImage DressiAD::execStepWithSendsAndRecvImgsStacked(
+        const std::vector<std::pair<Variable, CpuImageView>>& sends,
+        const Variables& recvs) {
+    Impl& im = *m_impl;
+    DRESSI_CHECK(!recvs.empty(),
+                 "execStepWithSendsAndRecvImgsStacked: empty recv batch");
+    im.batch_downloads = recvs;
+    im.batch_download_result.reset();
+    execStepWithSends(sends);
+    im.batch_downloads.clear();
+    DRESSI_CHECK(im.batch_download_result.has_value(),
+                 "combined recv did not produce an image");
+    CpuImage out = std::move(*im.batch_download_result);
+    im.batch_download_result.reset();
+    return out;
 }
 
 void DressiAD::sendImgs(

@@ -29,6 +29,7 @@ __pycache__/
 /silopt_out_*/
 /texopt_py_out*/
 /silopt_py_out*/
+/bench_*/
 
 # Datasets
 /data/

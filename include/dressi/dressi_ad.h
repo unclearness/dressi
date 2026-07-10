@@ -98,6 +98,11 @@ public:
     // for the duration of the call.
     void execStepWithSends(
             const std::vector<std::pair<Variable, CpuImageView>>& items);
+    // Upload leaves, execute, and read same-shape outputs with one
+    // vkQueueSubmit/fence wait on the steady-state path.
+    CpuImage execStepWithSendsAndRecvImgsStacked(
+            const std::vector<std::pair<Variable, CpuImageView>>& sends,
+            const Variables& recvs);
 
     // Transfer image data between CPU and GPU. Sends before the first
     // execStep() are kept pending and flushed once images exist.

@@ -301,6 +301,16 @@ std::vector<CpuImage> ReceiveImagesFromDevice(
 CpuImage ReceiveImagesStacked(
         const VkContext& ctx,
         const std::vector<std::pair<vkw::ImagePackPtr, VType>>& items) {
+    auto download = PrepareStackedImageDownload(ctx, items);
+    RunOneShot(ctx, [&](const vk::UniqueCommandBuffer& cmd) {
+        RecordStackedImageDownload(download, cmd);
+    });
+    return ResolveStackedImageDownload(ctx, download);
+}
+
+StackedImageDownload PrepareStackedImageDownload(
+        const VkContext& ctx,
+        const std::vector<std::pair<vkw::ImagePackPtr, VType>>& items) {
     DRESSI_CHECK(!items.empty(), "recvImgsStacked: empty batch");
     const auto& [img0, vtype] = items[0];
     const uint32_t w = img0->view_size.width;
@@ -320,41 +330,55 @@ CpuImage ReceiveImagesStacked(
             EnsureStaging(ctx, ctx.recv_staging, stride * items.size(),
                           vk::BufferUsageFlagBits::eTransferDst,
                           /*cached=*/true);
-    RunOneShot(ctx, [&](const vk::UniqueCommandBuffer& cmd) {
-        constexpr auto kSrc = vk::ImageLayout::eTransferSrcOptimal;
-        constexpr auto kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
-        for (size_t i = 0; i < items.size(); i++) {
-            const auto& img = items[i].first;
-            vkw::SetImageLayout(cmd, img, kRead, kSrc);
-            const vk::BufferImageCopy region(
-                    stride * i, w, h,
-                    vk::ImageSubresourceLayers(
-                            vk::ImageAspectFlagBits::eColor, 0, 0, 1),
-                    vk::Offset3D(0, 0, 0), vk::Extent3D(w, h, 1));
-            cmd->copyImageToBuffer(img->img_res_pack->img.get(), kSrc,
-                                   staging->buf.get(), region);
-            vkw::SetImageLayout(cmd, img, kSrc, kRead);
-        }
-    });
+    return {items, staging, w, h, n_logical, n_phys, item_bytes, stride};
+}
 
+void RecordStackedImageDownload(const StackedImageDownload& download,
+                                const vk::UniqueCommandBuffer& cmd) {
+    constexpr auto kSrc = vk::ImageLayout::eTransferSrcOptimal;
+    constexpr auto kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
+    for (size_t i = 0; i < download.items.size(); i++) {
+        const auto& img = download.items[i].first;
+        vkw::SetImageLayout(cmd, img, kRead, kSrc);
+        const vk::BufferImageCopy region(
+                download.stride * i, download.width, download.height,
+                vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor,
+                                           0, 0, 1),
+                vk::Offset3D(0, 0, 0),
+                vk::Extent3D(download.width, download.height, 1));
+        cmd->copyImageToBuffer(img->img_res_pack->img.get(), kSrc,
+                               download.staging->buf.get(), region);
+        vkw::SetImageLayout(cmd, img, kSrc, kRead);
+    }
+}
+
+CpuImage ResolveStackedImageDownload(const VkContext& ctx,
+                                     const StackedImageDownload& download) {
     const auto* base = static_cast<const uint8_t*>(ctx.device->mapMemory(
-            staging->dev_mem_pack->dev_mem.get(), 0,
-            staging->dev_mem_pack->dev_mem_size));
-    CpuImage out(w, h * uint32_t(items.size()), n_logical);
-    for (size_t i = 0; i < items.size(); i++) {
-        const float* src = reinterpret_cast<const float*>(base + stride * i);
-        float* dst = &out.data[i * n_pixels * n_logical];
-        if (n_logical == n_phys) {
-            std::memcpy(dst, src, item_bytes);
+            download.staging->dev_mem_pack->dev_mem.get(), 0,
+            download.staging->dev_mem_pack->dev_mem_size));
+    const size_t n_pixels =
+            size_t(download.width) * download.height;
+    CpuImage out(download.width,
+                 download.height * uint32_t(download.items.size()),
+                 download.logical_channels);
+    for (size_t i = 0; i < download.items.size(); i++) {
+        const float* src = reinterpret_cast<const float*>(
+                base + download.stride * i);
+        float* dst = &out.data[i * n_pixels * download.logical_channels];
+        if (download.logical_channels == download.physical_channels) {
+            std::memcpy(dst, src, download.item_bytes);
         } else {
             for (size_t p = 0; p < n_pixels; p++) {
-                for (uint32_t c = 0; c < n_logical; c++) {
-                    dst[p * n_logical + c] = src[p * n_phys + c];
+                for (uint32_t c = 0; c < download.logical_channels; c++) {
+                    dst[p * download.logical_channels + c] =
+                            src[p * download.physical_channels + c];
                 }
             }
         }
     }
-    ctx.device->unmapMemory(staging->dev_mem_pack->dev_mem.get());
+    ctx.device->unmapMemory(
+            download.staging->dev_mem_pack->dev_mem.get());
     return out;
 }
 

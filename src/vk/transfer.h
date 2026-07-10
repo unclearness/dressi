@@ -43,6 +43,28 @@ void RecordImageUploads(const VkContext& ctx,
                         const std::vector<ImageSendItem>& items,
                         const vk::UniqueCommandBuffer& cmd);
 
+// Prepared same-shape readback. Preparation allocates/grows the persistent
+// host-cached staging buffer; recording appends image->buffer copies without
+// submitting, and Resolve maps the completed staging data into one stacked
+// CpuImage. This split lets download share the render vkQueueSubmit.
+struct StackedImageDownload {
+    std::vector<std::pair<vkw::ImagePackPtr, VType>> items;
+    vkw::BufferPackPtr staging;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t logical_channels = 0;
+    uint32_t physical_channels = 0;
+    size_t item_bytes = 0;
+    size_t stride = 0;
+};
+StackedImageDownload PrepareStackedImageDownload(
+        const VkContext& ctx,
+        const std::vector<std::pair<vkw::ImagePackPtr, VType>>& items);
+void RecordStackedImageDownload(const StackedImageDownload& download,
+                                const vk::UniqueCommandBuffer& cmd);
+CpuImage ResolveStackedImageDownload(const VkContext& ctx,
+                                     const StackedImageDownload& download);
+
 // GPU -> CPU counterpart (expects ShaderReadOnlyOptimal layout)
 CpuImage ReceiveImageFromDevice(const VkContext& ctx,
                                 const vkw::ImagePackPtr& img, VType vtype);

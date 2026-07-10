@@ -97,15 +97,8 @@ class Engine:
             self._uploaded[name] = (token, ref)
 
     def run(self):
+        self._validate_queued()
         if self._queued:
-            for var, arr in self._queued:
-                if (arr.shape[1] != var.width or arr.shape[0] != var.height):
-                    names = {v.id: k for k, v in self.leaves.items()}
-                    raise RuntimeError(
-                        f"upload shape mismatch for leaf "
-                        f"'{names.get(var.id, '?')}': array (h,w)="
-                        f"{arr.shape[:2]} vs leaf (h,w)="
-                        f"({var.height},{var.width})")
             # Fuse upload + execute into one submit (fast path): saves the
             # separate upload fence wait each iteration
             self.ad.exec_step_with_sends(self._queued)
@@ -113,6 +106,10 @@ class Engine:
         else:
             self.ad.exec_step()
         self._executed = True
+
+    def run_and_read_outputs_stacked(self) -> np.ndarray:
+        """Execute and read all same-shape outputs in one queue submit."""
+        return self._run_and_read_stacked(self.outputs)
 
     def read_output(self, i: int = 0) -> np.ndarray:
         return self.ad.recv_img(self.outputs[i])
@@ -137,7 +134,38 @@ class Engine:
         """Same-shape named gradients as one (n*h, w, c) array."""
         return self.ad.recv_imgs_stacked([self._grad_var(n) for n in names])
 
+    def run_and_read_grads_stacked(self, names: list[str]) -> np.ndarray:
+        """Execute and read same-shape gradients in one queue submit.
+
+        Gradient Variables are materialized by the first graph build, so a
+        never-executed engine uses the legacy two-submit path once. Cached
+        iterations use the combined path.
+        """
+        if not self._executed:
+            self.run()
+            return self.read_grads_stacked(names)
+        return self._run_and_read_stacked(
+            [self._grad_var(name) for name in names])
+
     # ------------------------------ internal -------------------------------
+    def _validate_queued(self):
+        for var, arr in self._queued:
+            if arr.shape[1] != var.width or arr.shape[0] != var.height:
+                names = {v.id: k for k, v in self.leaves.items()}
+                raise RuntimeError(
+                    f"upload shape mismatch for leaf "
+                    f"'{names.get(var.id, '?')}': array (h,w)="
+                    f"{arr.shape[:2]} vs leaf (h,w)="
+                    f"({var.height},{var.width})")
+
+    def _run_and_read_stacked(self, vars_) -> np.ndarray:
+        self._validate_queued()
+        out = self.ad.exec_step_with_sends_and_recv_imgs_stacked(
+            self._queued, vars_)
+        self._queued.clear()
+        self._executed = True
+        return out
+
     def _grad_var(self, name: str):
         if self._grad_vars is None:
             assert self._executed, "backward before the first exec_step"

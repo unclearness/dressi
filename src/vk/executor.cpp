@@ -944,12 +944,12 @@ void ExecuteGpuPlanWithUploads(const VkContext& ctx, GpuPlan& plan,
         ExecuteGpuPlan(ctx, plan);
         return;
     }
-    if (!ctx.exec_upload_cmds) {
-        ctx.exec_upload_cmds =
+    if (!ctx.exec_transfer_cmds) {
+        ctx.exec_transfer_cmds =
                 vkw::CreateCommandBuffersPack(ctx.device,
-                                              ctx.queue_family_idx, 1);
+                                              ctx.queue_family_idx, 2);
     }
-    const auto& up_cmd = ctx.exec_upload_cmds->cmd_bufs[0];
+    const auto& up_cmd = ctx.exec_transfer_cmds->cmd_bufs[0];
     vkw::ResetCommand(up_cmd);
     vkw::BeginCommand(up_cmd, /*one_time_submit=*/true);
     RecordImageUploads(ctx, uploads, up_cmd);
@@ -961,6 +961,43 @@ void ExecuteGpuPlanWithUploads(const VkContext& ctx, GpuPlan& plan,
     // copies without a second fence wait.
     const std::array<vk::CommandBuffer, 2> cmds = {
             up_cmd.get(), plan.cmd_pack->cmd_bufs[0].get()};
+    const vk::SubmitInfo submit({}, {}, cmds, {});
+    vkw::ResetFence(ctx.device, plan.fence);
+    ctx.queue.submit(submit, plan.fence->get());
+    const auto res = vkw::WaitForFence(ctx.device, plan.fence);
+    DRESSI_CHECK(res == vk::Result::eSuccess, "GPU execution failed");
+    CollectTimestamps(ctx, plan);
+}
+
+void ExecuteGpuPlanWithTransfers(const VkContext& ctx, GpuPlan& plan,
+                                 const std::vector<ImageSendItem>& uploads,
+                                 const StackedImageDownload& download) {
+    DRESSI_CHECK(plan.cmd_pack, "GPU plan has no recorded commands");
+    if (!ctx.exec_transfer_cmds) {
+        ctx.exec_transfer_cmds =
+                vkw::CreateCommandBuffersPack(ctx.device,
+                                              ctx.queue_family_idx, 2);
+    }
+
+    std::vector<vk::CommandBuffer> cmds;
+    cmds.reserve(3);
+    if (!uploads.empty()) {
+        const auto& up_cmd = ctx.exec_transfer_cmds->cmd_bufs[0];
+        vkw::ResetCommand(up_cmd);
+        vkw::BeginCommand(up_cmd, /*one_time_submit=*/true);
+        RecordImageUploads(ctx, uploads, up_cmd);
+        vkw::EndCommand(up_cmd);
+        cmds.push_back(up_cmd.get());
+    }
+    cmds.push_back(plan.cmd_pack->cmd_bufs[0].get());
+
+    const auto& down_cmd = ctx.exec_transfer_cmds->cmd_bufs[1];
+    vkw::ResetCommand(down_cmd);
+    vkw::BeginCommand(down_cmd, /*one_time_submit=*/true);
+    RecordStackedImageDownload(download, down_cmd);
+    vkw::EndCommand(down_cmd);
+    cmds.push_back(down_cmd.get());
+
     const vk::SubmitInfo submit({}, {}, cmds, {});
     vkw::ResetFence(ctx.device, plan.fence);
     ctx.queue.submit(submit, plan.fence->get());

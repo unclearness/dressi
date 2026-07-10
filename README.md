@@ -198,13 +198,14 @@ faces; measured 2.9 → 0.44 ms (AA) and 14.4 → sub-ms (HardSoftRas) on an
 
 Multi-view silhouette example (8 views, 128², 300 iters, CUDA tensors;
 median of synchronized 10-iteration blocks after 20 warmup iterations):
-aa 39 → **8.4 ms/iter**, hardsoftras 97 → **20.7 ms** (nvdiffrast aa on
+aa 39 → **8.0 ms/iter**, hardsoftras 97 → **21.6 ms** (nvdiffrast aa on
 the same example code: **3.1 ms**). Profiling the eager step (`cProfile` +
 per-boundary timers) corrected an earlier assumption: the "host glue" is
 **not** dominated by PCIe — the actual CUDA↔CPU copies are only ~0.3 ms.
 The cost is distributed across the eager model's per-op overhead: the
-per-op `sendImgs`+`execStep` submit/fences (~2 ms, now one fused submit
-per op — see `execStepWithSends`), staging memcpy, and the torch-side
+per-op transfer+`execStep` submit/fences (~2 ms, now one fused submit
+per op — see `execStepWithSendsAndRecvImgsStacked`), staging memcpy, and the
+torch-side
 autograd + tensor plumbing (`torch.cat`, `.to`, `.contiguous`, numpy
 conversions). So GPU interop would save little here; the eager path is
 bound by per-op Python/submit overhead, which the native-fused path
@@ -212,9 +213,11 @@ bound by per-op Python/submit overhead, which the native-fused path
 
 - The eager drop-in path pays per-op CPU round trips (v1 transfers via CPU
   tensors); it beats DRTK everywhere.
-- `execStepWithSends` fuses each op's upload into the render submit (one
-  vkQueueSubmit + one fence instead of two), and the examples project all
-  N views in one batched matmul rather than a Python per-view loop.
+- `execStepWithSendsAndRecvImgsStacked` fuses each op's upload, render, and
+  same-shape readback into one vkQueueSubmit + one fence. A same-session A/B
+  measured AA 8.27 → 7.98 ms/iter (3.5%); HardSoftRas was within noise
+  (21.67 → 21.60 ms). The examples also project all N views in one batched
+  matmul rather than a Python per-view loop.
 - The **native fused path** (`dressi._C`, see
   `scripts/dressi_native_bench.py`) builds the whole training step —
   transform, raster, AA, MSE, in-graph Adam — as one Dressi graph and

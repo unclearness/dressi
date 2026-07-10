@@ -57,6 +57,14 @@ struct ImageSendItem;  // vk/transfer.h
 void ExecuteGpuPlanWithUploads(const VkContext& ctx, GpuPlan& plan,
                                const std::vector<ImageSendItem>& uploads);
 
+// Extends the combined path with a trailing image->staging copy command
+// buffer. Upload, render and download are submitted in one ordered batch and
+// share one fence wait; the caller resolves the staging data after return.
+struct StackedImageDownload;  // vk/transfer.h
+void ExecuteGpuPlanWithTransfers(const VkContext& ctx, GpuPlan& plan,
+                                 const std::vector<ImageSendItem>& uploads,
+                                 const StackedImageDownload& download);
+
 }  // namespace dressi
 
 #endif  // DRESSI_VK_EXECUTOR_H
