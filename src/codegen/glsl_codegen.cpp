@@ -171,10 +171,12 @@ std::string GenerateFragShader(const SubStage& ss) {
              << " = subpassLoad(u_inp" << i << ")" << SwizzleOf(n) << ";\n";
     }
 
-    // Generic loads for slt inputs
+    // Generic loads for slt inputs (skipped when the same variable is
+    // already loaded as an input attachment: same-pixel consumers read the
+    // subpassLoad value, texelFetch consumers use the slt binding directly)
     for (size_t i = 0; i < ss.slt_vars.size(); i++) {
         const Variable& v = ss.slt_vars[i];
-        if (!needs_generic_load.count(v)) {
+        if (!needs_generic_load.count(v) || names.count(v)) {
             continue;
         }
         const uint32_t n = NumComponents(v.getVType());
