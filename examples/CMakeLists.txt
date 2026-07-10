@@ -1,0 +1,5 @@
+add_executable(image_fitting image_fitting/main.cpp)
+target_link_libraries(image_fitting PRIVATE dressi)
+if(MSVC)
+    target_compile_options(image_fitting PRIVATE /W4 /permissive- /utf-8)
+endif()

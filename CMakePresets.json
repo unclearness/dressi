@@ -1,0 +1,35 @@
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "msvc",
+            "displayName": "MSVC (VS 2022)",
+            "generator": "Visual Studio 17 2022",
+            "architecture": "x64",
+            "binaryDir": "${sourceDir}/build",
+            "environment": {
+                "VULKAN_SDK": "C:/VulkanSDK/1.4.350.0"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "release",
+            "configurePreset": "msvc",
+            "configuration": "Release"
+        },
+        {
+            "name": "debug",
+            "configurePreset": "msvc",
+            "configuration": "Debug"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "release",
+            "configurePreset": "msvc",
+            "configuration": "Release",
+            "output": { "outputOnFailure": true }
+        }
+    ]
+}
