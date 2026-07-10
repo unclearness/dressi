@@ -3,8 +3,10 @@ target_link_libraries(image_fitting PRIVATE dressi)
 
 add_executable(texture_optimization
     texture_optimization/main.cpp
-    common/asset_utils.cpp)
+    common/asset_utils.cpp
+    common/vk_viewer.cpp)
 target_link_libraries(texture_optimization PRIVATE dressi dressi_assets
+                                                   dressi_glad glfw
                                                    spdlog::spdlog)
 
 foreach(_tgt image_fitting texture_optimization)

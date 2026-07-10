@@ -59,6 +59,14 @@ add_library(dressi_assets INTERFACE)
 target_include_directories(dressi_assets SYSTEM INTERFACE
     "${tinyobjloader_SOURCE_DIR}" "${stb_SOURCE_DIR}")
 
+# glad Vulkan loader (user-provided) for the example live viewer.
+# The SDK include path comes first so the full vk_video header set is used
+# (the glad drop bundles only a subset).
+add_library(dressi_glad STATIC third_party/glad/src/vulkan.c)
+target_include_directories(dressi_glad SYSTEM PUBLIC
+    "${DRESSI_VULKAN_SDK_ROOT}/Include"
+    third_party/glad/include)
+
 # Logging / performance measurement
 set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(spdlog

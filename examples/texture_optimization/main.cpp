@@ -22,6 +22,7 @@
 
 #include "../common/asset_utils.h"
 #include "../common/sobol.h"
+#include "../common/vk_viewer.h"
 #include "dressi/dressi.h"
 
 using namespace dressi;
@@ -146,10 +147,23 @@ int main(int argc, char* argv[]) try {
         ad.sendImg(jitter, j);
     };
 
-    auto t_last = std::chrono::steady_clock::now();
+    // Live view (glad + GLFW); its cost is excluded from optimization timing
+    VkViewer viewer(512, 512, "dressi texture optimization");
+    bool viewer_open = viewer.valid();
+    if (!viewer_open) {
+        spdlog::warn("live viewer unavailable; continuing headless");
+    }
+    const int view_interval = 5;
+
+    using Clock = std::chrono::steady_clock;
+    double opt_ms = 0.0;   // execStep only
+    double view_ms = 0.0;  // recvImg + window update
     for (int iter = 0; iter < n_iters; iter++) {
+        const auto t0 = Clock::now();
         send_jitter(iter);
         ad.execStep();
+        const auto t1 = Clock::now();
+        opt_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
 
         if (iter == 0) {
             for (uint32_t v = 0; v < n_views; v++) {
@@ -159,16 +173,26 @@ int main(int argc, char* argv[]) try {
             SaveImagePng(out_dir + "/render_first_view0.png",
                          ad.recvImg(views[0].pred));
         }
-        if (iter % 50 == 0 || iter == n_iters - 1) {
-            const auto now = std::chrono::steady_clock::now();
-            const double ms =
-                    std::chrono::duration<double, std::milli>(now - t_last)
-                            .count();
-            t_last = now;
+
+        if (viewer_open && iter % view_interval == 0) {
+            const auto tv0 = Clock::now();
+            const uint32_t v =
+                    uint32_t(iter / view_interval) % n_views;
+            viewer.setTitle(fmt::format(
+                    "dressi texture optimization  iter {}  view {}", iter,
+                    v));
+            viewer_open = viewer.update(ad.recvImg(views[v].pred));
+            view_ms += std::chrono::duration<double, std::milli>(
+                               Clock::now() - tv0)
+                               .count();
+        }
+
+        if (iter % 100 == 0 || iter == n_iters - 1) {
             spdlog::info(
-                    "iter {:4d}  loss {:.8f}  stages {}  avg {:.2f} ms/iter",
+                    "iter {:4d}  loss {:.8f}  stages {}  opt {:.2f} ms/iter"
+                    "  (view {:.2f} ms/iter excluded)",
                     iter, ad.recvImg(loss).data[0], ad.getStageCount(),
-                    ms / (iter == 0 ? 1.0 : 50.0));
+                    opt_ms / double(iter + 1), view_ms / double(iter + 1));
         }
     }
 

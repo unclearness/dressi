@@ -52,8 +52,9 @@ Mesh LoadObjMesh(const std::string& path) {
                 if (idx.texcoord_index >= 0) {
                     uvs.push_back(
                             attrib.texcoords[2 * idx.texcoord_index + 0]);
+                    // OBJ vt origin is bottom-left; image row 0 is the top
                     uvs.push_back(
-                            attrib.texcoords[2 * idx.texcoord_index + 1]);
+                            1.f - attrib.texcoords[2 * idx.texcoord_index + 1]);
                 } else {
                     uvs.push_back(0.f);
                     uvs.push_back(0.f);
