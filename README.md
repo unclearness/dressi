@@ -138,6 +138,70 @@ Both techniques now beat every baseline at every resolution.
   a little per-iteration accuracy for the O(faces) cost and recover it
   with iterations and `--samples`/`--peels`, exactly as in the paper.
 
+## Milestone 4: PyTorch bindings (`dressi.torch`)
+
+An nvdiffrast-compatible PyTorch API backed by the Dressi Vulkan engine —
+runs on any Vulkan GPU, no CUDA required, permissive licensing:
+
+```python
+import dressi.torch as dr
+
+ctx     = dr.RasterizeVulkanContext()
+rast, _ = dr.rasterize(ctx, pos, tri, resolution=[H, W])  # (u,v,z/w,tri_id+1)
+col, _  = dr.interpolate(attr, rast, tri)                 # exact attr VJP
+col     = dr.texture(tex, uv)                             # inverse-UV tex grad
+col     = dr.antialias(col, rast, pos, tri)               # color + pos grads
+rs      = dr.rasterize_soft(ctx, pos, tri, [H, W],        # HardSoftRas ext.
+                            radius_px=3.0, peels=3)       # (dist,id,z,cov)
+```
+
+Dressi is define-and-run while PyTorch is eager; the layer reconciles them
+with a **shape-signature-keyed engine cache**: the first call with a new
+(resolution, mesh size, params) signature compiles a `DressiAD` graph
+(packing + GLSL + Vulkan objects), subsequent calls only upload changed
+leaf values, execute the cached command buffer, and download results.
+External gradients enter through a surrogate loss `output * grad_seed`
+(BuildBackward seeds 1 everywhere, so leaf gradients equal the exact VJP
+for the uploaded `grad_output`).
+
+Same Avocado silhouette benchmark (ms/iter; fixed view, Adam on positions):
+
+| resolution | dressi.torch (eager) | dressi native fused (Python) | C++ example (AA) | nvdiffrast CUDA | DRTK |
+|---|---|---|---|---|---|
+| 256²  | 3.3 | **0.55** | 0.49 | 1.11 | 2.12 |
+| 512²  | 4.0 | **0.57** | 0.49 | 1.18 | 6.15 |
+| 1024² | 9.0 | **0.55** | 0.51 | 1.21 | 19.6 |
+
+- The eager drop-in path pays per-op CPU round trips (v1 transfers via CPU
+  tensors) plus a full fwd+bwd graph execution in both `forward` and
+  `backward`; it still beats DRTK everywhere.
+- The **native fused path** (`dressi._C`, see
+  `scripts/dressi_native_bench.py`) builds the whole training step —
+  transform, raster, AA, MSE, in-graph Adam — as one Dressi graph and
+  matches the C++ example from Python (zero per-iteration PCIe traffic).
+- Transfer layer lessons (9x eager speedup): readback staging must be
+  HostCached (memcpy from write-combined memory runs at ~100 MB/s),
+  staging buffers and one-shot command buffers are persistent per context,
+  and channel-identical images skip the re-stride pass.
+
+v1 limitations: CPU-tensor transfer only (CUDA tensors are auto-moved with
+a warning); no `rast_db`/barycentric derivatives; `rasterize`/`interpolate`
+produce no position gradients (use `antialias`/`rasterize_soft`, matching
+the silhouette workflow); nearest texture filtering, no mipmaps, no grad
+w.r.t. UV; no near-plane clipping; batches loop per item. Planned next:
+zero-copy GPU interop — export Vulkan memory (`VK_KHR_external_memory`) and
+import it into CUDA as torch tensors (the nvdiffrast-GL pattern; the
+reverse direction is not possible because torch's caching allocator does
+not export its allocations).
+
+Build & test:
+
+```sh
+cmake --preset msvc -DDRESSI_BUILD_PYTHON=ON -DPython_EXECUTABLE=<venv>/Scripts/python.exe
+cmake --build --preset release --target dressi_py
+PYTHONPATH=python python -m pytest tests/python
+```
+
 ## Milestone 2: deferred rasterization + texture optimization
 
 - `F::Rasterize(clip_pos, attrib, faces, screen_size)`: depth-tested indexed

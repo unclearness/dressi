@@ -14,8 +14,15 @@ vk::Format FormatOf(VType vtype);
 // CPU -> GPU: re-strides logical channels to the physical format (VEC3 pad)
 // and copies via a staging buffer. Leaves the image in ShaderReadOnlyOptimal.
 void SendImageToDevice(const VkContext& ctx, const vkw::ImagePackPtr& img,
-                       const CpuImage& cpu_img, VType vtype,
+                       const CpuImageView& cpu_img, VType vtype,
                        bool image_initialized);
+inline void SendImageToDevice(const VkContext& ctx,
+                              const vkw::ImagePackPtr& img,
+                              const CpuImage& cpu_img, VType vtype,
+                              bool image_initialized) {
+    SendImageToDevice(ctx, img, CpuImageView(cpu_img), vtype,
+                      image_initialized);
+}
 
 // GPU -> CPU counterpart (expects ShaderReadOnlyOptimal layout)
 CpuImage ReceiveImageFromDevice(const VkContext& ctx,
@@ -25,7 +32,12 @@ CpuImage ReceiveImageFromDevice(const VkContext& ctx,
 // (face indices) are converted from the CpuImage's float storage to uint32.
 void SendGeometryToBuffer(const VkContext& ctx,
                           const vkw::BufferPackPtr& buf,
-                          const CpuImage& cpu_img, VType vtype);
+                          const CpuImageView& cpu_img, VType vtype);
+inline void SendGeometryToBuffer(const VkContext& ctx,
+                                 const vkw::BufferPackPtr& buf,
+                                 const CpuImage& cpu_img, VType vtype) {
+    SendGeometryToBuffer(ctx, buf, CpuImageView(cpu_img), vtype);
+}
 
 }  // namespace dressi
 

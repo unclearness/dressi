@@ -742,6 +742,36 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
                      << ".0, " << scr.h << ".0);\n";
             }
             body << "        }\n";
+            if (n_samples == 0) {
+                // Exact mode: accumulate gy over every pixel of the face's
+                // screen bbox that the ID buffer attributes to the face
+                // (the true VJP; interior support for general interpolation)
+                body << "        if (ok) {\n";
+                body << "            vec2 lo = min(min(s[0], s[1]), s[2]);\n";
+                body << "            vec2 hi = max(max(s[0], s[1]), s[2]);\n";
+                body << "            int x0 = max(int(floor(lo.x - 1.0)),"
+                        " 0);\n";
+                body << "            int x1 = min(int(ceil(hi.x + 1.0)), "
+                     << (scr.w - 1) << ");\n";
+                body << "            int y0 = max(int(floor(lo.y - 1.0)),"
+                        " 0);\n";
+                body << "            int y1 = min(int(ceil(hi.y + 1.0)), "
+                     << (scr.h - 1) << ");\n";
+                body << "            for (int py = y0; py <= y1; py++) {\n";
+                body << "                for (int px = x0; px <= x1;"
+                        " px++) {\n";
+                body << "                    ivec2 pi = ivec2(px, py);\n";
+                body << "                    if (int(texelFetch(u_slt"
+                     << id_bind << ", pi, 0).x + 0.5) != f + 1) continue;\n";
+                body << "                    " << y_name
+                     << " += texelFetch(u_slt" << gy_bind << ", pi, 0)" << swz
+                     << ";\n";
+                body << "                }\n";
+                body << "            }\n";
+                body << "        }\n";
+                body << "    }\n";
+                continue;
+            }
             body << "        if (ok) {\n";
             body << "            for (int smp = 0; smp < " << n_samples
                  << "; smp++) {\n";

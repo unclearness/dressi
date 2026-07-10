@@ -24,15 +24,19 @@ VkContextPtr CreateVkContext(bool debug_enable) {
 void RunOneShot(
         const VkContext& ctx,
         const std::function<void(const vk::UniqueCommandBuffer&)>& record) {
-    auto cmd_pack = vkw::CreateCommandBuffersPack(ctx.device,
-                                                  ctx.queue_family_idx, 1);
-    const auto& cmd = cmd_pack->cmd_bufs[0];
+    if (!ctx.oneshot_cmds) {
+        ctx.oneshot_cmds = vkw::CreateCommandBuffersPack(
+                ctx.device, ctx.queue_family_idx, 1);
+        ctx.oneshot_fence = vkw::CreateFence(ctx.device);
+    }
+    const auto& cmd = ctx.oneshot_cmds->cmd_bufs[0];
+    vkw::ResetCommand(cmd);
     vkw::BeginCommand(cmd, /*one_time_submit=*/true);
     record(cmd);
     vkw::EndCommand(cmd);
-    auto fence = vkw::CreateFence(ctx.device);
-    vkw::QueueSubmit(ctx.queue, cmd, fence);
-    vkw::WaitForFence(ctx.device, fence);
+    vkw::ResetFence(ctx.device, ctx.oneshot_fence);
+    vkw::QueueSubmit(ctx.queue, cmd, ctx.oneshot_fence);
+    vkw::WaitForFence(ctx.device, ctx.oneshot_fence);
 }
 
 }  // namespace dressi

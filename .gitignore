@@ -16,6 +16,12 @@ CMakeUserPresets.json
 *.log
 Testing/
 
+# Python
+/.venv/
+__pycache__/
+*.pyd
+.pytest_cache/
+
 # Example outputs
 /gt_view0.png
 /recovered_texture.png

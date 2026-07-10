@@ -56,6 +56,7 @@ struct DressiAD::Impl {
         }
     }
 
+    bool grad_outputs_enabled = false;  // keep input_grad_vars as roots
     Variables extra_outputs;  // user-demanded exports (markOutput)
     // Extra end-of-frame copy-backs: {input leaf, updated} pairs for
     // GPU-resident optimizer state (addUpdate)
@@ -70,6 +71,11 @@ struct DressiAD::Impl {
         for (const auto& [inp, upd] : extra_updates) {
             (void)inp;
             roots.push_back(upd);
+        }
+        if (grad_outputs_enabled) {
+            for (const auto& g : input_grad_vars) {
+                roots.push_back(g);
+            }
         }
         return roots;
     }
@@ -122,7 +128,18 @@ struct DressiAD::Impl {
 };
 
 DressiAD::DressiAD() : m_impl(std::make_unique<Impl>()) {}
+
+DressiAD::DressiAD(VkContextPtr ctx) : m_impl(std::make_unique<Impl>()) {
+    DRESSI_CHECK(ctx, "DressiAD: null VkContext");
+    m_impl->ctx = std::move(ctx);
+}
+
 DressiAD::~DressiAD() = default;
+
+VkContextPtr DressiAD::createContext(bool debug) {
+    const char* dbg = std::getenv("DRESSI_VK_DEBUG");
+    return CreateVkContext(debug || (dbg != nullptr && dbg[0] == '1'));
+}
 
 void DressiAD::setLossVar(const Variable& loss_var) {
     m_impl->loss_var = loss_var;
@@ -167,6 +184,25 @@ void DressiAD::addUpdate(const Variable& input_leaf, const Variable& updated) {
     if (m_impl->init_status > OPTIMIZER) {
         m_impl->init_status = OPTIMIZER;  // copy-back set changed
     }
+}
+
+void DressiAD::setGradOutputsEnabled(bool enable) {
+    if (m_impl->grad_outputs_enabled == enable) {
+        return;
+    }
+    m_impl->grad_outputs_enabled = enable;
+    if (m_impl->init_status > TRAVERSE) {
+        m_impl->init_status = TRAVERSE;  // roots changed; rebuild packing
+    }
+}
+
+std::vector<std::pair<Variable, Variable>> DressiAD::inputGrads() const {
+    std::vector<std::pair<Variable, Variable>> pairs;
+    pairs.reserve(m_impl->input_vars.size());
+    for (size_t i = 0; i < m_impl->input_vars.size(); i++) {
+        pairs.emplace_back(m_impl->input_vars[i], m_impl->input_grad_vars[i]);
+    }
+    return pairs;
 }
 
 size_t DressiAD::getStageCount() const {
@@ -431,7 +467,7 @@ void DressiAD::execStep() {
     im.init_status = FINISHED;
 }
 
-void DressiAD::sendImg(const Variable& var, const CpuImage& cpu_img) {
+void DressiAD::sendImg(const Variable& var, const CpuImageView& cpu_img) {
     Impl& im = *m_impl;
     DRESSI_CHECK(var, "sendImg: null Variable");
     Variable v = var;
@@ -455,8 +491,15 @@ void DressiAD::sendImg(const Variable& var, const CpuImage& cpu_img) {
             return;
         }
     }
-    // Images/buffers do not exist yet; flush inside the next execStep()
-    im.pending_sends[var] = cpu_img;
+    // Images/buffers do not exist yet; copy and flush inside execStep()
+    CpuImage owned(cpu_img.width, cpu_img.height, cpu_img.channels);
+    std::copy(cpu_img.data, cpu_img.data + cpu_img.numElems(),
+              owned.data.begin());
+    im.pending_sends[var] = std::move(owned);
+}
+
+void DressiAD::sendImg(const Variable& var, const CpuImage& cpu_img) {
+    sendImg(var, CpuImageView(cpu_img));
 }
 
 CpuImage DressiAD::recvImg(const Variable& var) {

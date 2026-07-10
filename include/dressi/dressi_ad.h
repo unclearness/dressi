@@ -3,11 +3,16 @@
 
 #include <functional>
 #include <memory>
+#include <utility>
+#include <vector>
 
 #include "dressi/types.h"
 #include "dressi/variable.h"
 
 namespace dressi {
+
+struct VkContext;
+using VkContextPtr = std::shared_ptr<VkContext>;
 
 // DressiAD: DR-specialized AD library class (Appendix A of the Dressi paper).
 // Owns the Vulkan context and the staged build pipeline of execStep():
@@ -36,9 +41,17 @@ public:
     };
 
     DressiAD();
+    // Shares an existing Vulkan context (instance/device/queue) instead of
+    // creating one per instance. Lets many DressiAD graphs coexist on one
+    // device (e.g. a shape-keyed engine cache in language bindings).
+    explicit DressiAD(VkContextPtr ctx);
     ~DressiAD();
     DressiAD(const DressiAD&) = delete;
     DressiAD& operator=(const DressiAD&) = delete;
+
+    // Creates a headless Vulkan context suitable for the shared-context
+    // constructor. `debug` (or DRESSI_VK_DEBUG=1) enables validation layers.
+    static VkContextPtr createContext(bool debug = false);
 
     // Setters
     void setLossVar(const Variable& loss_var);
@@ -62,6 +75,16 @@ public:
     // traffic. Safe to call from inside the optimizer lambda (once).
     void addUpdate(const Variable& input_leaf, const Variable& updated);
 
+    // Keeps every requires-grad leaf's gradient variable alive as a graph
+    // root and substage output so recvImg() can read raw gradients without
+    // wiring an optimizer. Call before the first execStep() (or a rebuild
+    // follows).
+    void setGradOutputsEnabled(bool enable);
+    // (requires-grad leaf, gradient variable) pairs of the current backward
+    // graph. Valid after the first execStep(); pair with
+    // setGradOutputsEnabled(true) to make the gradients recvImg-readable.
+    std::vector<std::pair<Variable, Variable>> inputGrads() const;
+
     // Introspection (current build)
     size_t getStageCount() const;
     size_t getSubStageCount() const;
@@ -72,6 +95,9 @@ public:
     // Transfer image data between CPU and GPU. Sends before the first
     // execStep() are kept pending and flushed once images exist.
     void sendImg(const Variable& var, const CpuImage& cpu_img);
+    // Zero-copy variant for borrowed buffers (language bindings): the view
+    // is only read during the call (copied internally if still pending).
+    void sendImg(const Variable& var, const CpuImageView& cpu_img);
     CpuImage recvImg(const Variable& var);
 
 private:

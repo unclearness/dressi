@@ -3,7 +3,9 @@
 
 #include <array>
 #include <string>
+#include <vector>
 
+#include "dressi/mesh_utils.h"
 #include "dressi/types.h"
 
 namespace dressi_examples {
@@ -51,12 +53,9 @@ Mat4 PerspectiveVk(float fovy_rad, float aspect, float z_near, float z_far);
 dressi::CpuImage TransformToClip(const dressi::CpuImage& pos,
                                  const Mat4& mvp);
 
-// Per-vertex inverse-UV inputs:
-//   UvAsClip:   {V,1,4} = (u*2-1, v*2-1, 0.5, 1)   (rasterize in UV space)
-//   ScreenAttr: {V,1,4} = (screen_x, screen_y, 1, 0) from clip positions
-dressi::CpuImage UvAsClip(const dressi::CpuImage& uv);
-dressi::CpuImage ScreenAttr(const dressi::CpuImage& clip,
-                            dressi::ImgSize screen);
+// Per-vertex inverse-UV inputs now live in the library (dressi/mesh_utils.h)
+using dressi::ScreenAttr;
+using dressi::UvAsClip;
 
 }  // namespace dressi_examples
 

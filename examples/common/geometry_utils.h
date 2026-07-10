@@ -6,8 +6,18 @@
 
 #include "asset_utils.h"
 #include "dressi/dressi.h"
+#include "dressi/mesh_utils.h"
 
 namespace dressi_examples {
+
+// Static-topology builders now live in the library (dressi/mesh_utils.h)
+using dressi::BuildFaceAdjacency;
+using dressi::BuildSoftGeometry;
+using dressi::BuildVertexAdjacency;
+using dressi::FaceNeighborsTex;
+using dressi::SoftGeometry;
+using dressi::VertexFacesTex;
+using dressi::VertexNeighborsTex;
 
 // Welded unit-radius icosphere (uv left zero): level 0 = icosahedron
 // (12 v / 20 f), each level quadruples faces (level 3 = 642 v / 1280 f).
@@ -16,34 +26,11 @@ Mesh GenerateIcosphere(uint32_t level);
 // Writes positions/faces as a Wavefront OBJ (uv omitted)
 void SaveObjMesh(const std::string& path, const Mesh& mesh);
 
-// Vertex -> neighbor-vertex adjacency from the face list
-std::vector<std::vector<uint32_t>> BuildVertexAdjacency(
-        const dressi::CpuImage& faces, uint32_t n_verts);
-
 // Uniform-Laplacian regularization gradient {V,1,3}:
 // lambda * (pos - mean(neighbors)); isolated vertices get zero
 dressi::CpuImage UniformLaplacianGrad(
         const dressi::CpuImage& pos,
         const std::vector<std::vector<uint32_t>>& adj, float lambda);
-
-// Adjacent face pairs sharing an edge (each unordered pair once)
-std::vector<std::array<uint32_t, 2>> BuildFaceAdjacency(
-        const dressi::CpuImage& faces);
-
-// Vertex -> incident-face adjacency as a {V, max_degree} 1-channel image
-// (face index as float, -1 padding). Static topology; upload once and the
-// gather backwards skip their O(V*F) face scan.
-dressi::CpuImage VertexFacesTex(const dressi::CpuImage& faces,
-                                uint32_t n_verts);
-
-// Vertex -> neighbor-vertex adjacency as a {V, max_degree} 1-channel image
-// (vertex index as float, -1 padding); feeds F::VertexNeighborMean
-dressi::CpuImage VertexNeighborsTex(const dressi::CpuImage& faces,
-                                    uint32_t n_verts);
-
-// Face -> edge-adjacent-face ids as a VEC3-channel {F,1} image (-1 for
-// boundary edges); feeds F::NormalConsistencyFaceTerm
-dressi::CpuImage FaceNeighborsTex(const dressi::CpuImage& faces);
 
 // Normal-consistency regularization gradient {V,1,3} of
 // lambda * sum_{adjacent faces (f,g)} (1 - n_f . n_g)
@@ -58,19 +45,6 @@ dressi::CpuImage NormalConsistencyGrad(
 uint32_t CountFlippedFacePairs(
         const dressi::CpuImage& pos, const dressi::CpuImage& faces,
         const std::vector<std::array<uint32_t, 2>>& face_adj);
-
-// Per-face unwelded soft geometry for HardSoftRas: triangles enlarged by
-// `radius_px` in screen space (scaled about the centroid), face index as a
-// per-vertex attribute, and sequential faces (3i, 3i+1, 3i+2).
-// Behind-camera faces (w <= eps) are passed through un-enlarged.
-struct SoftGeometry {
-    dressi::CpuImage clip;     // {3F,1,4}
-    dressi::CpuImage face_id;  // {3F,1,1}
-    dressi::CpuImage faces;    // {F,1,3}
-};
-SoftGeometry BuildSoftGeometry(const dressi::CpuImage& hard_clip,
-                               const dressi::CpuImage& faces,
-                               dressi::ImgSize screen, float radius_px);
 
 // Chain rule through the (fixed) projection: g_pos {V,1,3} from the
 // clip-position gradient {V,1,4} and the column-major MVP

@@ -345,6 +345,63 @@ TEST(Backward, PbrCompositeGradients) {
     CheckGrad(loss, {{rough, br}, {n_dot_h, bh}}, n_dot_h);
 }
 
+TEST(Backward, FaceFetchExactBackward) {
+    // n_samples == 0: the exact per-face bbox scan must equal the true VJP
+    // g_attr[f] = sum over pixels with idx == f+1 of gy(p). FaceFetch is
+    // linear in attr, so central differences are exact.
+    const uint32_t W = 8, H = 6;
+    Variable attr(FLOAT, {2, 1});
+    Variable idx(FLOAT, {W, H});
+    Variable p0(VEC4, {2, 1});
+    Variable p1(VEC4, {2, 1});
+    Variable p2(VEC4, {2, 1});
+    Variable seed(FLOAT, {1, 1});
+    Variable wimg(FLOAT, {W, H});
+    Variable out = F::FaceFetch(attr, idx, p0, p1, p2, seed, 1.f,
+                                /*n_samples=*/0);
+    Variable loss = F::Mean(out * wimg);
+
+    // Screen-space corners (w = 1): face 0 bbox [1,5]x[1,4], face 1 bbox
+    // [3,7]x[2,5]; the id assignments below stay inside those bboxes
+    const auto clip = [&](float sx, float sy, int c) {
+        const float v[4] = {sx / float(W) * 2.f - 1.f,
+                            sy / float(H) * 2.f - 1.f, 0.5f, 1.f};
+        return v[c];
+    };
+    std::vector<float> d0, d1, d2;
+    const float c0[2][2] = {{1.f, 1.f}, {3.f, 2.f}};   // corner 0 of f0, f1
+    const float c1[2][2] = {{5.f, 1.f}, {7.f, 2.f}};
+    const float c2[2][2] = {{1.f, 4.f}, {7.f, 5.f}};
+    for (int f = 0; f < 2; f++) {
+        for (int c = 0; c < 4; c++) {
+            d0.push_back(clip(c0[f][0], c0[f][1], c));
+            d1.push_back(clip(c1[f][0], c1[f][1], c));
+            d2.push_back(clip(c2[f][0], c2[f][1], c));
+        }
+    }
+    std::vector<float> idx_data(size_t(W) * H, 0.f);
+    idx_data[size_t(1) * W + 2] = 1.f;
+    idx_data[size_t(2) * W + 3] = 1.f;
+    idx_data[size_t(0) * W + 5] = 1.f;
+    idx_data[size_t(3) * W + 4] = 2.f;
+    idx_data[size_t(2) * W + 6] = 2.f;
+    idx_data[size_t(5) * W + 7] = 2.f;
+
+    std::vector<Binding> binds = {
+            {attr, MakeTensor(FLOAT, {2, 1},
+                              [](size_t i) { return 0.4f + 0.3f * float(i); })},
+            {idx, MakeTensor(FLOAT, {W, H},
+                             [&](size_t i) { return idx_data[i]; })},
+            {p0, MakeTensor(VEC4, {2, 1}, [&](size_t i) { return d0[i]; })},
+            {p1, MakeTensor(VEC4, {2, 1}, [&](size_t i) { return d1[i]; })},
+            {p2, MakeTensor(VEC4, {2, 1}, [&](size_t i) { return d2[i]; })},
+            {seed, MakeTensor(FLOAT, {1, 1}, [](size_t) { return 0.f; })},
+            {wimg, MakeTensor(FLOAT, {W, H}, [](size_t i) {
+                 return 0.1f + 0.05f * float(i % 13);
+             })}};
+    CheckGrad(loss, binds, attr, 1e-3f, 1e-3f, 1e-4f);
+}
+
 TEST(Backward, TraverseFuncsTopoOrder) {
     Variable x(FLOAT, {1, 1});
     Variable y = F::Sin(x) + F::Cos(x);

@@ -16,6 +16,18 @@ struct VkContext {
     vk::Queue queue;
     vk::PhysicalDeviceLimits limits;
     std::unique_ptr<vkw::GLSLCompiler> glsl_compiler;
+
+    // Persistent transfer staging, grown on demand (every transfer is a
+    // synchronous one-shot submit, so one buffer per direction suffices).
+    // The readback buffer prefers HostCached memory: memcpy FROM
+    // write-combined HostCoherent memory runs at ~100 MB/s and dominated
+    // recvImg before this cache existed.
+    mutable vkw::BufferPackPtr send_staging;
+    mutable vkw::BufferPackPtr recv_staging;
+    // Reused one-shot command buffer + fence (RunOneShot used to create a
+    // command pool per transfer)
+    mutable vkw::CommandBuffersPackPtr oneshot_cmds;
+    mutable vkw::FencePtr oneshot_fence;
 };
 using VkContextPtr = std::shared_ptr<VkContext>;
 

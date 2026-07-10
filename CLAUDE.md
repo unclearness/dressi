@@ -59,7 +59,22 @@ inputs changed (reactive cache).
   `__gather_dist_grad__`, `__antialias__`, `__antialias_bwd_img__`,
   `__antialias_bwd_vtx__`, `__sum_all__`, `__sum_partial__`).
 - `vk/` — headless context, executor (`ParseStagesAsVulkanObjects`
-  equivalent), CPU↔GPU transfer with VEC3→RGBA32F padding.
+  equivalent), CPU↔GPU transfer with VEC3→RGBA32F padding (persistent
+  staging; readback staging MUST be HostCached — memcpy from
+  write-combined memory runs ~100 MB/s and once made recvImg 20 ms).
+- `python/` — nanobind module `dressi._C` (thin binding of DressiAD /
+  Variable / F subset / mesh utils) + `dressi.torch` (nvdiffrast-compatible
+  eager API). Configure with `-DDRESSI_BUILD_PYTHON=ON
+  -DPython_EXECUTABLE=<repo>/.venv/Scripts/python.exe`; tests in
+  `tests/python` (pytest; also a gpu-labeled ctest entry). Eager ops cache
+  one DressiAD per shape signature; external grads enter via the surrogate
+  loss `output * seed_leaf` (seed-1 semantics make leaf grads the exact
+  VJP) and are read via `setGradOutputsEnabled`/`inputGrads`. An identity
+  optimizer does NOT work for grad readback (self-CopyImage UB).
+  `setRequiresGradRecursively` propagates DOWNSTREAM — call it AFTER
+  building the graph. `scripts/dressi_native_bench.py` = fused-pipeline
+  escape hatch (~C++ speed from Python); `scripts/dressi_torch_bench.py`
+  = the eager path benchmark.
 
 ## Conventions & invariants
 

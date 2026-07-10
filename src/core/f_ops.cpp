@@ -1526,11 +1526,14 @@ Variable LookupFaces(const Variable& vtx_attr, const Variable& faces_tex,
 
 namespace {
 
-// Stochastic backward of FaceFetch (the paper's inverse-UV philosophy,
-// Alg.1 adapted): per face, gather gy at n_samples quasi-random points
+// Backward of FaceFetch. n_samples > 0: the paper's inverse-UV philosophy
+// (Alg.1 adapted) -- per face, gather gy at n_samples quasi-random points
 // along the hard edges (offset within +-radius_px), guarded by the ID
-// buffer. Fully parallel O(F); the sampling jitter (`seed`) makes the
-// estimate cover the gradient band over iterations.
+// buffer; fully parallel O(F), jittered by `seed`. n_samples == 0: EXACT
+// mode -- scan the face's screen bbox and accumulate gy over every pixel
+// the ID buffer attributes to the face (the true VJP; interior support,
+// needed when FaceFetch feeds a general interpolation rather than an
+// edge-concentrated term).
 Variable FaceFetchBwd(const Variable& gy, const Variable& idx_img,
                       const Variable& tri_prj_0, const Variable& tri_prj_1,
                       const Variable& tri_prj_2, const Variable& seed,
@@ -1574,6 +1577,30 @@ Variable FaceFetchBwd(const Variable& gy, const Variable& idx_img,
                 continue;
             }
             float* dst = &out.data[size_t(f) * n];
+            if (n_samples == 0) {  // exact bbox scan
+                const float lo_x = std::min({s[0][0], s[1][0], s[2][0]});
+                const float hi_x = std::max({s[0][0], s[1][0], s[2][0]});
+                const float lo_y = std::min({s[0][1], s[1][1], s[2][1]});
+                const float hi_y = std::max({s[0][1], s[1][1], s[2][1]});
+                const int x0 = std::max(int(std::floor(lo_x - 1.f)), 0);
+                const int x1 = std::min(int(std::ceil(hi_x + 1.f)),
+                                        int(screen.w) - 1);
+                const int y0 = std::max(int(std::floor(lo_y - 1.f)), 0);
+                const int y1 = std::min(int(std::ceil(hi_y + 1.f)),
+                                        int(screen.h) - 1);
+                for (int iy = y0; iy <= y1; iy++) {
+                    for (int ix = x0; ix <= x1; ix++) {
+                        const size_t p = size_t(iy) * screen.w + size_t(ix);
+                        if (uint32_t(int64_t(idx.data[p] + 0.5f)) != f + 1) {
+                            continue;
+                        }
+                        for (uint32_t c = 0; c < n; c++) {
+                            dst[c] += gy_t.data[p * n + c];
+                        }
+                    }
+                }
+                continue;
+            }
             for (uint32_t smp = 0; smp < n_samples; smp++) {
                 const int e = int(smp % 3);
                 const float* a = s[e];
@@ -1630,8 +1657,9 @@ Variable FaceFetch(const Variable& tri_attr, const Variable& idx_img,
     }
     DRESSI_CHECK(seed.getVType() == FLOAT && seed.getImgSize().isUniform(),
                  "FaceFetch: seed must be FLOAT {1,1}");
-    DRESSI_CHECK(radius_px > 0.f && n_samples > 0,
-                 "FaceFetch: radius/samples must be positive");
+    DRESSI_CHECK(radius_px > 0.f || n_samples == 0,
+                 "FaceFetch: radius must be positive (or n_samples == 0 "
+                 "for the exact backward)");
 
     OpDesc desc;
     desc.name = "FaceFetch";

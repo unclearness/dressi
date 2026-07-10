@@ -371,29 +371,4 @@ CpuImage TransformToClip(const CpuImage& pos, const Mat4& mvp) {
     return clip;
 }
 
-CpuImage UvAsClip(const CpuImage& uv) {
-    CpuImage clip(uv.width, 1, 4);
-    for (uint32_t i = 0; i < uv.width; i++) {
-        clip.at(i, 0, 0) = uv.at(i, 0, 0) * 2.f - 1.f;
-        clip.at(i, 0, 1) = uv.at(i, 0, 1) * 2.f - 1.f;
-        clip.at(i, 0, 2) = 0.5f;
-        clip.at(i, 0, 3) = 1.f;
-    }
-    return clip;
-}
-
-CpuImage ScreenAttr(const CpuImage& clip, ImgSize screen) {
-    CpuImage attr(clip.width, 1, 4);
-    for (uint32_t i = 0; i < clip.width; i++) {
-        const float w = clip.at(i, 0, 3);
-        const float ndc_x = clip.at(i, 0, 0) / w;
-        const float ndc_y = clip.at(i, 0, 1) / w;
-        attr.at(i, 0, 0) = (ndc_x * 0.5f + 0.5f) * float(screen.w);
-        attr.at(i, 0, 1) = (ndc_y * 0.5f + 0.5f) * float(screen.h);
-        attr.at(i, 0, 2) = 1.f;
-        attr.at(i, 0, 3) = 0.f;
-    }
-    return attr;
-}
-
 }  // namespace dressi_examples

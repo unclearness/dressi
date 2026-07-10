@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(DRESSI_BUILD_TESTS "Build unit tests" ON)
 option(DRESSI_BUILD_EXAMPLES "Build examples" ON)
+option(DRESSI_BUILD_PYTHON "Build the Python (torch) bindings" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(FindVulkanSdk)
@@ -127,4 +128,8 @@ endif()
 
 if(DRESSI_BUILD_EXAMPLES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/CMakeLists.txt")
     add_subdirectory(examples)
+endif()
+
+if(DRESSI_BUILD_PYTHON)
+    add_subdirectory(python)
 endif()

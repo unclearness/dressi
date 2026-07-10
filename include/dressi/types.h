@@ -58,6 +58,26 @@ struct CpuImage {
     }
 };
 
+// Non-owning view of CPU image data with CpuImage's layout (row-major,
+// tightly packed logical channels). Lets language bindings upload borrowed
+// buffers without an intermediate CpuImage copy.
+struct CpuImageView {
+    const float* data = nullptr;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t channels = 0;
+
+    CpuImageView() = default;
+    CpuImageView(const float* d, uint32_t w, uint32_t h, uint32_t c)
+        : data(d), width(w), height(h), channels(c) {}
+    explicit CpuImageView(const CpuImage& img)
+        : data(img.data.data()),
+          width(img.width),
+          height(img.height),
+          channels(img.channels) {}
+    size_t numElems() const { return size_t(width) * height * channels; }
+};
+
 class DressiError : public std::runtime_error {
 public:
     explicit DressiError(const std::string& msg) : std::runtime_error(msg) {}
