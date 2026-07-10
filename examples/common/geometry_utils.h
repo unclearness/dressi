@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "asset_utils.h"
+#include "dressi/dressi.h"
 
 namespace dressi_examples {
 
@@ -34,6 +35,15 @@ std::vector<std::array<uint32_t, 2>> BuildFaceAdjacency(
 // gather backwards skip their O(V*F) face scan.
 dressi::CpuImage VertexFacesTex(const dressi::CpuImage& faces,
                                 uint32_t n_verts);
+
+// Vertex -> neighbor-vertex adjacency as a {V, max_degree} 1-channel image
+// (vertex index as float, -1 padding); feeds F::VertexNeighborMean
+dressi::CpuImage VertexNeighborsTex(const dressi::CpuImage& faces,
+                                    uint32_t n_verts);
+
+// Face -> edge-adjacent-face ids as a VEC3-channel {F,1} image (-1 for
+// boundary edges); feeds F::NormalConsistencyFaceTerm
+dressi::CpuImage FaceNeighborsTex(const dressi::CpuImage& faces);
 
 // Normal-consistency regularization gradient {V,1,3} of
 // lambda * sum_{adjacent faces (f,g)} (1 - n_f . n_g)
@@ -65,6 +75,11 @@ SoftGeometry BuildSoftGeometry(const dressi::CpuImage& hard_clip,
 // Chain rule through the (fixed) projection: g_pos {V,1,3} from the
 // clip-position gradient {V,1,4} and the column-major MVP
 dressi::CpuImage ChainRuleClipToPos(const dressi::CpuImage& g_clip,
+                                    const Mat4& mvp);
+
+// In-graph vertex transform: clip {V,1} VEC4 = mvp * (pos, 1) built from
+// elementwise F:: ops (fusable; differentiable back to pos)
+dressi::Variable TransformToClipVar(const dressi::Variable& pos,
                                     const Mat4& mvp);
 
 // Adam optimizer state over a flat float parameter vector

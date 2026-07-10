@@ -74,20 +74,28 @@ inputs changed (reactive cache).
 - GPU-resident state (`plan.imgs`, `plan.vtx_bufs`, `plan.textures`) MUST
   persist across `BuildGpuPlan` rebuilds — dropping it silently breaks
   reactive-cache runs (see commit 36d7a6e for the failure mode).
-- Geometry (`F::Rasterize` inputs) must be leaf variables; the executor
-  uploads them into vertex/index buffers (`CpuImage` stores face indices as
-  floats; converted to uint32 at upload). A leaf used both as geometry and
-  as a texelFetch image (the AA pattern) gets both resources; one `sendImg`
-  updates both.
+- Raster vertex data: leaves are uploaded into vertex/index buffers by
+  `sendImg` (`CpuImage` stores face indices as floats; converted to uint32
+  at upload); COMPUTED clip positions are also legal raster inputs — the
+  executor copies the producer's image into a device-local vertex buffer
+  each frame (padding-free types only: FLOAT/VEC2/VEC4; faces must stay
+  CPU leaves). A leaf used both as geometry and as a texelFetch image gets
+  both resources; one `sendImg` updates both.
 - Vertex-position gradients (`F::RasterizeSoft` = HardSoftRas,
-  `F::AntiAlias` = Dr.Hair screen-space AA) land on clip-position `{V,1}`
-  leaves; the optimizer lambda can capture its `gxs`, `markOutput` them and
-  the example loop reads them back for CPU-side Adam + projection chain
-  rule (see `examples/silhouette_optimization`, `tests/grad_capture.h`).
-  Their screen->vertex backward ops are per-vertex gathers over all pixels
-  (O(V*W*H); no atomics/COMP needed).
-- Optimizer outputs are copied back into their input images at end of frame
-  (no aliasing; a render pass must not read an image it writes).
+  `F::AntiAlias` = Dr.Hair screen-space AA) flow through in-graph
+  projections back to a 3D position leaf. Their screen->vertex backward
+  ops are per-vertex gathers bounded by adjacency-texture bboxes (no
+  atomics/COMP needed). Static topology rides in adjacency textures
+  (`VertexFacesTex` / `VertexNeighborsTex` / `FaceNeighborsTex` in the
+  example utils).
+- Transfer model (the paper's): upload leaves once, download results at
+  the end; nothing crosses PCIe per iteration. Optimizer outputs are
+  copied back into their input images at end of frame (no aliasing; a
+  render pass must not read an image it writes); GPU-resident optimizer
+  STATE uses `DressiAD::addUpdate(state_leaf, new_state)` (in-graph Adam:
+  see `examples/silhouette_optimization`). Regularizers enter the
+  optimizer's update graph via forward-only mesh ops (`F::SoftClip`,
+  `F::VertexNeighborMean`, `F::NormalConsistencyFaceTerm/VertexGrad`).
 - The loss may be any float image (per the paper): `BuildBackward` seeds
   gradient 1 at every pixel/component (= derivative of the implicit sum),
   so no forward reduction chain to `{1,1}` is needed. Keep losses as
@@ -103,9 +111,8 @@ inputs changed (reactive cache).
   aliasing are not implemented yet.
 - HardSoftRas is implemented with K=1 only (no depth-peeling execution, so
   Eq.6 multi-layer silhouette blending is a single sigmoid); triangle
-  enlargement is CPU-side centroid scaling (no geometry shader, no obtuse
-  bbox split) and vertex updates run CPU-side (in-graph vertex-buffer
-  copy-back / in-graph MVP not implemented).
+  enlargement is centroid scaling (`F::SoftClip` on the GPU; no geometry
+  shader, no obtuse bbox split).
 - The AA technique picks the boundary edge by owner preference
   {tri(neighbor), tri(self)} instead of an exact closest-depth test, and
   its forward keeps the scheme's inherent residual discontinuity when a

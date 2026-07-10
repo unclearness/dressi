@@ -203,6 +203,37 @@ dressi::CpuImage VertexFacesTex(const dressi::CpuImage& faces,
     return tex;
 }
 
+dressi::CpuImage VertexNeighborsTex(const dressi::CpuImage& faces,
+                                    uint32_t n_verts) {
+    const auto adj = BuildVertexAdjacency(faces, n_verts);
+    uint32_t max_deg = 1;
+    for (const auto& ns : adj) {
+        max_deg = std::max(max_deg, uint32_t(ns.size()));
+    }
+    dressi::CpuImage tex(n_verts, max_deg, 1, -1.f);
+    for (uint32_t v = 0; v < n_verts; v++) {
+        for (uint32_t d = 0; d < adj[v].size(); d++) {
+            tex.at(v, d, 0) = float(adj[v][d]);
+        }
+    }
+    return tex;
+}
+
+dressi::CpuImage FaceNeighborsTex(const dressi::CpuImage& faces) {
+    dressi::CpuImage tex(faces.width, 1, 3, -1.f);
+    std::vector<uint32_t> n_adj(faces.width, 0);
+    for (const auto& pair : BuildFaceAdjacency(faces)) {
+        for (int e = 0; e < 2; e++) {
+            const uint32_t f = pair[size_t(e)];
+            const uint32_t g = pair[size_t(1 - e)];
+            if (n_adj[f] < 3) {
+                tex.at(f, 0, n_adj[f]++) = float(g);
+            }
+        }
+    }
+    return tex;
+}
+
 dressi::CpuImage NormalConsistencyGrad(
         const dressi::CpuImage& pos, const dressi::CpuImage& faces,
         const std::vector<std::array<uint32_t, 2>>& face_adj, float lambda) {
@@ -371,6 +402,19 @@ dressi::CpuImage ChainRuleClipToPos(const dressi::CpuImage& g_clip,
         }
     }
     return g_pos;
+}
+
+dressi::Variable TransformToClipVar(const dressi::Variable& pos,
+                                    const Mat4& mvp) {
+    using namespace dressi;
+    Variable x = F::GetX(pos);
+    Variable y = F::GetY(pos);
+    Variable z = F::GetZ(pos);
+    const auto row = [&](int r) {
+        return x * mvp[size_t(0 * 4 + r)] + y * mvp[size_t(1 * 4 + r)] +
+               z * mvp[size_t(2 * 4 + r)] + mvp[size_t(3 * 4 + r)];
+    };
+    return F::Vec4(row(0), row(1), row(2), row(3));
 }
 
 void AdamStep(AdamState& state, std::vector<float>& params,

@@ -211,3 +211,39 @@ Remaining gap to the paper's 0.30 ms (RTX 2080, 256^2): still only V
 fragment threads of parallelism plus the O(V*F) face scan -- next levers
 are a precomputed vertex->face adjacency texture, tiled partial sums, or
 an atomic pixel-parallel scatter, and moving the vertex update in-graph.
+
+## Follow-up: GPU-resident optimization loop (`abb7505`, `b2f5587`, example)
+
+Adopted the paper's transfer model end to end (author direction: CPU<->GPU
+traffic only at initial upload and final download; small scalars and debug
+reads excepted):
+
+- Vertex->incident-face adjacency textures (`abb7505`) replace the gather
+  backwards' O(V*F) in-shader face scan (latency-neutral at demo scale --
+  only V fragment threads -- but kills the quadratic term for real meshes).
+- Executor accepts COMPUTED raster geometry: the producer's image is
+  copied into a device-local vertex buffer with a transfer->vertexInput
+  barrier each frame; optimizer-updated geometry leaves refresh at frame
+  start. Greedy packer keeps GPU-generated vtx inputs as producer outputs.
+- `DressiAD::addUpdate` gives optimizer state the same end-of-frame
+  copy-back as parameters -> in-graph Adam (m/v/t leaves live on the GPU).
+- In-graph mesh ops: `F::SoftClip` (HardSoftRas enlargement),
+  `F::VertexNeighborMean` (uniform Laplacian), and the analytic
+  `F::NormalConsistencyFaceTerm`/`VertexGrad` pair (face-adjacency +
+  vertex->face textures); relative data-RMS weighting is a handful of
+  {1,1} reduction ops inside the optimizer graph.
+- `BuildBackward` sums gradient contributions as a tree of <=4-ary
+  SumPixelWise nodes: 8 views x (GetX/GetY/GetZ) = 24 contributions at the
+  position leaf exceeded Vulkan's guaranteed input-attachment minimum as a
+  single n-ary node.
+- The silhouette example's loop body is now `execStep()` alone; loss
+  logging (a small image summed on the CPU at print intervals) and the
+  live viewers are the only readbacks, both optional.
+
+Results unchanged within float noise (300 iters, defaults): hardsoftras
+68.9x / IoU 0.9809 / 14 flipped at 23.5 ms/iter (was 28.7 with the CPU
+loop); aa 158x / IoU 0.9810 / 13 flipped at 42.5 ms/iter. New GPU test
+`SoftRasGpu.FullyInGraphSilhouetteFit` locks the machinery (in-graph
+projection + SoftClip + momentum SGD via addUpdate, zero per-iteration
+transfers). Next parallelism lever for the gathers stays tiled partial
+sums / atomic scatter.

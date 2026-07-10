@@ -2,21 +2,23 @@
 // using vertex-position gradients, with two selectable techniques:
 //
 //   --technique=hardsoftras (default)
-//     HardSoftRas (Dressi paper Alg.2, K=1): CPU-enlarged soft triangles
-//     are hardware-rasterized; the fragment shader outputs the signed
-//     screen-space distance to the hard triangle and the silhouette
-//     probability is sigmoid(dist / (r/7)). Gradients flow through the
-//     dist channel back to the hard clip positions.
+//     HardSoftRas (Dressi paper Alg.2, K=1): soft rasterization of
+//     GPU-enlarged triangles; the silhouette probability is
+//     sigmoid(dist / (r/7)) with the paper's Eq.5 edge/non-edge split.
 //
 //   --technique=aa
 //     Screen-space AA (Dr.Hair, arXiv:2403.17496 Eq.3-5): hard
 //     rasterization plus a differentiable blend across triangle-ID
 //     boundaries; gradients flow through the pixel-to-edge distance.
 //
-// Both paths read the per-view clip-position gradients back each
-// iteration (identity optimizer capturing the backward graph), chain-rule
-// them through the fixed projections, and run CPU Adam with a relative
-// uniform-Laplacian regularizer on the shared 3D vertex positions.
+// The whole iteration lives on the GPU (the paper's transfer model: upload
+// once, download at the end): the 3D positions are the optimizer target,
+// per-view projections / HardSoftRas soft geometry / uniform-Laplacian and
+// normal-consistency regularizers / Adam (with GPU-resident state via
+// DressiAD::addUpdate) are all graph ops, and the executor refreshes the
+// vertex buffers from the computed clip images. Per-iteration CPU traffic
+// is zero; loss logging and the live viewers read back small debug data at
+// intervals only.
 
 #include <spdlog/cfg/env.h>
 #include <spdlog/spdlog.h>
@@ -24,7 +26,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -103,15 +104,9 @@ Options ParseArgs(int argc, char* argv[]) {
 
 struct View {
     Mat4 mvp;
-    // Bunny target branch (static leaves, sent once)
-    Variable tgt_clip{nullptr};
+    Variable tgt_clip{nullptr};  // static bunny clip leaf
     Variable target{nullptr};
-    // Sphere branch (per-iteration leaves)
-    Variable clip{nullptr};       // {V,1} VEC4, requires grad
-    Variable soft_clip{nullptr};  // {3F,1} VEC4 (hardsoftras only)
     Variable pred{nullptr};
-    Variable grad{nullptr};  // captured d loss / d clip
-    CpuImage clip_img;
 };
 
 float MaskIoU(const CpuImage& a, const CpuImage& b) {
@@ -123,14 +118,6 @@ float MaskIoU(const CpuImage& a, const CpuImage& b) {
         uni += (pa || pb);
     }
     return uni ? float(inter) / float(uni) : 1.f;
-}
-
-float Rms(const CpuImage& img) {
-    double s = 0.0;
-    for (float v : img.data) {
-        s += double(v) * v;
-    }
-    return float(std::sqrt(s / double(img.data.size())));
 }
 
 }  // namespace
@@ -156,23 +143,34 @@ int main(int argc, char* argv[]) try {
                  opt.technique, bunny.numVertices(), bunny.numFaces(),
                  n_verts, n_faces, opt.n_views, screen.w, screen.h);
 
-    // -------------------------- Shared leaves ----------------------------
-    // Static vertex->incident-face adjacency (bounds the gather backwards)
+    // --------------------------- Static leaves ---------------------------
+    // Topology / adjacency textures (uploaded once)
     const CpuImage b_vf_img = VertexFacesTex(bunny.faces,
                                              bunny.numVertices());
     const CpuImage s_vf_img = VertexFacesTex(sphere.faces, n_verts);
-    // Bunny (target) static leaves
+    const CpuImage s_vn_img = VertexNeighborsTex(sphere.faces, n_verts);
+    const CpuImage s_fa_img = FaceNeighborsTex(sphere.faces);
+    // Bunny (target)
     Variable b_ones(FLOAT, {bunny.numVertices(), 1});
     Variable b_faces_i(IVEC3, {bunny.numFaces(), 1});
     Variable b_faces_f(VEC3, {bunny.numFaces(), 1});
     Variable b_vtx_faces(FLOAT, b_vf_img.getImgSize());
-    // Sphere static leaves
+    // Sphere topology
     Variable s_ones(FLOAT, {n_verts, 1});
     Variable s_faces_i(IVEC3, {n_faces, 1});
     Variable s_faces_f(VEC3, {n_faces, 1});
     Variable s_vtx_faces(FLOAT, s_vf_img.getImgSize());
+    Variable s_vtx_nbrs(FLOAT, s_vn_img.getImgSize());
+    Variable s_face_adj(VEC3, {n_faces, 1});
     Variable s_face_id(FLOAT, {n_faces * 3, 1});   // hardsoftras
     Variable s_faces_soft(IVEC3, {n_faces, 1});    // hardsoftras
+
+    // Optimization state (GPU-resident; uploaded once, updated by the
+    // end-of-frame copy-backs)
+    Variable pos(VEC3, {n_verts, 1});     // the optimizer target
+    Variable adam_m(VEC3, {n_verts, 1});
+    Variable adam_v(VEC3, {n_verts, 1});
+    Variable adam_t(FLOAT, {1, 1});
 
     // ------------------------------ Views --------------------------------
     const Mat4 proj =
@@ -188,7 +186,8 @@ int main(int argc, char* argv[]) try {
                                           1.6f * std::cos(ang)};
         view.mvp = Mul(proj, LookAt(eye, {0, 0, 0}, {0, 1, 0}));
 
-        // Target: bunny silhouette rendered in-graph, frozen
+        // Target: bunny silhouette rendered in-graph, frozen (the static
+        // branch is pruned by the reactive cache after warm-up)
         view.tgt_clip = Variable(VEC4, {bunny.numVertices(), 1});
         Variable t_mask =
                 F::Rasterize(view.tgt_clip, b_ones, b_faces_i, screen);
@@ -202,73 +201,85 @@ int main(int argc, char* argv[]) try {
                     t_mask, t_tri, view.tgt_clip, b_faces_f, b_vtx_faces));
         }
 
-        // Prediction: sphere silhouette, differentiable in the clip leaf
-        view.clip = Variable(VEC4, {n_verts, 1});
+        // Prediction: the per-view projection is IN-GRAPH, so the clip
+        // positions are computed variables and the executor refreshes the
+        // vertex buffers from their images each frame
+        Variable clip_v = TransformToClipVar(pos, view.mvp);
         if (hardsoft) {
-            view.soft_clip = Variable(VEC4, {n_faces * 3, 1});
-            Variable out = F::RasterizeSoft(view.soft_clip, s_face_id,
-                                            s_faces_soft, view.clip,
-                                            s_faces_f, s_vtx_faces, screen,
+            Variable soft_clip =
+                    F::SoftClip(clip_v, s_faces_f, screen, opt.radius_px);
+            Variable out = F::RasterizeSoft(soft_clip, s_face_id,
+                                            s_faces_soft, clip_v, s_faces_f,
+                                            s_vtx_faces, screen,
                                             opt.radius_px);
             Variable soft_sil = F::StopGradient(F::GetW(out)) *
                                 F::Sigmoid(F::GetX(out) * sigma_scale);
             // Paper Eq.5 spirit: non-edge pixels keep the hard value (kills
             // the interior seams of the per-face distance at K=1); the
-            // sigmoid band supplies the gradients around the silhouette.
-            // view.clip doubles as the vertex-buffer leaf here.
+            // sigmoid band supplies the gradients around the silhouette
             Variable hard =
-                    F::Rasterize(view.clip, s_ones, s_faces_i, screen);
+                    F::Rasterize(clip_v, s_ones, s_faces_i, screen);
             view.pred = F::Max(F::StopGradient(hard), soft_sil);
         } else {
-            Variable mask = F::Rasterize(view.clip, s_ones, s_faces_i,
-                                         screen);
-            Variable tri = F::RasterizeFaceId(view.clip, s_ones, s_faces_i,
+            Variable mask = F::Rasterize(clip_v, s_ones, s_faces_i, screen);
+            Variable tri = F::RasterizeFaceId(clip_v, s_ones, s_faces_i,
                                               screen);
-            view.pred = F::AntiAlias(mask, tri, view.clip, s_faces_f,
+            view.pred = F::AntiAlias(mask, tri, clip_v, s_faces_f,
                                      s_vtx_faces);
         }
-        // Per-pixel loss IMAGE (no reduction to {1,1}, per the paper:
-        // BuildBackward seeds gradient 1 at every pixel, so the log-step
-        // reduction chain and its upsample backward never run). The 1/N
-        // scale keeps gradients identical to the former per-view Mean.
+        // Per-pixel loss IMAGE (no reduction to {1,1}, per the paper);
+        // the 1/N scale keeps gradients equal to a per-view Mean
         Variable diff = view.target - view.pred;
         view_losses.push_back(diff * diff *
                               (1.f / float(screen.w * screen.h)));
-
-        Variable clip_mut = view.clip;
-        clip_mut.setRequiresGradRecursively();
     }
     Variable loss = F::SumPixelWise(view_losses);  // {S,S} loss image
+    Variable pos_mut = pos;
+    pos_mut.setRequiresGradRecursively();
 
-    // -------------------- Dressi-AD setup (grad capture) ------------------
+    // ----------------- In-graph Adam + regularizers ----------------------
     DressiAD ad;
     ad.setLossVar(loss);
-    bool grads_marked = false;
+    bool state_registered = false;
     ad.setOptimizer([&](Variables xs, Variables gxs) {
-        Variables updated;
-        for (size_t i = 0; i < xs.size(); i++) {
-            updated.push_back(xs[i] + F::Float(0.f) * gxs[i]);
+        DRESSI_CHECK(xs.size() == 1 && xs[0] == pos,
+                     "expected pos as the only optimizer target");
+        // Regularizers, weighted relative to the data-gradient RMS so
+        // smoothing fades as the fit converges
+        const auto rms = [](const Variable& x) {
+            return F::Sqrt(F::Mean(x * x) + 1e-24f);  // FLOAT {1,1}
+        };
+        Variable g = gxs[0];
+        Variable data_rms = rms(g);
+        Variable g_lap = pos - F::VertexNeighborMean(pos, s_vtx_nbrs);
+        Variable g_nrm = F::NormalConsistencyVertexGrad(
+                F::NormalConsistencyFaceTerm(pos, s_faces_f, s_face_adj),
+                pos, s_faces_f, s_vtx_faces);
+        g = g + g_lap * (data_rms / rms(g_lap) * opt.laplacian) +
+            g_nrm * (data_rms / rms(g_nrm) * opt.normal);
+        // Adam with GPU-resident state
+        const float b1 = 0.9f, b2 = 0.999f, eps = 1e-8f;
+        Variable t_new = adam_t + 1.f;
+        Variable m_new = adam_m * b1 + g * (1.f - b1);
+        Variable v_new = adam_v * b2 + g * g * (1.f - b2);
+        Variable bc1 = 1.f - F::Pow(F::Float(b1), t_new);
+        Variable bc2 = 1.f - F::Pow(F::Float(b2), t_new);
+        Variable step = (m_new / bc1) /
+                        (F::Sqrt(v_new / bc2) + eps) * opt.lr;
+        if (!state_registered) {
+            ad.addUpdate(adam_m, m_new);
+            ad.addUpdate(adam_v, v_new);
+            ad.addUpdate(adam_t, t_new);
+            state_registered = true;
         }
-        if (!grads_marked) {
-            for (size_t i = 0; i < xs.size(); i++) {
-                for (auto& view : views) {
-                    if (xs[i] == view.clip) {
-                        view.grad = gxs[i];
-                        ad.markOutput(gxs[i]);
-                    }
-                }
-            }
-            grads_marked = true;
-        }
-        return updated;
+        return Variables{pos - step};
     });
     for (auto& view : views) {
         ad.markOutput(view.target);
         ad.markOutput(view.pred);
     }
 
-    // Static uploads (clean after the first iteration -> reactive cache
-    // prunes the target branch)
+    // ------------------- One-time uploads (then GPU-only) -----------------
     const CpuImage b_ones_img(bunny.numVertices(), 1, 1, 1.f);
     const CpuImage s_ones_img(n_verts, 1, 1, 1.f);
     ad.sendImg(b_ones, b_ones_img);
@@ -279,31 +290,28 @@ int main(int argc, char* argv[]) try {
     ad.sendImg(s_faces_i, sphere.faces);
     ad.sendImg(s_faces_f, sphere.faces);
     ad.sendImg(s_vtx_faces, s_vf_img);
+    ad.sendImg(s_vtx_nbrs, s_vn_img);
+    ad.sendImg(s_face_adj, s_fa_img);
     for (auto& view : views) {
         ad.sendImg(view.tgt_clip, TransformToClip(bunny.pos, view.mvp));
     }
     if (hardsoft) {
-        // face_id / sequential soft faces are constant; soft clip changes
-        const SoftGeometry sg0 = BuildSoftGeometry(
-                TransformToClip(sphere.pos, views[0].mvp), sphere.faces,
-                screen, opt.radius_px);
-        ad.sendImg(s_face_id, sg0.face_id);
-        ad.sendImg(s_faces_soft, sg0.faces);
-    }
-
-    // Per-iteration sphere leaf upload from the current 3D positions
-    const auto send_sphere = [&]() {
-        for (auto& view : views) {
-            view.clip_img = TransformToClip(sphere.pos, view.mvp);
-            ad.sendImg(view.clip, view.clip_img);
-            if (hardsoft) {
-                const SoftGeometry sg = BuildSoftGeometry(
-                        view.clip_img, sphere.faces, screen, opt.radius_px);
-                ad.sendImg(view.soft_clip, sg.clip);
+        // Constant per-face vertex attribute / sequential soft faces
+        CpuImage face_id_img(n_faces * 3, 1, 1);
+        CpuImage faces_soft_img(n_faces, 1, 3);
+        for (uint32_t f = 0; f < n_faces; f++) {
+            for (uint32_t k = 0; k < 3; k++) {
+                face_id_img.at(f * 3 + k, 0, 0) = float(f);
+                faces_soft_img.at(f, 0, k) = float(f * 3 + k);
             }
         }
-    };
-    send_sphere();
+        ad.sendImg(s_face_id, face_id_img);
+        ad.sendImg(s_faces_soft, faces_soft_img);
+    }
+    ad.sendImg(pos, sphere.pos);
+    ad.sendImg(adam_m, CpuImage(n_verts, 1, 3, 0.f));
+    ad.sendImg(adam_v, CpuImage(n_verts, 1, 3, 0.f));
+    ad.sendImg(adam_t, CpuImage(1, 1, 1, 0.f));
 
     // ------------------------------ Viewer --------------------------------
     const uint32_t tile_cols = 4;
@@ -324,14 +332,8 @@ int main(int argc, char* argv[]) try {
     CpuImage target_tile;
 
     // ---------------------------- Optimization ----------------------------
-    const auto adj = BuildVertexAdjacency(sphere.faces, n_verts);
-    const auto face_adj = BuildFaceAdjacency(sphere.faces);
-    AdamState adam;
-    std::vector<float> grad_acc(size_t(n_verts) * 3, 0.f);
-
-    // Scalar loss value for logging only: the loss stays an image on the
-    // GPU; sum it on the CPU at reporting points (equals the former
-    // sum-of-per-view-means by construction)
+    // The loop body is execStep() alone; loss logging and the viewers are
+    // small debug readbacks at intervals
     const auto loss_value = [&]() {
         const CpuImage li = ad.recvImg(loss);
         double s = 0.0;
@@ -349,52 +351,19 @@ int main(int argc, char* argv[]) try {
     for (int iter = 0; iter < opt.n_iters; iter++) {
         const auto t0 = Clock::now();
         ad.execStep();
-
-        // d loss / d 3D position, summed over views
-        std::fill(grad_acc.begin(), grad_acc.end(), 0.f);
-        for (auto& view : views) {
-            const CpuImage g_clip = ad.recvImg(view.grad);
-            const CpuImage g_pos = ChainRuleClipToPos(g_clip, view.mvp);
-            for (size_t i = 0; i < grad_acc.size(); i++) {
-                grad_acc[i] += g_pos.data[i];
-            }
-        }
-        // Regularizers (uniform Laplacian + normal consistency), weighted
-        // relative to the data gradient so smoothing fades as the fit
-        // converges. The Laplacian evens vertex spacing; normal consistency
-        // penalizes creases and flipped faces the Laplacian cannot see.
-        CpuImage g_data(n_verts, 1, 3);
-        g_data.data = grad_acc;
-        const float data_rms = Rms(g_data);
-        const CpuImage g_lap = UniformLaplacianGrad(sphere.pos, adj, 1.f);
-        const float lap_scale =
-                opt.laplacian * data_rms / std::max(Rms(g_lap), 1e-12f);
-        const CpuImage g_nrm =
-                NormalConsistencyGrad(sphere.pos, sphere.faces, face_adj,
-                                      1.f);
-        const float nrm_scale =
-                opt.normal * data_rms / std::max(Rms(g_nrm), 1e-12f);
-        for (size_t i = 0; i < grad_acc.size(); i++) {
-            grad_acc[i] += lap_scale * g_lap.data[i] +
-                           nrm_scale * g_nrm.data[i];
-        }
-        AdamStep(adam, sphere.pos.data, grad_acc, opt.lr);
-        send_sphere();
-        const auto t1 = Clock::now();
-        opt_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
+        opt_ms += std::chrono::duration<double, std::milli>(Clock::now() -
+                                                            t0)
+                          .count();
 
         if (iter == 0) {
             first_loss = loss_value();
-            std::vector<CpuImage> targets;
+            std::vector<CpuImage> targets, preds;
             for (auto& view : views) {
                 targets.push_back(ad.recvImg(view.target));
+                preds.push_back(ad.recvImg(view.pred));
             }
             target_tile = TileImages(targets, tile_cols);
             SaveImagePng(out_dir + "/targets.png", target_tile);
-            std::vector<CpuImage> preds;
-            for (auto& view : views) {
-                preds.push_back(ad.recvImg(view.pred));
-            }
             SaveImagePng(out_dir + "/pred_first.png",
                          TileImages(preds, tile_cols));
         }
@@ -420,9 +389,12 @@ int main(int argc, char* argv[]) try {
         }
     }
 
-    // ------------------------------ Outputs -------------------------------
+    // --------------------- Final download / outputs ----------------------
     ad.execStep();
     last_loss = loss_value();
+    const CpuImage final_pos = ad.recvImg(pos);
+    sphere.pos.data = final_pos.data;
+
     std::vector<CpuImage> preds;
     float mean_iou = 0.f;
     for (auto& view : views) {
@@ -433,6 +405,7 @@ int main(int argc, char* argv[]) try {
     SaveImagePng(out_dir + "/pred_last.png", TileImages(preds, tile_cols));
     SaveObjMesh(out_dir + "/optimized.obj", sphere);
 
+    const auto face_adj = BuildFaceAdjacency(sphere.faces);
     const uint32_t flipped =
             CountFlippedFacePairs(sphere.pos, sphere.faces, face_adj);
     spdlog::info("loss {:.8f} -> {:.8f} ({:.1f}x), mean silhouette IoU"
@@ -442,8 +415,7 @@ int main(int argc, char* argv[]) try {
                  flipped, face_adj.size());
     spdlog::info("outputs in {}/", out_dir);
     // Note: the hardsoftras loss has an inherent floor (the sigmoid ramp of
-    // pred vs the hard 0/1 target along the silhouette band), so judge by
-    // the reduction factor plus the achieved mask IoU
+    // pred vs the hard 0/1 target along the silhouette band)
     return (last_loss < first_loss / 5.f && mean_iou > 0.85f) ? 0 : 1;
 } catch (const std::exception& e) {
     std::printf("error: %s\n", e.what());
