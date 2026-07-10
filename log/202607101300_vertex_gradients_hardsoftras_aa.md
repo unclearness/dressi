@@ -387,3 +387,30 @@ Note our iteration additionally runs the Laplacian/normal-consistency
 regularizers and in-graph Adam state, which the nvdiffrast script does
 not. Matches the paper's Table 4 relationship (Dressi ahead of
 nvdiffrast) at the primary resolutions.
+
+## Follow-up: nvdiffrast OpenGL vs CUDA backends (this commit)
+
+The current nvdiffrast (0.4.0) has REMOVED the OpenGL rasterizer --
+RasterizeGLContext is deprecated and silently delegates to
+RasterizeCudaContext. To measure the paper-era GL backend the benchmark
+pins nvdiffrast v0.3.3 (JIT-built; needed three Windows workarounds now
+baked into scripts/nvdiffrast_bench.py: lenient MSVC-banner decoding for
+the broken 'oem' codec on this Japanese locale, VSLANG=1033, and manually
+adding the torch_extensions build dirs to sys.path since torch 2.13's
+load() no longer does).
+
+Avocado 406v/682f, same RTX PRO 6000, silhouette self-reconstruction
+(rasterize + antialias + MSE + backward + Adam), ms/iter:
+
+| resolution | nvdr GL 0.3.3 | nvdr CUDA 0.3.3 | nvdr CUDA 0.4.0 | ours K=1 | ours K=3 |
+|---|---|---|---|---|---|
+| 256^2  | 1.58 | 1.35 | 1.29 | 0.20 | 0.39 |
+| 512^2  | 1.54 | 1.32 | 1.44 | 0.28 | 0.65 |
+| 1024^2 | 1.53 | 1.37 | 1.27 | 0.58 | 1.38 |
+| 2048^2 | 1.62 | 1.48 | 1.30 | 1.54 | 4.49 |
+
+Against the GL backend (the paper's comparison target) ours at K=1 wins
+at EVERY resolution, 2048^2 included (1.54 vs 1.62); against the modern
+CUDA backend it wins up to 1024^2 and ties-to-loses at 2048^2. All
+nvdiffrast profiles are flat (host-launch-bound at this mesh size);
+GL carries an extra ~0.2 ms of CUDA-GL interop per iteration.

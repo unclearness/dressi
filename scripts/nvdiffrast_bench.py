@@ -9,7 +9,24 @@ import time
 
 import numpy as np
 import torch
-import nvdiffrast.torch as dr
+import torch.utils.cpp_extension as _ce
+
+# The 'oem' codec is broken on this Japanese-locale Windows; decode MSVC
+# banners leniently so the JIT plugin build can proceed
+_ce.SUBPROCESS_DECODE_ARGS = ("utf-8", "replace")
+
+# torch 2.13's load() no longer puts the JIT build dir on sys.path, which
+# nvdiffrast 0.3.3's importlib.import_module relies on
+import os
+_cache = os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                      "torch_extensions", "torch_extensions", "Cache",
+                      "py312_cu130")
+for _name in ("nvdiffrast_plugin_gl", "nvdiffrast_plugin"):
+    _ext = os.path.join(_cache, _name)
+    if os.path.isdir(_ext):
+        sys.path.insert(0, _ext)
+
+import nvdiffrast.torch as dr  # noqa: E402
 
 GLTF = r"E:\Dev\dressi2\data\glTF-Sample-Models-main\glTF-Sample-Models-main\2.0\Avocado\glTF\Avocado.gltf"
 
@@ -70,16 +87,19 @@ def perspective(fovy, aspect, near, far):
 
 
 def main():
+    backend = sys.argv[1] if len(sys.argv) > 1 else "cuda"
     dev = torch.device("cuda")
     pos_np, tri_np = load_avocado()
-    print(f"avocado: {len(pos_np)} verts, {len(tri_np)} faces")
+    print(f"avocado: {len(pos_np)} verts, {len(tri_np)} faces"
+          f"  backend={backend}")
     mvp = perspective(np.deg2rad(45), 1.0, 0.1, 10.0) @ look_at(
             np.array([0.0, 0.55, 1.6], np.float32),
             np.zeros(3, np.float32), np.array([0.0, 1.0, 0.0], np.float32))
     mvp_t = torch.tensor(mvp, device=dev)
     tri = torch.tensor(tri_np, device=dev)
     pos_ref = torch.tensor(pos_np, device=dev)
-    ctx = dr.RasterizeCudaContext()
+    ctx = (dr.RasterizeGLContext()
+           if backend == "gl" else dr.RasterizeCudaContext())
 
     def render_mask(pos, res):
         posh = torch.cat([pos, torch.ones_like(pos[:, :1])], dim=1)
@@ -111,7 +131,7 @@ def main():
             loss = step()
         torch.cuda.synchronize()
         ms = (time.perf_counter() - t0) / n_meas * 1e3
-        print(f"nvdiffrast {res}x{res}: {ms:.3f} ms/iter"
+        print(f"nvdiffrast[{backend}] {res}x{res}: {ms:.3f} ms/iter"
               f"  (final loss {loss.item():.6f})")
 
 
