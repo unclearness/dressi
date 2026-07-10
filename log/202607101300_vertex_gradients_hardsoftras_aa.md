@@ -288,3 +288,27 @@ as in the paper (their geometry experiments run 2500 iterations). The
 exact-gather ops (`RasterizeSoft` backward, `AntiAliasBwdVtx`) remain
 available for comparison. Open: stage-2 raster-headed fusion, applying
 the FaceFetch pattern to the AA technique, K>1 depth peeling.
+
+## Follow-up: raster-headed fusion, stochastic AA backward, depth peeling
+(`294dbe0`, `510376f`, this commit)
+
+- **Raster-headed fusion** (Appendix A packing rule): a RASTER function
+  may top a FRAG substage; GenerateRasterShaders now delegates to the
+  common FRAG codegen (rasterization markers are in-body special
+  branches), raster render passes support multiple color attachments.
+  Bit-identical results; the win grows with fused shading chains.
+- **AA stochastic backward**: AntiAlias(seed, n_samples) -- n=0 exact
+  bbox scan (kept for FD tests), n>0 jittered edge samples evaluating the
+  same EvalAaPair math. 256^2/1view 8.1 -> 0.53 ms; defaults 42.5 -> ~4 ms
+  (AA forward/image-bwd remain the pixel-parallel cost). IoU 0.964 @2000
+  iters/32 samples vs 0.981 exact; both modes via --samples.
+- **Depth peeling (K > 1)**: RasterizeSoft peeling overload discards
+  fragments at or in front of the previous layer's Eq.3-shifted depth
+  (threshold rebuilt from output channels with elementwise ops); example
+  blends K peels with Eq.6. IoU 0.968/0.975/0.980 at K=1/2/3 (2000 iters,
+  16 samples) -- K=3 matches the exact-backward reference; 0.40 ms
+  (256^2/1view) / 2.25 ms (defaults) per iteration.
+
+Summary vs paper (256^2, 1 view, full iteration): paper RTX 2080
+0.304-0.364 ms; ours RTX PRO 6000 0.22 ms (K=1) / 0.40 ms (K=3).
+Same architecture, same knobs (r, K, iterations, samples).
