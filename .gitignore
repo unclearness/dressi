@@ -27,6 +27,8 @@ __pycache__/
 /recovered_texture.png
 /texopt_out/
 /silopt_out_*/
+/texopt_py_out*/
+/silopt_py_out*/
 
 # Datasets
 /data/

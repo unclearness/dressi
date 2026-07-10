@@ -194,13 +194,32 @@ import it into CUDA as torch tensors (the nvdiffrast-GL pattern; the
 reverse direction is not possible because torch's caching allocator does
 not export its allocations).
 
-Build & test:
+Build & test (dependencies are managed with [uv](https://docs.astral.sh/uv/);
+`uv sync` creates `.venv` with CUDA torch on Windows/Linux, and
+`uv sync --extra nvdiffrast` adds the comparison backend):
 
 ```sh
-cmake --preset msvc -DDRESSI_BUILD_PYTHON=ON -DPython_EXECUTABLE=<venv>/Scripts/python.exe
+uv sync
+cmake --preset msvc -DDRESSI_BUILD_PYTHON=ON -DPython_EXECUTABLE=.venv/Scripts/python.exe
 cmake --build --preset release --target dressi_py
-PYTHONPATH=python python -m pytest tests/python
+uv run pytest tests/python
 ```
+
+Python ports of the C++ examples live in `examples/python/` — everything
+outside the rasterizer API is plain torch (cameras, regularizers, Adam),
+and because the API is nvdiffrast drop-in the same code runs on either
+backend for a direct comparison:
+
+```sh
+uv run python examples/python/silhouette_optimization.py                       # dressi (Vulkan)
+uv run python examples/python/silhouette_optimization.py --backend nvdiffrast  # CUDA
+uv run python examples/python/silhouette_optimization.py --technique hardsoftras
+uv run python examples/python/texture_optimization.py
+```
+
+Silhouette (icosphere → bunny, 128², 8 views, 300 iters): IoU 0.97 (aa) /
+0.96 (hardsoftras), final mesh saved as OBJ. Texture (bunny atlas from
+gray, 256², 6 views, jittered): rendered-view PSNR > 50 dB.
 
 ## Milestone 2: deferred rasterization + texture optimization
 

@@ -1,0 +1,40 @@
+[project]
+name = "opendressi"
+version = "0.1.0"
+description = "Vulkan-backed differentiable rasterization (Dressi, EG 2022) with an nvdiffrast-compatible PyTorch API"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "torch>=2.4,!=2.13.0",
+    "pillow>=10",
+]
+
+[project.optional-dependencies]
+# `uv sync --extra nvdiffrast` for the comparison backend of the Python
+# examples (CUDA-only; JIT-compiles its plugin on first import)
+nvdiffrast = [
+    "nvdiffrast",
+    "ninja",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+# Dependency management only: the `dressi` package's native module is built
+# by CMake (-DDRESSI_BUILD_PYTHON=ON) and imported via PYTHONPATH=python
+package = false
+
+[tool.uv.sources]
+# v0.3.3: the last release that JIT-compiles its plugin at import time;
+# newer versions compile the CUDA extension during pip build, which
+# requires nvcc+MSVC in the isolated build env
+nvdiffrast = { git = "https://github.com/NVlabs/nvdiffrast", rev = "v0.3.3" }
+torch = [
+    { index = "pytorch-cu130", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true

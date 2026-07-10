@@ -171,5 +171,39 @@ Result: 35.7 → **4.0 ms/iter @512²** (9x).
   no grad w.r.t. UV (engine limitation, documented).
 - Packaging (scikit-build-core wheel) not yet added; the tested dev loop
   is `-DDRESSI_BUILD_PYTHON=ON` + `PYTHONPATH=python`.
-- `.venv` (Python 3.13, torch 2.13 CPU) created at the repo root for the
-  binding tests; not committed.
+- `.venv` (Python 3.13) created at the repo root for the binding tests;
+  not committed.
+
+## Addendum: Python examples + uv packaging (same session)
+
+- `pyproject.toml` (uv-managed, `package = false`): CUDA torch from the
+  cu130 index on win32/linux (pinned `!=2.13.0` — that one wheel
+  persistently fails uv's hash check on this network; 2.12.1+cu130
+  installs fine), pillow/numpy, `--extra nvdiffrast` pulls nvdiffrast
+  **v0.3.3 by git tag** (newer versions compile their CUDA extension at
+  pip-build time and fail in uv's isolated build env; 0.3.3 JIT-compiles
+  at import). `.python-version` = 3.13. Run everything via `uv run`
+  (puts `.venv/Scripts` on PATH — torch's JIT needs `ninja` there).
+- nvdiffrast-on-Windows shims live in `examples/python/common.py`
+  `resolve_backend`: lenient MSVC banner decoding (broken 'oem' codec on
+  Japanese Windows) and inserting the torch-extensions build dirs into
+  `sys.path` (recent torch no longer does; nvdiffrast 0.3.3's
+  `importlib.import_module` relies on it). nvdiffrast's `texture` needs a
+  batched `[N,H,W,C]` texture (ours accepts both).
+- `examples/python/{silhouette,texture}_optimization.py` +` common.py`:
+  ports of the C++ examples using ONLY the dr.* API + torch (user
+  directive). Backend switch `--backend dressi|nvdiffrast` runs the same
+  code on both (drop-in compat demo); `--technique hardsoftras` is
+  dressi-only. Device defaults to CUDA when available (dressi v1 then
+  pays CUDA→CPU staging per call).
+- Convergence: C++ regularizer weights do NOT transfer 1:1 (user called
+  it): with C++'s aa 0.5/0.5 the torch port plateaus at IoU 0.93;
+  retuned aa defaults 0.2/0.2 → IoU 0.972 (300 iters), hsr keeps
+  0.15/0.4 → 0.962. Regularization mirrors the C++ scheme (gradient-level
+  composition scaled by data-grad RMS; normal-consistency gradient via
+  `torch.autograd.grad` of the energy). Initial sphere radius 0.55 (C++
+  value), saved images flipped vertically for viewing (row 0 = GL
+  bottom; nvdiffrast-sample convention), final mesh saved as OBJ (user
+  request). Texture example: sub-pixel Halton camera jitter (the C++
+  Sobol countermeasure) rendering the target under the same jitter;
+  PSNR 52 dB @500 iters (dressi), 47 dB @60 iters (nvdiffrast smoke).
