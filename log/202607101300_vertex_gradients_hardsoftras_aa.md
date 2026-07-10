@@ -168,3 +168,26 @@ saved tiles).
   (measure-zero; owner preference used instead).
 - HardSoftRas color/shading path (Eq.5 blending of shaded G-buffers) — only
   the silhouette channel is exercised here.
+
+## Follow-up: image-valued losses (`e2bcfca`)
+
+The M1-era `BuildBackward` required a scalar FLOAT `{1,1}` loss, which is
+NOT the paper's design (author feedback): seeding gradient 1 at every
+pixel differentiates the implicit sum, so the loss can stay an image and
+the log-step reduction chain + its upsample backward never run. Changes:
+loss check relaxed to any float image; `SumToShape` upcasts uniform
+gradients through the new `F::Broadcast` ({1,1} -> image, backward = Sum,
+inline-const seeds become literals); the silhouette example keeps per-view
+`{S,S}` loss images scaled by 1/(W*H) and CPU-sums the recv'd image only
+at logging points. Final loss/IoU reproduce bit-exactly (gradient
+equivalence). Saves ~16 passes per view per iteration (~0.5 ms at 256^2,
+1 view); the per-vertex gradient gather (O(V*W*H), only V fragments of
+parallelism) remains the dominant cost vs the paper's pixel-parallel
+backward -- per-vertex screen-bbox culling is the next lever.
+
+Performance vs the paper (fwd+bwd, 1 view): paper RTX 2080 geometry
+optimization 256^2 = 0.304-0.364 ms (406-25.7k verts, K<=5); ours on an
+RTX PRO 6000 (~10x faster raw) = ~8.4 ms at 256^2 / ~2.5 ms at 128^2
+(HSR, 642 verts, K=1), AA ~97 ms at 256^2. M2 texture optimization
+(~0.5 ms/iter, 256^2 x 6 views) is in the paper's ballpark after GPU
+correction; the gap is specific to the gather backwards.
