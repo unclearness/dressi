@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import statistics
 import time
 
 import torch
@@ -165,8 +166,16 @@ def main():
         save_image(out_dir / "initial.png",
                    tile_images(list(hard_masks(pos, sphere_tri)), 4))
 
-    t0 = time.perf_counter()
+    warmup = min(20, args.iters // 2)
+    timing_block = 10
+    block_ms = []
+    block_start = None
+    block_iters = 0
     for it in range(args.iters):
+        if it == warmup:
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            block_start = time.perf_counter()
         opt.zero_grad(set_to_none=True)
         loss = data_loss()
         loss.backward()
@@ -180,10 +189,28 @@ def main():
             g += g_lap * (d_rms / rms(g_lap) * args.laplacian)
             g += g_nrm * (d_rms / rms(g_nrm) * args.normal)
         opt.step()
-        if it % 50 == 0 or it == args.iters - 1:
+
+        timed = it >= warmup
+        if timed:
+            block_iters += 1
+        print_now = (it == 0 or (it + 1) % 50 == 0
+                     or it == args.iters - 1)
+        block_done = timed and (block_iters == timing_block
+                                or it == args.iters - 1)
+        if block_done:
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            elapsed = time.perf_counter() - block_start
+            block_ms.append(elapsed / block_iters * 1e3)
+            block_start = None
+            block_iters = 0
+        if print_now:
             print(f"iter {it:4d}  loss {loss.item():.6f}")
-    dt = (time.perf_counter() - t0) / args.iters * 1e3
-    print(f"{dt:.2f} ms/iter over {args.iters} iters")
+        if timed and block_start is None and it != args.iters - 1:
+            block_start = time.perf_counter()
+    dt = statistics.median(block_ms)
+    print(f"{dt:.2f} ms/iter median steady-state "
+          f"({warmup} warmup, {timing_block}-iter blocks)")
 
     # Final silhouette IoU against hard target masks (all views)
     with torch.no_grad():

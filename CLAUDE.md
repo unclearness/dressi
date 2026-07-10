@@ -51,6 +51,12 @@ report a raw mean-over-all-iters:
   is pulled up by occasional OS-scheduling outliers. Median is the stable
   metric and is what the tables use. Use `SPDLOG_LEVEL=debug`'s per-stage
   GPU-timestamp total to separate GPU work from host overhead.
+- **Synchronize CUDA throughput in blocks.** An eager CUDA pipeline must
+  synchronize before and after each timed sample or its wall time only
+  measures enqueue latency. Synchronizing every iteration adds a different
+  workload, so the Python optimization examples use 10-iteration blocks
+  after the warmup and report the median block-average time. Progress
+  readbacks and printing stay between timed blocks.
 - **When you improve the Python (`dressi.torch`) speed, ALWAYS also
   re-measure the C++ path** (`silhouette_optimization` /
   `scripts/dressi_native_bench.py`) for the same workload — several

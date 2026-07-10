@@ -196,9 +196,10 @@ per-column sum — instead of one thread per vertex scanning all incident
 faces; measured 2.9 → 0.44 ms (AA) and 14.4 → sub-ms (HardSoftRas) on an
 8-view batch.
 
-Multi-view silhouette example (8 views, 128², 300 iters, CUDA tensors):
-aa 39 → **9.3 ms/iter**, hardsoftras 97 → **21 ms** (nvdiffrast aa on the
-same example code: ~4 ms). Profiling the eager step (`cProfile` +
+Multi-view silhouette example (8 views, 128², 300 iters, CUDA tensors;
+median of synchronized 10-iteration blocks after 20 warmup iterations):
+aa 39 → **8.4 ms/iter**, hardsoftras 97 → **20.7 ms** (nvdiffrast aa on
+the same example code: **3.1 ms**). Profiling the eager step (`cProfile` +
 per-boundary timers) corrected an earlier assumption: the "host glue" is
 **not** dominated by PCIe — the actual CUDA↔CPU copies are only ~0.3 ms.
 The cost is distributed across the eager model's per-op overhead: the
