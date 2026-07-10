@@ -171,6 +171,21 @@ NB_MODULE(_C, m) {
                      nb::gil_scoped_release rel;
                      self.sendImgs(views);
                  })
+            .def("exec_step_with_sends",
+                 [](DressiAD& self,
+                    const std::vector<std::pair<Variable, NdArrayIn>>& items) {
+                     std::vector<std::pair<Variable, CpuImageView>> views;
+                     views.reserve(items.size());
+                     for (const auto& [var, arr] : items) {
+                         views.emplace_back(
+                                 var, CpuImageView(arr.data(),
+                                                   uint32_t(arr.shape(1)),
+                                                   uint32_t(arr.shape(0)),
+                                                   uint32_t(arr.shape(2))));
+                     }
+                     nb::gil_scoped_release rel;
+                     self.execStepWithSends(views);
+                 })
             .def("recv_img", [](DressiAD& self, const Variable& var) {
                 CpuImage img;
                 {

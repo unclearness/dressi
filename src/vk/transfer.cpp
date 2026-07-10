@@ -85,17 +85,12 @@ void SendImageToDevice(const VkContext& ctx, const vkw::ImagePackPtr& img,
     });
 }
 
-void SendImagesToDevice(const VkContext& ctx,
-                        const std::vector<ImageSendItem>& items) {
+void RecordImageUploads(const VkContext& ctx,
+                        const std::vector<ImageSendItem>& items,
+                        const vk::UniqueCommandBuffer& cmd) {
     if (items.empty()) {
         return;
     }
-    if (items.size() == 1) {
-        SendImageToDevice(ctx, items[0].img, items[0].cpu, items[0].vtype,
-                          items[0].initialized);
-        return;
-    }
-
     // Layout: each image's physical pixels at a 16-byte-aligned offset
     std::vector<size_t> offsets(items.size());
     size_t total = 0;
@@ -141,27 +136,38 @@ void SendImagesToDevice(const VkContext& ctx,
     }
     ctx.device->unmapMemory(staging->dev_mem_pack->dev_mem.get());
 
-    // One submit: transition, copy at offset, transition back -- per image
+    // Record: transition, copy at offset, transition back -- per image
+    constexpr auto kDst = vk::ImageLayout::eTransferDstOptimal;
+    constexpr auto kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
+    for (size_t i = 0; i < items.size(); i++) {
+        const auto& it = items[i];
+        const auto init_layout =
+                it.initialized ? kRead : vk::ImageLayout::eUndefined;
+        vkw::SetImageLayout(cmd, it.img, init_layout, kDst);
+        const vk::BufferImageCopy region(
+                offsets[i], it.cpu.width, it.cpu.height,
+                vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0,
+                                           0, 1),
+                vk::Offset3D(0, 0, 0),
+                vk::Extent3D(it.cpu.width, it.cpu.height, 1));
+        cmd->copyBufferToImage(staging->buf.get(),
+                               it.img->img_res_pack->img.get(), kDst, region);
+        vkw::SetImageLayout(cmd, it.img, kDst, kRead);
+    }
+}
+
+void SendImagesToDevice(const VkContext& ctx,
+                        const std::vector<ImageSendItem>& items) {
+    if (items.empty()) {
+        return;
+    }
+    if (items.size() == 1) {
+        SendImageToDevice(ctx, items[0].img, items[0].cpu, items[0].vtype,
+                          items[0].initialized);
+        return;
+    }
     RunOneShot(ctx, [&](const vk::UniqueCommandBuffer& cmd) {
-        constexpr auto kDst = vk::ImageLayout::eTransferDstOptimal;
-        constexpr auto kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
-        for (size_t i = 0; i < items.size(); i++) {
-            const auto& it = items[i];
-            const auto init_layout = it.initialized
-                                             ? kRead
-                                             : vk::ImageLayout::eUndefined;
-            vkw::SetImageLayout(cmd, it.img, init_layout, kDst);
-            const vk::BufferImageCopy region(
-                    offsets[i], it.cpu.width, it.cpu.height,
-                    vk::ImageSubresourceLayers(
-                            vk::ImageAspectFlagBits::eColor, 0, 0, 1),
-                    vk::Offset3D(0, 0, 0),
-                    vk::Extent3D(it.cpu.width, it.cpu.height, 1));
-            cmd->copyBufferToImage(staging->buf.get(),
-                                   it.img->img_res_pack->img.get(), kDst,
-                                   region);
-            vkw::SetImageLayout(cmd, it.img, kDst, kRead);
-        }
+        RecordImageUploads(ctx, items, cmd);
     });
 }
 

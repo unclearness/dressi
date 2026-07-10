@@ -35,6 +35,14 @@ struct ImageSendItem {
 void SendImagesToDevice(const VkContext& ctx,
                         const std::vector<ImageSendItem>& items);
 
+// Records the staging fill + image copies into `cmd` WITHOUT submitting, so
+// the uploads can share one vkQueueSubmit with the render plan (each image
+// ends in ShaderReadOnlyOptimal). The staging fill (host memcpy) happens
+// during recording; do not overwrite it before the submit completes.
+void RecordImageUploads(const VkContext& ctx,
+                        const std::vector<ImageSendItem>& items,
+                        const vk::UniqueCommandBuffer& cmd);
+
 // GPU -> CPU counterpart (expects ShaderReadOnlyOptimal layout)
 CpuImage ReceiveImageFromDevice(const VkContext& ctx,
                                 const vkw::ImagePackPtr& img, VType vtype);

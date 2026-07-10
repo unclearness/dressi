@@ -91,6 +91,13 @@ public:
 
     // Execute one step of rendering and optimization
     void execStep();
+    // Upload the given image leaves and execute in ONE submit: on the
+    // steady-state fast path the uploads are recorded into the same
+    // command-buffer batch as the render plan, removing the separate
+    // upload fence wait (the eager binding hot path). Views are borrowed
+    // for the duration of the call.
+    void execStepWithSends(
+            const std::vector<std::pair<Variable, CpuImageView>>& items);
 
     // Transfer image data between CPU and GPU. Sends before the first
     // execStep() are kept pending and flushed once images exist.

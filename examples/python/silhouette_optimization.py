@@ -37,7 +37,7 @@ from common import (
     save_image,
     save_obj,
     tile_images,
-    transform_clip,
+    transform_clip_batched,
 )
 
 
@@ -92,14 +92,15 @@ def main():
           f"backend={args.backend} technique={args.technique} "
           f"device={device.type} {res}x{res} x{args.views} views")
 
-    mvps = circle_mvps(args.views, device=device)
+    mvps = torch.stack(circle_mvps(args.views, device=device))  # [N,4,4]
     edges = build_edges(sphere_tri).to(device)
     pairs = build_face_pairs(sphere_tri).to(device)
 
-    # All views ride ONE batched call ([N,V,4] clip positions): both
-    # backends process the minibatch in a single launch/execStep
+    # All views ride ONE batched call ([N,V,4] clip positions): both the
+    # projection (one batched matmul) and the rasterizer (one execStep)
+    # process the whole minibatch at once
     def clips_of(pos3):
-        return torch.stack([transform_clip(pos3, m) for m in mvps])
+        return transform_clip_batched(pos3, mvps)
 
     def hard_masks(pos3, tri):
         rast, _ = dr.rasterize(ctx, clips_of(pos3), tri,

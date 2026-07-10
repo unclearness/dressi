@@ -197,12 +197,23 @@ faces; measured 2.9 → 0.44 ms (AA) and 14.4 → sub-ms (HardSoftRas) on an
 8-view batch.
 
 Multi-view silhouette example (8 views, 128², 300 iters, CUDA tensors):
-aa 39 → **10.7 ms/iter**, hardsoftras 97 → **23.8** (nvdiffrast aa: 6.2).
-The remaining eager gap is ~6 ms of host glue (CUDA↔CPU staging copies +
-submit fences) that only GPU interop can remove.
+aa 39 → **9.3 ms/iter**, hardsoftras 97 → **21 ms** (nvdiffrast aa on the
+same example code: ~4 ms). Profiling the eager step (`cProfile` +
+per-boundary timers) corrected an earlier assumption: the "host glue" is
+**not** dominated by PCIe — the actual CUDA↔CPU copies are only ~0.3 ms.
+The cost is distributed across the eager model's per-op overhead: the
+per-op `sendImgs`+`execStep` submit/fences (~2 ms, now one fused submit
+per op — see `execStepWithSends`), staging memcpy, and the torch-side
+autograd + tensor plumbing (`torch.cat`, `.to`, `.contiguous`, numpy
+conversions). So GPU interop would save little here; the eager path is
+bound by per-op Python/submit overhead, which the native-fused path
+(one graph, one submit) avoids entirely.
 
 - The eager drop-in path pays per-op CPU round trips (v1 transfers via CPU
   tensors); it beats DRTK everywhere.
+- `execStepWithSends` fuses each op's upload into the render submit (one
+  vkQueueSubmit + one fence instead of two), and the examples project all
+  N views in one batched matmul rather than a Python per-view loop.
 - The **native fused path** (`dressi._C`, see
   `scripts/dressi_native_bench.py`) builds the whole training step —
   transform, raster, AA, MSE, in-graph Adam — as one Dressi graph and

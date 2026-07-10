@@ -895,45 +895,87 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
     return plan;
 }
 
+namespace {
+
+// Reads back and reports the per-stage GPU timestamps (debug logging only)
+void CollectTimestamps(const VkContext& ctx, GpuPlan& plan) {
+    if (!plan.ts_pool || plan.ts_labels.empty()) {
+        return;
+    }
+    const uint32_t n = uint32_t(plan.ts_labels.size()) + 1;
+    std::vector<uint64_t> ticks(n);
+    const auto qres = ctx.device->getQueryPoolResults(
+            *plan.ts_pool, 0, n, n * sizeof(uint64_t), ticks.data(),
+            sizeof(uint64_t),
+            vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
+    if (qres != vk::Result::eSuccess) {
+        return;
+    }
+    for (size_t i = 0; i + 1 < ticks.size(); i++) {
+        plan.ts_accum_us[i] +=
+                double(ticks[i + 1] - ticks[i]) * plan.ts_period_ns * 1e-3;
+    }
+    plan.ts_frames++;
+    constexpr uint32_t kReportEvery = 100;
+    if (plan.ts_frames == kReportEvery) {
+        double total = 0.0;
+        for (const double us : plan.ts_accum_us) {
+            total += us;
+        }
+        spdlog::debug("[dressi] GPU stage timing avg over {} frames "
+                      "(total {:.1f} us):",
+                      plan.ts_frames, total / plan.ts_frames);
+        for (size_t i = 0; i < plan.ts_labels.size(); i++) {
+            spdlog::debug("[dressi]   {:7.1f} us  {}",
+                          plan.ts_accum_us[i] / plan.ts_frames,
+                          plan.ts_labels[i]);
+        }
+        plan.ts_accum_us.assign(plan.ts_labels.size(), 0.0);
+        plan.ts_frames = 0;
+    }
+}
+
+}  // namespace
+
+void ExecuteGpuPlanWithUploads(const VkContext& ctx, GpuPlan& plan,
+                               const std::vector<ImageSendItem>& uploads) {
+    DRESSI_CHECK(plan.cmd_pack, "GPU plan has no recorded commands");
+    if (uploads.empty()) {
+        ExecuteGpuPlan(ctx, plan);
+        return;
+    }
+    if (!ctx.exec_upload_cmds) {
+        ctx.exec_upload_cmds =
+                vkw::CreateCommandBuffersPack(ctx.device,
+                                              ctx.queue_family_idx, 1);
+    }
+    const auto& up_cmd = ctx.exec_upload_cmds->cmd_bufs[0];
+    vkw::ResetCommand(up_cmd);
+    vkw::BeginCommand(up_cmd, /*one_time_submit=*/true);
+    RecordImageUploads(ctx, uploads, up_cmd);
+    vkw::EndCommand(up_cmd);
+
+    // One submit, one fence: the upload copies (ending in
+    // ShaderReadOnlyOptimal) and the render plan run back-to-back on the
+    // queue; the layout-transition barrier orders the reads after the
+    // copies without a second fence wait.
+    const std::array<vk::CommandBuffer, 2> cmds = {
+            up_cmd.get(), plan.cmd_pack->cmd_bufs[0].get()};
+    const vk::SubmitInfo submit({}, {}, cmds, {});
+    vkw::ResetFence(ctx.device, plan.fence);
+    ctx.queue.submit(submit, plan.fence->get());
+    const auto res = vkw::WaitForFence(ctx.device, plan.fence);
+    DRESSI_CHECK(res == vk::Result::eSuccess, "GPU execution failed");
+    CollectTimestamps(ctx, plan);
+}
+
 void ExecuteGpuPlan(const VkContext& ctx, GpuPlan& plan) {
     DRESSI_CHECK(plan.cmd_pack, "GPU plan has no recorded commands");
     vkw::ResetFence(ctx.device, plan.fence);
     vkw::QueueSubmit(ctx.queue, plan.cmd_pack->cmd_bufs[0], plan.fence);
     const auto res = vkw::WaitForFence(ctx.device, plan.fence);
     DRESSI_CHECK(res == vk::Result::eSuccess, "GPU execution failed");
-
-    if (plan.ts_pool && !plan.ts_labels.empty()) {
-        const uint32_t n = uint32_t(plan.ts_labels.size()) + 1;
-        std::vector<uint64_t> ticks(n);
-        const auto qres = ctx.device->getQueryPoolResults(
-                *plan.ts_pool, 0, n, n * sizeof(uint64_t), ticks.data(),
-                sizeof(uint64_t),
-                vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
-        if (qres == vk::Result::eSuccess) {
-            for (size_t i = 0; i + 1 < ticks.size(); i++) {
-                plan.ts_accum_us[i] += double(ticks[i + 1] - ticks[i]) *
-                                       plan.ts_period_ns * 1e-3;
-            }
-            plan.ts_frames++;
-            constexpr uint32_t kReportEvery = 100;
-            if (plan.ts_frames == kReportEvery) {
-                double total = 0.0;
-                for (const double us : plan.ts_accum_us) {
-                    total += us;
-                }
-                spdlog::debug("[dressi] GPU stage timing avg over {} frames "
-                              "(total {:.1f} us):",
-                              plan.ts_frames, total / plan.ts_frames);
-                for (size_t i = 0; i < plan.ts_labels.size(); i++) {
-                    spdlog::debug("[dressi]   {:7.1f} us  {}",
-                                  plan.ts_accum_us[i] / plan.ts_frames,
-                                  plan.ts_labels[i]);
-                }
-                plan.ts_accum_us.assign(plan.ts_labels.size(), 0.0);
-                plan.ts_frames = 0;
-            }
-        }
-    }
+    CollectTimestamps(ctx, plan);
 }
 
 }  // namespace dressi

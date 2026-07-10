@@ -47,6 +47,16 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
 // Submits the recorded command buffer and waits for completion.
 void ExecuteGpuPlan(const VkContext& ctx, GpuPlan& plan);
 
+// Records `uploads` into a scratch command buffer and submits it together
+// with the plan's command buffer in ONE vkQueueSubmit + one fence wait --
+// the eager binding path uploads changed leaves and executes every
+// iteration, and a combined submit removes the separate upload fence
+// wait. The uploads leave images in ShaderReadOnlyOptimal, which the plan
+// reads (the layout-transition barrier orders them within the batch).
+struct ImageSendItem;  // vk/transfer.h
+void ExecuteGpuPlanWithUploads(const VkContext& ctx, GpuPlan& plan,
+                               const std::vector<ImageSendItem>& uploads);
+
 }  // namespace dressi
 
 #endif  // DRESSI_VK_EXECUTOR_H

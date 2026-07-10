@@ -28,6 +28,8 @@ struct VkContext {
     // command pool per transfer)
     mutable vkw::CommandBuffersPackPtr oneshot_cmds;
     mutable vkw::FencePtr oneshot_fence;
+    // Scratch command buffer for the combined upload+exec submit
+    mutable vkw::CommandBuffersPackPtr exec_upload_cmds;
 };
 using VkContextPtr = std::shared_ptr<VkContext>;
 

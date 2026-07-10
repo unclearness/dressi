@@ -176,6 +176,19 @@ def transform_clip(pos: torch.Tensor, mvp: torch.Tensor) -> torch.Tensor:
     return (mvp.to(pos) @ posh.t()).t().contiguous()
 
 
+def transform_clip_batched(pos: torch.Tensor,
+                           mvps: torch.Tensor) -> torch.Tensor:
+    """Project [V,3] positions through N cameras at once -> [N,V,4].
+
+    One batched matmul instead of a Python per-view loop (the loop's
+    torch.cat / ones_like / stack dominate the host time in a small-mesh
+    silhouette step); pass a stacked [N,4,4] mvp tensor.
+    """
+    posh = torch.cat([pos, torch.ones_like(pos[:, :1])], dim=1)  # [V,4]
+    # [N,4,4] @ [4,V] -> [N,4,V] -> [N,V,4]
+    return (mvps.to(pos) @ posh.t()).transpose(1, 2).contiguous()
+
+
 # ----------------------------- regularizers --------------------------------
 
 

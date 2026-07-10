@@ -47,6 +47,9 @@ struct DressiAD::Impl {
     GpuPlan plan;
     bool plan_valid = false;
     std::map<Variable, CpuImage> pending_sends;
+    // Image uploads to fuse into the next execute's single submit (the
+    // eager binding path; borrowed views valid for the execStep call)
+    std::vector<std::pair<Variable, CpuImageView>> batch_uploads;
 
     void ensureCtx() {
         if (!ctx) {
@@ -412,10 +415,35 @@ void DressiAD::execStep() {
         }
     }
     im.pending_sends.clear();
+
+    // Fuse the batched image uploads into the execute submit -- but only on
+    // the pure fast path (no rebuild this iteration), where every target
+    // image already exists in ShaderReadOnlyOptimal. On a rebuild, images
+    // may be freshly created (Undefined layout), so upload them normally.
+    std::vector<ImageSendItem> fused;
+    if (entry_status == FINISHED) {
+        for (const auto& [var, view] : im.batch_uploads) {
+            if (auto it = im.plan.imgs.find(var); it != im.plan.imgs.end()) {
+                fused.push_back({it->second, view, var.getVType(),
+                                 /*initialized=*/true});
+            }
+        }
+    } else {
+        for (const auto& [var, view] : im.batch_uploads) {
+            if (auto it = im.plan.imgs.find(var); it != im.plan.imgs.end()) {
+                SendImageToDevice(*im.ctx, it->second, view, var.getVType(),
+                                  /*image_initialized=*/false);
+            }
+        }
+    }
     timer.mark("upload");
 
-    // 7) Execute the command buffer
-    ExecuteGpuPlan(*im.ctx, im.plan);
+    // 7) Execute the command buffer (fusing uploads when on the fast path)
+    if (!fused.empty()) {
+        ExecuteGpuPlanWithUploads(*im.ctx, im.plan, fused);
+    } else {
+        ExecuteGpuPlan(*im.ctx, im.plan);
+    }
     timer.mark("gpu-execute");
 
     if (entry_status < FINISHED) {
@@ -500,6 +528,39 @@ void DressiAD::sendImg(const Variable& var, const CpuImageView& cpu_img) {
 
 void DressiAD::sendImg(const Variable& var, const CpuImage& cpu_img) {
     sendImg(var, CpuImageView(cpu_img));
+}
+
+void DressiAD::execStepWithSends(
+        const std::vector<std::pair<Variable, CpuImageView>>& items) {
+    Impl& im = *m_impl;
+    im.batch_uploads.clear();
+    for (const auto& [var, view] : items) {
+        DRESSI_CHECK(var, "execStepWithSends: null Variable");
+        Variable v = var;
+        v.setDirty(true);
+        const bool is_geom =
+                im.plan_valid && im.plan.vtx_bufs.count(var) != 0;
+        const bool is_img = im.plan_valid && im.plan.imgs.count(var) != 0;
+        if (is_geom) {
+            im.ensureCtx();
+            SendGeometryToBuffer(*im.ctx, im.plan.vtx_bufs.at(var), view,
+                                 var.getVType());
+        }
+        if (is_img) {
+            // Deferred: fused into the execute submit (or uploaded normally
+            // if a rebuild lands this iteration). The borrowed view stays
+            // valid for the duration of this call.
+            im.batch_uploads.emplace_back(var, view);
+        }
+        if (!is_geom && !is_img) {
+            CpuImage owned(view.width, view.height, view.channels);
+            std::copy(view.data, view.data + view.numElems(),
+                      owned.data.begin());
+            im.pending_sends[var] = std::move(owned);
+        }
+    }
+    execStep();
+    im.batch_uploads.clear();
 }
 
 void DressiAD::sendImgs(

@@ -106,9 +106,12 @@ class Engine:
                         f"'{names.get(var.id, '?')}': array (h,w)="
                         f"{arr.shape[:2]} vs leaf (h,w)="
                         f"({var.height},{var.width})")
-            self.ad.send_imgs(self._queued)
+            # Fuse upload + execute into one submit (fast path): saves the
+            # separate upload fence wait each iteration
+            self.ad.exec_step_with_sends(self._queued)
             self._queued.clear()
-        self.ad.exec_step()
+        else:
+            self.ad.exec_step()
         self._executed = True
 
     def read_output(self, i: int = 0) -> np.ndarray:
