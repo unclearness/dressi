@@ -1,4 +1,4 @@
-# dressi2
+# opendressi
 
 A C++/Vulkan re-implementation of the **Dressi-AD** layer from the paper
 *"Dressi: A Hardware-Agnostic Differentiable Renderer with Reactive Shader
