@@ -95,6 +95,7 @@ struct FixedBufferAa {
     Variable clip;
     Variable faces_f;
     Variable vtx_faces{nullptr};
+    Variable seed{FLOAT, {1, 1}};
     CpuTensor t_img, t_tri, t_clip, t_faces_f, t_vtx_faces;
 
     FixedBufferAa(const std::vector<std::array<float, 4>>& verts,
@@ -133,7 +134,8 @@ struct FixedBufferAa {
     }
 
     Variable antialiased() const {
-        return F::AntiAlias(img, tri, clip, faces_f, vtx_faces);
+        // n_samples = 0: exact vertex backward (finite-difference checks)
+        return F::AntiAlias(img, tri, clip, faces_f, vtx_faces, seed, 0);
     }
 
     std::vector<Binding> bindings() const {
@@ -141,7 +143,8 @@ struct FixedBufferAa {
                 {tri, t_tri},
                 {clip, t_clip},
                 {faces_f, t_faces_f},
-                {vtx_faces, t_vtx_faces}};
+                {vtx_faces, t_vtx_faces},
+                {seed, aa_test::MakeTensor(FLOAT, {1, 1}, {0.f})}};
     }
 };
 

@@ -161,13 +161,14 @@ std::string GenerateFragShader(const SubStage& ss) {
     for (const auto& f : ss.funcs) {
         const std::string& c = NodeAccess::Node(f)->fwd_code;
         if (c == "__antialias__" || c == "__antialias_bwd_img__" ||
-            c == "__antialias_bwd_vtx__") {
+            c.rfind("__antialias_bwd_vtx__", 0) == 0) {
             needs_aa_helper = true;
         }
         if (c == "__nc_face_term__") {
             needs_face_cross = true;
         }
-        if (c.rfind("__face_fetch_bwd__", 0) == 0) {
+        if (c.rfind("__face_fetch_bwd__", 0) == 0 ||
+            c.rfind("__antialias_bwd_vtx__", 0) == 0) {
             needs_hash = true;
         }
     }
@@ -259,7 +260,7 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
                code.rfind("__gather_dist_grad__", 0) == 0 ||
                code == "__antialias__" ||
                code == "__antialias_bwd_img__" ||
-               code == "__antialias_bwd_vtx__" ||
+               code.rfind("__antialias_bwd_vtx__", 0) == 0 ||
                code.rfind("__soft_clip__", 0) == 0 ||
                code == "__vertex_neighbor_mean__" ||
                code == "__nc_face_term__" ||
@@ -850,10 +851,15 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
             body << "    }\n";
             continue;
         }
-        if (node->fwd_code == "__antialias_bwd_vtx__") {
-            // xs = {gy, img, tri_id, vtx_clip, faces}; output texel =
-            // vertex. Accumulates (1/9) dot(gy, cs - cn) * d r / d clip
-            // over every active boundary pair whose edge touches vid.
+        if (node->fwd_code.rfind("__antialias_bwd_vtx__", 0) == 0) {
+            // xs = {gy, img, tri_id, vtx_clip, faces, vtx_faces, seed};
+            // output texel = vertex. Accumulates
+            // (1/9) dot(gy, cs - cn) * d r / d clip over active boundary
+            // pairs whose edge touches vid -- exactly (n=0: incident-face
+            // bbox scan) or stochastically (n>0: jittered edge samples,
+            // the paper's inverse-table philosophy).
+            const int aa_samples = std::stoi(node->fwd_code.substr(
+                    node->fwd_code.find("n=") + 2));
             const size_t gy_b = slt_binding.at(xs[0]);
             const size_t img_b = slt_binding.at(xs[1]);
             const size_t tri_b = slt_binding.at(xs[2]);
@@ -875,41 +881,90 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
             body << "        int vid = dressi_coord.x;\n";
             body << "        vec4 vc = texelFetch(u_slt" << cl_b
                  << ", ivec2(vid, 0), 0);\n";
-            // Per-vertex scan bbox: hard bboxes of incident faces (from the
-            // precomputed adjacency texture) padded by the 8-neighborhood
-            // reach (an active pair's edge belongs to a face whose ID
-            // covers one of the two pixels)
-            body << "        vec2 bbmin = vec2(1e30);"
-                    " vec2 bbmax = vec2(-1e30);\n";
-            body << "        for (int d = 0; d < " << max_deg
-                 << "; d++) {\n";
-            body << "            float fv = texelFetch(u_slt" << vf_b
-                 << ", ivec2(vid, d), 0).x;\n";
-            body << "            if (fv < -0.5) continue;\n";
-            body << "            ivec3 bvi = ivec3(texelFetch(u_slt" << fc_b
-                 << ", ivec2(int(fv + 0.5), 0), 0).xyz + 0.5);\n";
-            body << "            for (int k = 0; k < 3; k++) {\n";
-            body << "                vec4 c = texelFetch(u_slt" << cl_b
-                 << ", ivec2(bvi[k], 0), 0);\n";
-            body << "                if (abs(c.w) < 1e-6) continue;\n";
-            body << "                vec2 sv = (c.xy / c.w * 0.5 + 0.5) * "
-                 << wh << ";\n";
-            body << "                bbmin = min(bbmin, sv);"
-                    " bbmax = max(bbmax, sv);\n";
-            body << "            }\n";
-            body << "        }\n";
-            body << "        int px0 = clamp(int(floor(bbmin.x - 3.0)), 0, "
-                 << (scr.w - 1) << ");\n";
-            body << "        int py0 = clamp(int(floor(bbmin.y - 3.0)), 0, "
-                 << (scr.h - 1) << ");\n";
-            body << "        int px1 = clamp(int(ceil(bbmax.x + 2.0)), 0, "
-                 << (scr.w - 1) << ");\n";
-            body << "        int py1 = clamp(int(ceil(bbmax.y + 2.0)), 0, "
-                 << (scr.h - 1) << ");\n";
-            body << "        if (bbmin.x > bbmax.x) px1 = -1;\n";
-            body << "        for (int py = py0; py <= py1; py++)\n";
-            body << "        for (int px = px0; px <= px1; px++) {\n";
-            body << "            ivec2 sc = ivec2(px, py);\n";
+            if (aa_samples == 0) {
+                // Exact: scan the incident faces' hard bboxes padded by
+                // the 8-neighborhood reach
+                body << "        vec2 bbmin = vec2(1e30);"
+                        " vec2 bbmax = vec2(-1e30);\n";
+                body << "        for (int d = 0; d < " << max_deg
+                     << "; d++) {\n";
+                body << "            float fv = texelFetch(u_slt" << vf_b
+                     << ", ivec2(vid, d), 0).x;\n";
+                body << "            if (fv < -0.5) continue;\n";
+                body << "            ivec3 bvi = ivec3(texelFetch(u_slt"
+                     << fc_b << ", ivec2(int(fv + 0.5), 0), 0).xyz"
+                        " + 0.5);\n";
+                body << "            for (int k = 0; k < 3; k++) {\n";
+                body << "                vec4 c = texelFetch(u_slt" << cl_b
+                     << ", ivec2(bvi[k], 0), 0);\n";
+                body << "                if (abs(c.w) < 1e-6) continue;\n";
+                body << "                vec2 sv = (c.xy / c.w * 0.5"
+                        " + 0.5) * "
+                     << wh << ";\n";
+                body << "                bbmin = min(bbmin, sv);"
+                        " bbmax = max(bbmax, sv);\n";
+                body << "            }\n";
+                body << "        }\n";
+                body << "        int px0 = clamp(int(floor(bbmin.x - 3.0)),"
+                        " 0, "
+                     << (scr.w - 1) << ");\n";
+                body << "        int py0 = clamp(int(floor(bbmin.y - 3.0)),"
+                        " 0, "
+                     << (scr.h - 1) << ");\n";
+                body << "        int px1 = clamp(int(ceil(bbmax.x + 2.0)),"
+                        " 0, "
+                     << (scr.w - 1) << ");\n";
+                body << "        int py1 = clamp(int(ceil(bbmax.y + 2.0)),"
+                        " 0, "
+                     << (scr.h - 1) << ");\n";
+                body << "        if (bbmin.x > bbmax.x) px1 = -1;\n";
+                body << "        for (int py = py0; py <= py1; py++)\n";
+                body << "        for (int px = px0; px <= px1; px++) {\n";
+                body << "            ivec2 sc = ivec2(px, py);\n";
+            } else {
+                // Stochastic: jittered samples along the incident faces'
+                // edges (per-face sample positions shared across vertices;
+                // flattened to a single loop to keep the shared tail)
+                const size_t sd_b = slt_binding.at(xs[6]);
+                body << "        uint seed = uint(texelFetch(u_slt" << sd_b
+                     << ", ivec2(0, 0), 0).x + 0.5);\n";
+                body << "        for (int it = 0; it < "
+                     << (max_deg * uint32_t(aa_samples)) << "; it++) {\n";
+                body << "            int d = it / " << aa_samples << ";\n";
+                body << "            int smp = it - d * " << aa_samples
+                     << ";\n";
+                body << "            float fv = texelFetch(u_slt" << vf_b
+                     << ", ivec2(vid, d), 0).x;\n";
+                body << "            if (fv < -0.5) continue;\n";
+                body << "            int f = int(fv + 0.5);\n";
+                body << "            ivec3 bvi = ivec3(texelFetch(u_slt"
+                     << fc_b << ", ivec2(f, 0), 0).xyz + 0.5);\n";
+                body << "            vec2 s3[3]; bool okf = true;\n";
+                body << "            for (int k = 0; k < 3; k++) {\n";
+                body << "                vec4 c = texelFetch(u_slt" << cl_b
+                     << ", ivec2(bvi[k], 0), 0);\n";
+                body << "                if (c.w <= 1e-6)"
+                        " { okf = false; }\n";
+                body << "                else s3[k] = (c.xy / c.w * 0.5"
+                        " + 0.5) * "
+                     << wh << ";\n";
+                body << "            }\n";
+                body << "            if (!okf) continue;\n";
+                body << "            int e = smp % 3;\n";
+                body << "            vec2 a = s3[e];"
+                        " vec2 b = s3[(e + 1) % 3];\n";
+                body << "            vec2 ev = b - a;"
+                        " float len = length(ev);\n";
+                body << "            if (len < 1e-6) continue;\n";
+                body << "            float u = dressi_hash(uint(f),"
+                        " uint(smp), seed, 2u);\n";
+                body << "            float o = (dressi_hash(uint(f),"
+                        " uint(smp), seed, 3u) * 2.0 - 1.0) * 2.0;\n";
+                body << "            ivec2 sc = ivec2(floor(a + u * ev"
+                        " + o * vec2(-ev.y, ev.x) / len));\n";
+                body << "            if (sc.x < 0 || sc.y < 0 || sc.x >= "
+                     << scr.w << " || sc.y >= " << scr.h << ") continue;\n";
+            }
             body << "            for (int k = 0; k < 8; k++) {\n";
             body << "                ivec2 nc = sc + dressi_aa_offs[k];\n";
             body << "                if (nc.x < 0 || nc.y < 0 || nc.x >= "

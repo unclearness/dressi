@@ -174,6 +174,9 @@ int main(int argc, char* argv[]) try {
     Variable adam_m(VEC3, {n_verts, 1});
     Variable adam_v(VEC3, {n_verts, 1});
     Variable adam_t(FLOAT, {1, 1});
+    // Static seed for the frozen target branch (adam_t would make it
+    // dynamic and defeat the reactive-cache pruning)
+    Variable zero_seed(FLOAT, {1, 1});
 
     // ------------------------------ Views --------------------------------
     const Mat4 proj =
@@ -200,8 +203,9 @@ int main(int argc, char* argv[]) try {
             Variable t_tri = F::RasterizeFaceId(view.tgt_clip, b_ones,
                                                 b_faces_i, screen);
             // AA'd target so pred can match it exactly at convergence
-            view.target = F::StopGradient(F::AntiAlias(
-                    t_mask, t_tri, view.tgt_clip, b_faces_f, b_vtx_faces));
+            view.target = F::StopGradient(
+                    F::AntiAlias(t_mask, t_tri, view.tgt_clip, b_faces_f,
+                                 b_vtx_faces, zero_seed, 0));
         }
 
         // Prediction: the per-view projection is IN-GRAPH, so the clip
@@ -297,8 +301,10 @@ int main(int argc, char* argv[]) try {
             Variable mask = F::Rasterize(clip_v, s_ones, s_faces_i, screen);
             Variable tri = F::RasterizeFaceId(clip_v, s_ones, s_faces_i,
                                               screen);
+            // Stochastic vertex backward (paper pattern), jittered by the
+            // in-graph iteration counter
             view.pred = F::AntiAlias(mask, tri, clip_v, s_faces_f,
-                                     s_vtx_faces);
+                                     s_vtx_faces, adam_t, opt.samples);
         }
         // Per-pixel loss IMAGE (no reduction to {1,1}, per the paper);
         // the 1/N scale keeps gradients equal to a per-view Mean
@@ -385,6 +391,9 @@ int main(int argc, char* argv[]) try {
     ad.sendImg(adam_m, CpuImage(n_verts, 1, 3, 0.f));
     ad.sendImg(adam_v, CpuImage(n_verts, 1, 3, 0.f));
     ad.sendImg(adam_t, CpuImage(1, 1, 1, 0.f));
+    if (!hardsoft) {
+        ad.sendImg(zero_seed, CpuImage(1, 1, 1, 0.f));
+    }
 
     // ------------------------------ Viewer --------------------------------
     const uint32_t tile_cols = 4;

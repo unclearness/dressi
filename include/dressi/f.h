@@ -150,10 +150,16 @@ Variable RasterizeFaceId(const Variable& vtx_clip_pos,
 //   vtx_clip:      VEC4 {V,1} clip positions as an image leaf
 //   faces:         VEC3 {F,1} float-valued vertex indices as an image leaf
 //   vtx_faces_tex: FLOAT {V,max_deg} vertex -> incident-face ids (-1
-//                  padding; bounds the vertex backward's pixel scan)
+//                  padding)
+//   seed:          FLOAT {1,1} jitter seed for the stochastic backward
+//   n_samples:     vertex-backward mode -- 0 = exact scan of the incident
+//                  faces' pixel bboxes; > 0 = the paper-pattern stochastic
+//                  backward (n jittered samples along each incident
+//                  face's edges per iteration, fully parallel)
 Variable AntiAlias(const Variable& img, const Variable& tri_id,
                    const Variable& vtx_clip, const Variable& faces,
-                   const Variable& vtx_faces_tex);
+                   const Variable& vtx_faces_tex, const Variable& seed,
+                   uint32_t n_samples = 8);
 
 // ---------------- Indexed access (the paper's HardSoftRas core) --------------
 

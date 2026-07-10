@@ -1974,18 +1974,24 @@ Variable AntiAliasBwdImg(const Variable& gy, const Variable& tri_id,
 Variable AntiAliasBwdVtx(const Variable& gy, const Variable& img,
                          const Variable& tri_id, const Variable& vtx_clip,
                          const Variable& faces,
-                         const Variable& vtx_faces_tex) {
+                         const Variable& vtx_faces_tex, const Variable& seed,
+                         uint32_t n_samples) {
     OpDesc desc;
     desc.name = "AntiAliasBwdVtx";
-    desc.fwd_code = "__antialias_bwd_vtx__";
+    // n=0: exact scan of the incident faces' pixel bboxes; n>0: the
+    // paper-pattern stochastic backward (n jittered samples along each
+    // incident face's edges per iteration)
+    desc.fwd_code =
+            "__antialias_bwd_vtx__ n=" + std::to_string(n_samples);
     desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch,
                          InputAccess::TexelFetch, InputAccess::TexelFetch,
-                         InputAccess::TexelFetch, InputAccess::TexelFetch};
+                         InputAccess::TexelFetch, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch};
     desc.infer = [](const Variables& xs) -> std::pair<VType, ImgSize> {
         return {VEC4, xs[3].getImgSize()};
     };
     desc.bwd = NullBwd;
-    desc.cpu = [](const std::vector<CpuTensor>& xs) {
+    desc.cpu = [n_samples](const std::vector<CpuTensor>& xs) {
         const CpuTensor& gy = xs[0];
         const CpuTensor& img = xs[1];
         const CpuTensor& tri = xs[2];
@@ -1999,56 +2005,141 @@ Variable AntiAliasBwdVtx(const Variable& gy, const Variable& img,
         out.vtype = VEC4;
         out.size = clip.size;
         out.data.assign(size_t(clip.size.w) * 4, 0.f);
-        for (int y = 0; y < int(screen.h); y++) {
-            for (int x = 0; x < int(screen.w); x++) {
-                for (int k = 0; k < 8; k++) {
-                    const int nx = x + kAaOffs[k][0];
-                    const int ny = y + kAaOffs[k][1];
-                    if (nx < 0 || ny < 0 || nx >= int(screen.w) ||
-                        ny >= int(screen.h)) {
+        // Accumulates one active pair's contribution for vertex `v` only
+        const auto accumulate = [&](uint32_t v, int x, int y, int nx,
+                                    int ny, const AaPair& pr,
+                                    bool only_v) {
+            const size_t so = (size_t(y) * screen.w + x) * n;
+            const size_t no = (size_t(ny) * screen.w + nx) * n;
+            float gr = 0.f;
+            for (uint32_t c = 0; c < n; c++) {
+                gr += gy.data[so + c] *
+                      (img.data[so + c] - img.data[no + c]);
+            }
+            gr /= 9.f;
+            if (gr == 0.f) {
+                return;
+            }
+            const float ps[2] = {float(x) + 0.5f, float(y) + 0.5f};
+            const float sgn = pr.es >= 0.f ? 1.f : -1.f;
+            const float inv_l = 1.f / pr.len;
+            const float l3 = std::abs(pr.es) * inv_l * inv_l * inv_l;
+            const float ex = pr.qb[0] - pr.qa[0];
+            const float ey = pr.qb[1] - pr.qa[1];
+            const float dqa[2] = {
+                    sgn * inv_l * (pr.qb[1] - ps[1]) + l3 * ex,
+                    sgn * inv_l * (ps[0] - pr.qb[0]) + l3 * ey};
+            const float dqb[2] = {
+                    sgn * inv_l * (ps[1] - pr.qa[1]) - l3 * ex,
+                    sgn * inv_l * (pr.qa[0] - ps[0]) - l3 * ey};
+            const uint32_t ids[2] = {pr.ia, pr.ib};
+            const float* dqs[2] = {dqa, dqb};
+            for (int e = 0; e < 2; e++) {
+                if (only_v && ids[e] != v) {
+                    continue;
+                }
+                const float gqx = gr * dqs[e][0];
+                const float gqy = gr * dqs[e][1];
+                const float* c = &clip.data[size_t(ids[e]) * 4];
+                float* dst = &out.data[size_t(ids[e]) * 4];
+                dst[0] += gqx * 0.5f * w_scr / c[3];
+                dst[1] += gqy * 0.5f * h_scr / c[3];
+                dst[3] += -(gqx * 0.5f * w_scr * c[0] +
+                            gqy * 0.5f * h_scr * c[1]) /
+                          (c[3] * c[3]);
+            }
+        };
+        if (n_samples == 0) {
+            // Exact: scatter over every boundary pixel pair
+            for (int y = 0; y < int(screen.h); y++) {
+                for (int x = 0; x < int(screen.w); x++) {
+                    for (int k = 0; k < 8; k++) {
+                        const int nx = x + kAaOffs[k][0];
+                        const int ny = y + kAaOffs[k][1];
+                        if (nx < 0 || ny < 0 || nx >= int(screen.w) ||
+                            ny >= int(screen.h)) {
+                            continue;
+                        }
+                        AaPair pr;
+                        if (!EvalAaPair(tri, clip, faces_t, screen, x, y,
+                                        nx, ny, &pr) ||
+                            pr.r >= 1.f) {
+                            continue;
+                        }
+                        accumulate(0, x, y, nx, ny, pr, false);
+                    }
+                }
+            }
+            return out;
+        }
+        // Stochastic (paper pattern): per vertex, jittered samples along
+        // its incident faces' edges (shared per-face sample positions)
+        const CpuTensor& vf = xs[5];
+        const uint32_t seed_u = uint32_t(int64_t(xs[6].data[0] + 0.5f));
+        const uint32_t n_verts = clip.size.w;
+        const uint32_t max_deg = vf.size.h;
+        for (uint32_t v = 0; v < n_verts; v++) {
+            for (uint32_t d = 0; d < max_deg; d++) {
+                const float fv = vf.data[size_t(d) * n_verts + v];
+                if (fv < -0.5f) {
+                    continue;
+                }
+                const uint32_t f = uint32_t(int64_t(fv + 0.5f));
+                float s3[3][2];
+                bool ok = true;
+                for (int k = 0; k < 3; k++) {
+                    const uint32_t vi = uint32_t(int64_t(
+                            faces_t.data[size_t(f) * 3 + k] + 0.5f));
+                    const float* c = &clip.data[size_t(vi) * 4];
+                    if (c[3] <= 1e-6f) {
+                        ok = false;
+                        break;
+                    }
+                    s3[k][0] = (c[0] / c[3] * 0.5f + 0.5f) * w_scr;
+                    s3[k][1] = (c[1] / c[3] * 0.5f + 0.5f) * h_scr;
+                }
+                if (!ok) {
+                    continue;
+                }
+                for (uint32_t smp = 0; smp < n_samples; smp++) {
+                    const int e = int(smp % 3);
+                    const float* a = s3[e];
+                    const float* b = s3[(e + 1) % 3];
+                    const float ex = b[0] - a[0];
+                    const float ey = b[1] - a[1];
+                    const float len = std::sqrt(ex * ex + ey * ey);
+                    if (len < 1e-6f) {
                         continue;
                     }
-                    AaPair pr;
-                    if (!EvalAaPair(tri, clip, faces_t, screen, x, y, nx, ny,
-                                    &pr) ||
-                        pr.r >= 1.f) {
-                        continue;  // inactive, or clamped (zero gradient)
-                    }
-                    const size_t so = (size_t(y) * screen.w + x) * n;
-                    const size_t no = (size_t(ny) * screen.w + nx) * n;
-                    float gr = 0.f;
-                    for (uint32_t c = 0; c < n; c++) {
-                        gr += gy.data[so + c] *
-                              (img.data[so + c] - img.data[no + c]);
-                    }
-                    gr /= 9.f;
-                    if (gr == 0.f) {
+                    const float u = HashToUnit(f, smp, seed_u, 2);
+                    const float o = (HashToUnit(f, smp, seed_u, 3) * 2.f -
+                                     1.f) *
+                                    2.f;
+                    const int x = int(std::floor(a[0] + u * ex -
+                                                 o * (ey / len)));
+                    const int y = int(std::floor(a[1] + u * ey +
+                                                 o * (ex / len)));
+                    if (x < 0 || y < 0 || x >= int(screen.w) ||
+                        y >= int(screen.h)) {
                         continue;
                     }
-                    const float ps[2] = {float(x) + 0.5f, float(y) + 0.5f};
-                    const float sgn = pr.es >= 0.f ? 1.f : -1.f;
-                    const float inv_l = 1.f / pr.len;
-                    const float l3 = std::abs(pr.es) * inv_l * inv_l * inv_l;
-                    const float ex = pr.qb[0] - pr.qa[0];
-                    const float ey = pr.qb[1] - pr.qa[1];
-                    const float dqa[2] = {
-                            sgn * inv_l * (pr.qb[1] - ps[1]) + l3 * ex,
-                            sgn * inv_l * (ps[0] - pr.qb[0]) + l3 * ey};
-                    const float dqb[2] = {
-                            sgn * inv_l * (ps[1] - pr.qa[1]) - l3 * ex,
-                            sgn * inv_l * (pr.qa[0] - ps[0]) - l3 * ey};
-                    const uint32_t ids[2] = {pr.ia, pr.ib};
-                    const float* dqs[2] = {dqa, dqb};
-                    for (int e = 0; e < 2; e++) {
-                        const float gqx = gr * dqs[e][0];
-                        const float gqy = gr * dqs[e][1];
-                        const float* c = &clip.data[size_t(ids[e]) * 4];
-                        float* dst = &out.data[size_t(ids[e]) * 4];
-                        dst[0] += gqx * 0.5f * w_scr / c[3];
-                        dst[1] += gqy * 0.5f * h_scr / c[3];
-                        dst[3] += -(gqx * 0.5f * w_scr * c[0] +
-                                    gqy * 0.5f * h_scr * c[1]) /
-                                  (c[3] * c[3]);
+                    for (int k = 0; k < 8; k++) {
+                        const int nx = x + kAaOffs[k][0];
+                        const int ny = y + kAaOffs[k][1];
+                        if (nx < 0 || ny < 0 || nx >= int(screen.w) ||
+                            ny >= int(screen.h)) {
+                            continue;
+                        }
+                        AaPair pr;
+                        if (!EvalAaPair(tri, clip, faces_t, screen, x, y,
+                                        nx, ny, &pr) ||
+                            pr.r >= 1.f) {
+                            continue;
+                        }
+                        if (pr.ia != v && pr.ib != v) {
+                            continue;
+                        }
+                        accumulate(v, x, y, nx, ny, pr, true);
                     }
                 }
             }
@@ -2056,15 +2147,18 @@ Variable AntiAliasBwdVtx(const Variable& gy, const Variable& img,
         return out;
     };
     return MakeOp(std::move(desc),
-                  {gy, img, tri_id, vtx_clip, faces, vtx_faces_tex});
+                  {gy, img, tri_id, vtx_clip, faces, vtx_faces_tex, seed});
 }
 
 }  // namespace
 
 Variable AntiAlias(const Variable& img, const Variable& tri_id,
                    const Variable& vtx_clip, const Variable& faces,
-                   const Variable& vtx_faces_tex) {
+                   const Variable& vtx_faces_tex, const Variable& seed,
+                   uint32_t n_samples) {
     const VType img_type = img.getVType();
+    DRESSI_CHECK(seed.getVType() == FLOAT && seed.getImgSize().isUniform(),
+                 "AntiAlias: seed must be FLOAT {1,1}");
     DRESSI_CHECK(!IsIntVType(img_type) && !IsMatrixVType(img_type),
                  "AntiAlias: img must be a float image");
     DRESSI_CHECK(!img.getImgSize().isUniform(),
@@ -2087,20 +2181,21 @@ Variable AntiAlias(const Variable& img, const Variable& tri_id,
     desc.fwd_code = "__antialias__";
     desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch,
                          InputAccess::TexelFetch, InputAccess::TexelFetch,
-                         InputAccess::TexelFetch};
+                         InputAccess::TexelFetch, InputAccess::TexelFetch};
     desc.infer = [img_type](const Variables& xs)
             -> std::pair<VType, ImgSize> {
         return {img_type, xs[0].getImgSize()};
     };
-    desc.bwd = [](const Variables& xs, const Variable&, const Variable& gy,
-                  uint32_t bwd_idx) -> Variable {
+    desc.bwd = [n_samples](const Variables& xs, const Variable&,
+                           const Variable& gy, uint32_t bwd_idx) -> Variable {
         if (bwd_idx == 0) {
             return AntiAliasBwdImg(gy, xs[1], xs[2], xs[3]);
         }
         if (bwd_idx == 2) {
-            return AntiAliasBwdVtx(gy, xs[0], xs[1], xs[2], xs[3], xs[4]);
+            return AntiAliasBwdVtx(gy, xs[0], xs[1], xs[2], xs[3], xs[4],
+                                   xs[5], n_samples);
         }
-        return nullptr;  // tri_id / faces / adjacency not differentiable
+        return nullptr;  // tri_id / faces / adjacency / seed: no gradient
     };
     desc.cpu = [](const std::vector<CpuTensor>& xs) {
         const CpuTensor& img_t = xs[0];
@@ -2148,7 +2243,7 @@ Variable AntiAlias(const Variable& img, const Variable& tri_id,
         return out;
     };
     return MakeOp(std::move(desc),
-                  {img, tri_id, vtx_clip, faces, vtx_faces_tex});
+                  {img, tri_id, vtx_clip, faces, vtx_faces_tex, seed});
 }
 
 namespace {

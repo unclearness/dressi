@@ -49,6 +49,7 @@ inline dressi::CpuTensor VertexFacesTensor(
 
 struct AaScene {
     dressi::Variable clip, ones, faces_i, faces_f, vtx_faces;
+    dressi::Variable seed{dressi::FLOAT, {1, 1}};
     dressi::CpuTensor t_clip, t_ones, t_faces_i, t_faces_f, t_vtx_faces;
 
     AaScene(const std::vector<std::array<float, 4>>& verts,
@@ -78,12 +79,15 @@ struct AaScene {
         vtx_faces = dressi::Variable(dressi::FLOAT, t_vtx_faces.size);
     }
 
-    // mask/tri/AA graph over the shared clip leaf
-    dressi::Variable antialiasedMask(dressi::ImgSize screen) const {
+    // mask/tri/AA graph over the shared clip leaf (n_samples = 0 -> exact
+    // vertex backward for finite-difference / parity tests)
+    dressi::Variable antialiasedMask(dressi::ImgSize screen,
+                                     uint32_t n_samples = 0) const {
         using namespace dressi;
         Variable mask = F::Rasterize(clip, ones, faces_i, screen);
         Variable tri = F::RasterizeFaceId(clip, ones, faces_i, screen);
-        return F::AntiAlias(mask, tri, clip, faces_f, vtx_faces);
+        return F::AntiAlias(mask, tri, clip, faces_f, vtx_faces, seed,
+                            n_samples);
     }
 
     void bind(dressi::CpuEvaluator& ev) const {
@@ -92,6 +96,7 @@ struct AaScene {
         ev.bind(faces_i, t_faces_i);
         ev.bind(faces_f, t_faces_f);
         ev.bind(vtx_faces, t_vtx_faces);
+        ev.bind(seed, MakeTensor(dressi::FLOAT, {1, 1}, {3.f}));
     }
 
     void send(dressi::DressiAD& ad) const {
@@ -100,6 +105,7 @@ struct AaScene {
         ad.sendImg(faces_i, dressi::CpuImageFromTensor(t_faces_i));
         ad.sendImg(faces_f, dressi::CpuImageFromTensor(t_faces_f));
         ad.sendImg(vtx_faces, dressi::CpuImageFromTensor(t_vtx_faces));
+        ad.sendImg(seed, dressi::CpuImage(1, 1, 1, 3.f));
     }
 };
 
