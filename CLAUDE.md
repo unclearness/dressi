@@ -88,7 +88,11 @@ inputs changed (reactive cache).
   (O(V*W*H); no atomics/COMP needed).
 - Optimizer outputs are copied back into their input images at end of frame
   (no aliasing; a render pass must not read an image it writes).
-- Loss must be scalar FLOAT `{1,1}` (`F::Mean` guarantees this).
+- The loss may be any float image (per the paper): `BuildBackward` seeds
+  gradient 1 at every pixel/component (= derivative of the implicit sum),
+  so no forward reduction chain to `{1,1}` is needed. Keep losses as
+  images for performance; reduce with `F::Mean`/`F::Sum` only when the
+  scalar value itself is required (or sum the recvImg'd image on the CPU).
 
 ## Known deviations from the paper (documented, intentional)
 

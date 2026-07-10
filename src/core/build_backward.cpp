@@ -22,6 +22,11 @@ Variable SumToShape(const Variable& grad, const Variable& target) {
     }
     if (target.getImgSize().isUniform() && !g.getImgSize().isUniform()) {
         g = F::Sum(g);
+    } else if (!target.getImgSize().isUniform() &&
+               g.getImgSize().isUniform()) {
+        // A uniform gradient reaching an image input (e.g. the {1,1} loss
+        // seed passing through identity backwards): replicate per pixel
+        g = F::Broadcast(g, target.getImgSize());
     }
     DRESSI_CHECK(g.getImgSize() == target.getImgSize(),
                  "Gradient image size does not reduce to target size");
@@ -30,9 +35,13 @@ Variable SumToShape(const Variable& grad, const Variable& target) {
 
 std::tuple<Variables, Variables> BuildBackward(const Variable& loss_var) {
     DRESSI_CHECK(loss_var, "Null loss Variable");
-    DRESSI_CHECK(loss_var.getVType() == FLOAT &&
-                         loss_var.getImgSize().isUniform(),
-                 "Loss must be a scalar FLOAT {1,1} Variable");
+    // The loss may be any float image (per the paper): seeding every pixel
+    // with gradient 1 differentiates the implicit sum over pixels and
+    // components, so no forward reduction chain to {1,1} is needed. The
+    // {1,1} seed constant reaches image size through uniform broadcasting.
+    DRESSI_CHECK(!IsIntVType(loss_var.getVType()) &&
+                         !IsMatrixVType(loss_var.getVType()),
+                 "Loss must be a float scalar/vector Variable");
 
     // Mapping from a forward variable to its gradient contributions
     std::map<Variable, Variables> fwd_bwds_map;

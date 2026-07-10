@@ -279,11 +279,54 @@ TEST(Backward, StopGradientBarrier) {
     EXPECT_FLOAT_EQ(ev.eval(input_grad_vars[0]).data[0], 1.f);
 }
 
-TEST(Backward, LossMustBeScalar) {
-    Variable img(FLOAT, {4, 4});
+TEST(Backward, ImageLossMatchesReducedScalarLoss) {
+    // A non-reduced image loss seeds gradient 1 at every pixel, which is
+    // the derivative of the implicit sum: gradients must match the
+    // explicitly reduced CompSum(Sum(...)) scalar loss.
+    const uint32_t W = 6, H = 5;
+    const auto bind_img = MakeTensor(FLOAT, {W, H}, [](size_t i) {
+        return 0.1f + 0.07f * float(i % 9);
+    });
+    const auto bind_tgt = MakeTensor(FLOAT, {W, H}, [](size_t i) {
+        return 0.9f - 0.05f * float(i % 7);
+    });
+
+    const auto grad_of = [&](bool reduce) {
+        Variable img(FLOAT, {W, H});
+        Variable target(FLOAT, {W, H});
+        Variable diff = F::StopGradient(target) - F::Sigmoid(img);
+        Variable loss = diff * diff;
+        if (reduce) {
+            loss = F::CompSum(F::Sum(loss));
+        }
+        Variable img_mut = img;
+        img_mut.setRequiresGradRecursively();
+        auto [input_vars, input_grad_vars] = BuildBackward(loss);
+        CpuEvaluator ev;
+        ev.bind(img, bind_img);
+        ev.bind(target, bind_tgt);
+        for (size_t i = 0; i < input_vars.size(); i++) {
+            if (input_vars[i] == img) {
+                return ev.eval(input_grad_vars[i]);
+            }
+        }
+        throw std::runtime_error("no grad");
+    };
+
+    const CpuTensor g_img_loss = grad_of(false);
+    const CpuTensor g_scalar_loss = grad_of(true);
+    ASSERT_EQ(g_img_loss.data.size(), g_scalar_loss.data.size());
+    for (size_t i = 0; i < g_img_loss.data.size(); i++) {
+        EXPECT_NEAR(g_img_loss.data[i], g_scalar_loss.data[i], 1e-6f)
+                << "component " << i;
+    }
+}
+
+TEST(Backward, IntLossRejected) {
+    Variable img(IVEC3, {4, 1});
     Variable img_mut = img;
     img_mut.setRequiresGradRecursively();
-    EXPECT_THROW(BuildBackward(img * 2.f), DressiError);
+    EXPECT_THROW(BuildBackward(img), DressiError);
 }
 
 TEST(Backward, PbrCompositeGradients) {

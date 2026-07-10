@@ -220,13 +220,18 @@ int main(int argc, char* argv[]) try {
                                               screen);
             view.pred = F::AntiAlias(mask, tri, view.clip, s_faces_f);
         }
+        // Per-pixel loss IMAGE (no reduction to {1,1}, per the paper:
+        // BuildBackward seeds gradient 1 at every pixel, so the log-step
+        // reduction chain and its upsample backward never run). The 1/N
+        // scale keeps gradients identical to the former per-view Mean.
         Variable diff = view.target - view.pred;
-        view_losses.push_back(F::Mean(diff * diff));
+        view_losses.push_back(diff * diff *
+                              (1.f / float(screen.w * screen.h)));
 
         Variable clip_mut = view.clip;
         clip_mut.setRequiresGradRecursively();
     }
-    Variable loss = F::SumPixelWise(view_losses);
+    Variable loss = F::SumPixelWise(view_losses);  // {S,S} loss image
 
     // -------------------- Dressi-AD setup (grad capture) ------------------
     DressiAD ad;
@@ -315,6 +320,18 @@ int main(int argc, char* argv[]) try {
     AdamState adam;
     std::vector<float> grad_acc(size_t(n_verts) * 3, 0.f);
 
+    // Scalar loss value for logging only: the loss stays an image on the
+    // GPU; sum it on the CPU at reporting points (equals the former
+    // sum-of-per-view-means by construction)
+    const auto loss_value = [&]() {
+        const CpuImage li = ad.recvImg(loss);
+        double s = 0.0;
+        for (float v : li.data) {
+            s += v;
+        }
+        return float(s);
+    };
+
     using Clock = std::chrono::steady_clock;
     double opt_ms = 0.0;
     double view_ms = 0.0;
@@ -323,10 +340,6 @@ int main(int argc, char* argv[]) try {
     for (int iter = 0; iter < opt.n_iters; iter++) {
         const auto t0 = Clock::now();
         ad.execStep();
-        last_loss = ad.recvImg(loss).data[0];
-        if (iter == 0) {
-            first_loss = last_loss;
-        }
 
         // d loss / d 3D position, summed over views
         std::fill(grad_acc.begin(), grad_acc.end(), 0.f);
@@ -362,6 +375,7 @@ int main(int argc, char* argv[]) try {
         opt_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
 
         if (iter == 0) {
+            first_loss = loss_value();
             std::vector<CpuImage> targets;
             for (auto& view : views) {
                 targets.push_back(ad.recvImg(view.target));
@@ -392,14 +406,14 @@ int main(int argc, char* argv[]) try {
         if (iter % 20 == 0 || iter == opt.n_iters - 1) {
             spdlog::info("iter {:4d}  loss {:.8f}  opt {:.1f} ms/iter"
                          "  (view {:.1f} ms/iter excluded)",
-                         iter, last_loss, opt_ms / double(iter + 1),
+                         iter, loss_value(), opt_ms / double(iter + 1),
                          view_ms / double(iter + 1));
         }
     }
 
     // ------------------------------ Outputs -------------------------------
     ad.execStep();
-    last_loss = ad.recvImg(loss).data[0];
+    last_loss = loss_value();
     std::vector<CpuImage> preds;
     float mean_iou = 0.f;
     for (auto& view : views) {

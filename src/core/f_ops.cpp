@@ -1016,6 +1016,37 @@ Variable Mean(const Variable& x) {
     return Mul(CompSum(Sum(x)), Float(inv_n));
 }
 
+Variable Broadcast(const Variable& x, ImgSize size) {
+    DRESSI_CHECK(x.getImgSize().isUniform(),
+                 "Broadcast: input must be a uniform {1,1} Variable");
+    if (size.isUniform()) {
+        return x;
+    }
+    OpDesc desc;
+    desc.name = "Broadcast";
+    desc.fwd_code = "{y}={x0};";
+    desc.input_access = {InputAccess::TexelFetch};  // uniform read at (0,0)
+    const VType vtype = x.getVType();
+    desc.infer = [vtype, size](const Variables&)
+            -> std::pair<VType, ImgSize> { return {vtype, size}; };
+    desc.bwd = [](const Variables&, const Variable&, const Variable& gy,
+                  uint32_t) -> Variable { return Sum(gy); };
+    desc.cpu = [vtype, size](const std::vector<CpuTensor>& xs) {
+        CpuTensor y;
+        y.vtype = vtype;
+        y.size = size;
+        const uint32_t n = NumComponents(vtype);
+        y.data.resize(size_t(size.w) * size.h * n);
+        for (size_t p = 0; p < size_t(size.w) * size.h; p++) {
+            for (uint32_t c = 0; c < n; c++) {
+                y.data[p * n + c] = xs[0].data[c];
+            }
+        }
+        return y;
+    };
+    return MakeOp(std::move(desc), {x});
+}
+
 // ------------------------------- DR functions --------------------------------
 Variable StopGradient(const Variable& x) {
     OpDesc desc;

@@ -79,6 +79,11 @@ Variable MatMul(const Variable& a, const Variable& b);  // MAT*MAT / MAT*VEC
 Variable Transpose(const Variable& m);
 Variable OuterProduct(const Variable& col, const Variable& row);
 
+// -------------------------------- Broadcast ----------------------------------
+// Replicates a uniform {1,1} value into an image of `size` (backward sums
+// back to {1,1}); inline constants compile to a literal
+Variable Broadcast(const Variable& x, ImgSize size);
+
 // --------------------------------- Reduction ---------------------------------
 // Pixel-wise sum of a list of images (single n-ary node)
 Variable SumPixelWise(const Variables& xs);
