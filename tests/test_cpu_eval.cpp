@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cmath>
 
 #include "core/cpu_eval.h"
@@ -278,4 +279,178 @@ TEST(CpuEval, PbrCompositeExpressible) {
     }
     // Rougher pixels produce weaker mirror-direction specular
     EXPECT_GT(out.data[0], out.data[(size_t(W) * H - 1) * 3]);
+}
+
+// ------------------------- CPU reference rasterizer --------------------------
+
+namespace {
+
+CpuTensor ClipTensor(const std::vector<std::array<float, 4>>& verts) {
+    CpuTensor t;
+    t.vtype = VEC4;
+    t.size = {uint32_t(verts.size()), 1};
+    for (const auto& v : verts) {
+        t.data.insert(t.data.end(), v.begin(), v.end());
+    }
+    return t;
+}
+
+CpuTensor FacesTensor(const std::vector<std::array<float, 3>>& faces) {
+    CpuTensor t;
+    t.vtype = IVEC3;
+    t.size = {uint32_t(faces.size()), 1};
+    for (const auto& f : faces) {
+        t.data.insert(t.data.end(), f.begin(), f.end());
+    }
+    return t;
+}
+
+}  // namespace
+
+TEST(CpuEval, RasterizeHardQuad) {
+    // Fullscreen quad: mask = 1 everywhere, UV interpolates pixel centers
+    const ImgSize screen = {8, 8};
+    Variable pos(VEC4, {4, 1});
+    Variable uv(VEC2, {4, 1});
+    Variable faces(IVEC3, {2, 1});
+
+    const float p[4][2] = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+    CpuTensor tp, tu;
+    tp.vtype = VEC4;
+    tp.size = {4, 1};
+    tu.vtype = VEC2;
+    tu.size = {4, 1};
+    for (int i = 0; i < 4; i++) {
+        tp.data.insert(tp.data.end(), {p[i][0], p[i][1], 0.5f, 1.f});
+        tu.data.insert(tu.data.end(),
+                       {(p[i][0] + 1.f) * 0.5f, (p[i][1] + 1.f) * 0.5f});
+    }
+    CpuTensor tf = FacesTensor({{0, 1, 2}, {0, 2, 3}});
+
+    Variable g_uv = F::Rasterize(pos, uv, faces, screen);
+    CpuEvaluator ev;
+    ev.bind(pos, tp);
+    ev.bind(uv, tu);
+    ev.bind(faces, tf);
+    const CpuTensor out = ev.eval(g_uv);
+
+    for (uint32_t y = 0; y < screen.h; y++) {
+        for (uint32_t x = 0; x < screen.w; x++) {
+            const size_t o = (size_t(y) * screen.w + x) * 2;
+            ASSERT_NEAR(out.data[o + 0], (float(x) + 0.5f) / screen.w, 1e-5f);
+            ASSERT_NEAR(out.data[o + 1], (float(y) + 0.5f) / screen.h, 1e-5f);
+        }
+    }
+}
+
+TEST(CpuEval, RasterizeHardPerspective) {
+    // One triangle with a non-uniform w: interpolation must be
+    // perspective-correct (u/w and 1/w affine in screen space)
+    const ImgSize screen = {8, 8};
+    const float w1 = 3.f;
+    // Screen targets: s0=(0,0), s1=(8,0), s2=(0,8); clip = (s/S*2-1)*w
+    CpuTensor tp = ClipTensor({{-1.f, -1.f, 0.25f, 1.f},
+                               {1.f * w1, -1.f * w1, 0.25f * w1, w1},
+                               {-1.f, 1.f, 0.25f, 1.f}});
+    CpuTensor tu;
+    tu.vtype = FLOAT;
+    tu.size = {3, 1};
+    tu.data = {0.f, 1.f, 0.f};
+    CpuTensor tf = FacesTensor({{0, 1, 2}});
+
+    Variable pos(VEC4, {3, 1});
+    Variable attr(FLOAT, {3, 1});
+    Variable faces(IVEC3, {1, 1});
+    Variable g = F::Rasterize(pos, attr, faces, screen);
+    CpuEvaluator ev;
+    ev.bind(pos, tp);
+    ev.bind(attr, tu);
+    ev.bind(faces, tf);
+    const CpuTensor out = ev.eval(g);
+
+    // Probe interior pixels; expected from the affine u/w, 1/w derivation
+    const float s[3][2] = {{0, 0}, {8, 0}, {0, 8}};
+    const float u[3] = {0.f, 1.f, 0.f};
+    const float w[3] = {1.f, w1, 1.f};
+    for (uint32_t y = 0; y < 3; y++) {
+        for (uint32_t x = 0; x < 3; x++) {
+            const float px = float(x) + 0.5f;
+            const float py = float(y) + 0.5f;
+            const float area = (s[1][0] - s[0][0]) * (s[2][1] - s[0][1]) -
+                               (s[1][1] - s[0][1]) * (s[2][0] - s[0][0]);
+            const float l0 = ((s[1][0] - px) * (s[2][1] - py) -
+                              (s[1][1] - py) * (s[2][0] - px)) /
+                             area;
+            const float l1 = ((s[2][0] - px) * (s[0][1] - py) -
+                              (s[2][1] - py) * (s[0][0] - px)) /
+                             area;
+            const float l2 = 1.f - l0 - l1;
+            if (l0 < 0.f || l1 < 0.f || l2 < 0.f) {
+                continue;
+            }
+            const float num = l0 * u[0] / w[0] + l1 * u[1] / w[1] +
+                              l2 * u[2] / w[2];
+            const float den = l0 / w[0] + l1 / w[1] + l2 / w[2];
+            ASSERT_NEAR(out.data[size_t(y) * screen.w + x], num / den, 1e-5f)
+                    << "pixel " << x << "," << y;
+        }
+    }
+    // A pixel with equal screen-barycentric weight of v1 must NOT match the
+    // non-perspective (affine) interpolation
+    EXPECT_GT(std::abs(out.data[size_t(1) * screen.w + 1] - 0.1875f), 1e-3f);
+}
+
+TEST(CpuEval, RasterizeDepthAndBackground) {
+    // Two overlapping fullscreen triangles at different depths: the nearer
+    // one wins; a half-covering quad leaves background pixels at 0
+    const ImgSize screen = {8, 8};
+    CpuTensor tp = ClipTensor({// far triangle (z=0.8), attr 1
+                               {-1, -1, 0.8f, 1},
+                               {3, -1, 0.8f, 1},
+                               {-1, 3, 0.8f, 1},
+                               // near triangle (z=0.2), attr 2
+                               {-1, -1, 0.2f, 1},
+                               {3, -1, 0.2f, 1},
+                               {-1, 3, 0.2f, 1}});
+    CpuTensor ta;
+    ta.vtype = FLOAT;
+    ta.size = {6, 1};
+    ta.data = {1, 1, 1, 2, 2, 2};
+    // Near triangle drawn FIRST: depth test (not draw order) must decide
+    CpuTensor tf = FacesTensor({{3, 4, 5}, {0, 1, 2}});
+
+    Variable pos(VEC4, {6, 1});
+    Variable attr(FLOAT, {6, 1});
+    Variable faces(IVEC3, {2, 1});
+    Variable g = F::Rasterize(pos, attr, faces, screen);
+    CpuEvaluator ev;
+    ev.bind(pos, tp);
+    ev.bind(attr, ta);
+    ev.bind(faces, tf);
+    const CpuTensor out = ev.eval(g);
+    EXPECT_FLOAT_EQ(out.data[0], 2.f);  // near wins
+
+    // Half-covering quad: right half is background
+    CpuTensor tp2 = ClipTensor({{-1, -1, 0.5f, 1},
+                                {0, -1, 0.5f, 1},
+                                {0, 1, 0.5f, 1},
+                                {-1, 1, 0.5f, 1}});
+    CpuTensor ta2;
+    ta2.vtype = FLOAT;
+    ta2.size = {4, 1};
+    ta2.data = {1, 1, 1, 1};
+    CpuTensor tf2 = FacesTensor({{0, 1, 2}, {0, 2, 3}});
+    Variable pos2(VEC4, {4, 1});
+    Variable attr2(FLOAT, {4, 1});
+    Variable faces2(IVEC3, {2, 1});
+    Variable g2 = F::Rasterize(pos2, attr2, faces2, screen);
+    CpuEvaluator ev2;
+    ev2.bind(pos2, tp2);
+    ev2.bind(attr2, ta2);
+    ev2.bind(faces2, tf2);
+    const CpuTensor out2 = ev2.eval(g2);
+    for (uint32_t y = 0; y < screen.h; y++) {
+        EXPECT_FLOAT_EQ(out2.data[size_t(y) * screen.w + 1], 1.f);
+        EXPECT_FLOAT_EQ(out2.data[size_t(y) * screen.w + 6], 0.f);
+    }
 }

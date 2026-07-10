@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <string>
 
+#include "core/cpu_raster.h"
 #include "core/infer.h"
 #include "core/node.h"
 #include "core/op_builder.h"
@@ -1066,7 +1067,10 @@ Variable Rasterize(const Variable& vtx_clip_pos, const Variable& vtx_attrib,
     desc.shader_type = RASTER;
     desc.infer = [attr_type, screen_size](const Variables&)
             -> std::pair<VType, ImgSize> { return {attr_type, screen_size}; };
-    desc.bwd = NullBwd;  // non-differentiable w.r.t. geometry (M2)
+    desc.bwd = NullBwd;  // geometry gradients live in RasterizeSoft/AntiAlias
+    desc.cpu = [screen_size](const std::vector<CpuTensor>& xs) {
+        return RasterizeHardCpu(xs[0], xs[1], xs[2], screen_size);
+    };
     return MakeOp(std::move(desc), {vtx_clip_pos, vtx_attrib, faces});
 }
 
