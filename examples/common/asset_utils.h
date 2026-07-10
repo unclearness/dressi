@@ -28,7 +28,8 @@ dressi::CpuImage LoadImageRgb(const std::string& path);
 // Saves a 1- or 3-channel float image (clamped to [0,1]) as PNG
 void SaveImagePng(const std::string& path, const dressi::CpuImage& img);
 
-// Tiles same-sized 3-channel images into a grid (row-major, `cols` per row)
+// Tiles same-sized 1- or 3-channel images into a 3-channel grid
+// (row-major, `cols` per row; gray sources replicate)
 dressi::CpuImage TileImages(const std::vector<dressi::CpuImage>& imgs,
                             uint32_t cols);
 

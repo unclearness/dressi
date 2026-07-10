@@ -48,8 +48,12 @@ struct Options {
     uint32_t sphere_level = 3;
     float radius_px = 3.f;
     float lr = 0.01f;
-    float laplacian = 0.5f;  // relative to the data-gradient RMS
-    float normal = 0.5f;     // normal consistency, same relative scale
+    // Regularizer weights relative to the data-gradient RMS; negative =
+    // per-technique default (hardsoftras: 0.15/0.4 -- its sigmoid-band
+    // gradients are weaker, so lighter smoothing fits noticeably better;
+    // aa: 0.5/0.5)
+    float laplacian = -1.f;
+    float normal = -1.f;
 };
 
 Options ParseArgs(int argc, char* argv[]) {
@@ -86,6 +90,13 @@ Options ParseArgs(int argc, char* argv[]) {
     }
     if (opt.technique != "hardsoftras" && opt.technique != "aa") {
         throw DressiError("--technique must be hardsoftras or aa");
+    }
+    const bool hs = opt.technique == "hardsoftras";
+    if (opt.laplacian < 0.f) {
+        opt.laplacian = hs ? 0.15f : 0.5f;
+    }
+    if (opt.normal < 0.f) {
+        opt.normal = hs ? 0.4f : 0.5f;
     }
     return opt;
 }

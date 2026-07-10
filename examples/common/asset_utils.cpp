@@ -143,10 +143,14 @@ CpuImage TileImages(const std::vector<CpuImage>& imgs, uint32_t cols) {
     for (size_t i = 0; i < imgs.size(); i++) {
         const uint32_t ox = uint32_t(i % cols) * w;
         const uint32_t oy = uint32_t(i / cols) * h;
+        // 1-channel sources replicate to gray (indexing c > 0 would read
+        // the neighboring pixels' values)
+        const bool gray = imgs[i].channels == 1;
         for (uint32_t y = 0; y < h; y++) {
             for (uint32_t x = 0; x < w; x++) {
                 for (uint32_t c = 0; c < 3; c++) {
-                    tile.at(ox + x, oy + y, c) = imgs[i].at(x, y, c);
+                    tile.at(ox + x, oy + y, c) =
+                            imgs[i].at(x, y, gray ? 0 : c);
                 }
             }
         }
