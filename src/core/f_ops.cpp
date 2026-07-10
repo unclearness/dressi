@@ -1253,6 +1253,317 @@ Variable RasterizeSoft(const Variable& vtx_clip_soft, const Variable& face_id,
                    faces_tex, vtx_faces_tex});
 }
 
+// ---------------------- Mesh utilities (GPU-resident) ------------------------
+
+namespace {
+
+void CrossOfFace(const CpuTensor& pos, const CpuTensor& faces, uint32_t f,
+                 uint32_t idx[3], float c[3]) {
+    for (int k = 0; k < 3; k++) {
+        idx[k] = uint32_t(int64_t(faces.data[size_t(f) * 3 + k] + 0.5f));
+    }
+    const float* p0 = &pos.data[size_t(idx[0]) * 3];
+    const float* p1 = &pos.data[size_t(idx[1]) * 3];
+    const float* p2 = &pos.data[size_t(idx[2]) * 3];
+    const float e1[3] = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+    const float e2[3] = {p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]};
+    c[0] = e1[1] * e2[2] - e1[2] * e2[1];
+    c[1] = e1[2] * e2[0] - e1[0] * e2[2];
+    c[2] = e1[0] * e2[1] - e1[1] * e2[0];
+}
+
+}  // namespace
+
+Variable SoftClip(const Variable& vtx_clip_hard_tex, const Variable& faces_tex,
+                  ImgSize screen_size, float radius_px) {
+    DRESSI_CHECK(vtx_clip_hard_tex.getVType() == VEC4 &&
+                         vtx_clip_hard_tex.getImgSize().h == 1,
+                 "SoftClip: vtx_clip_hard_tex must be VEC4 {V,1}");
+    DRESSI_CHECK(faces_tex.getVType() == VEC3 &&
+                         faces_tex.getImgSize().h == 1,
+                 "SoftClip: faces_tex must be VEC3 {F,1}");
+    DRESSI_CHECK(radius_px > 0.f, "SoftClip: radius_px must be > 0");
+    const uint32_t n_faces = faces_tex.getImgSize().w;
+
+    OpDesc desc;
+    desc.name = "SoftClip";
+    // Special-cased by the shader codegen (radius/screen ride the marker)
+    desc.fwd_code = "__soft_clip__ r=" + FloatLiteral(radius_px) +
+                    " w=" + std::to_string(screen_size.w) +
+                    " h=" + std::to_string(screen_size.h);
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch};
+    desc.infer = [n_faces](const Variables&) -> std::pair<VType, ImgSize> {
+        return {VEC4, {n_faces * 3, 1}};
+    };
+    desc.bwd = NullBwd;  // coverage geometry: piecewise constant by design
+    desc.cpu = [screen_size, radius_px](const std::vector<CpuTensor>& xs) {
+        const CpuTensor& clip = xs[0];
+        const CpuTensor& faces = xs[1];
+        const uint32_t nf = faces.size.w;
+        CpuTensor out;
+        out.vtype = VEC4;
+        out.size = {nf * 3, 1};
+        out.data.assign(size_t(nf) * 12, 0.f);
+        for (uint32_t f = 0; f < nf; f++) {
+            uint32_t idx[3];
+            float s[3][2];
+            const float* c[3];
+            bool valid = true;
+            for (int k = 0; k < 3; k++) {
+                idx[k] = uint32_t(int64_t(
+                        faces.data[size_t(f) * 3 + k] + 0.5f));
+                c[k] = &clip.data[size_t(idx[k]) * 4];
+                if (c[k][3] <= 1e-6f ||
+                    !ProjectClipToScreen(c[k], screen_size, s[k], nullptr)) {
+                    valid = false;
+                }
+            }
+            float scale = 1.f;
+            float cx = 0.f, cy = 0.f;
+            if (valid) {
+                cx = (s[0][0] + s[1][0] + s[2][0]) / 3.f;
+                cy = (s[0][1] + s[1][1] + s[2][1]) / 3.f;
+                float d_min = 1e30f;
+                for (int k = 0; k < 3; k++) {
+                    const int k2 = (k + 1) % 3;
+                    const float ex = s[k2][0] - s[k][0];
+                    const float ey = s[k2][1] - s[k][1];
+                    const float len = std::sqrt(ex * ex + ey * ey);
+                    if (len < 1e-6f) {
+                        continue;
+                    }
+                    d_min = std::min(d_min,
+                                     std::abs(ex * (cy - s[k][1]) -
+                                              ey * (cx - s[k][0])) /
+                                             len);
+                }
+                scale = d_min < 1e29f
+                                ? std::min(1.f + radius_px /
+                                                         std::max(d_min,
+                                                                  1e-3f),
+                                           8.f)
+                                : 1.f;
+            }
+            for (int k = 0; k < 3; k++) {
+                float* dst = &out.data[(size_t(f) * 3 + size_t(k)) * 4];
+                for (int j = 0; j < 4; j++) {
+                    dst[j] = c[k][j];
+                }
+                if (valid) {
+                    const float sx = cx + (s[k][0] - cx) * scale;
+                    const float sy = cy + (s[k][1] - cy) * scale;
+                    dst[0] = (sx / float(screen_size.w) * 2.f - 1.f) *
+                             c[k][3];
+                    dst[1] = (sy / float(screen_size.h) * 2.f - 1.f) *
+                             c[k][3];
+                }
+            }
+        }
+        return out;
+    };
+    return MakeOp(std::move(desc), {vtx_clip_hard_tex, faces_tex});
+}
+
+Variable VertexNeighborMean(const Variable& pos_tex,
+                            const Variable& vtx_neighbors_tex) {
+    DRESSI_CHECK(pos_tex.getVType() == VEC3 && pos_tex.getImgSize().h == 1,
+                 "VertexNeighborMean: pos_tex must be VEC3 {V,1}");
+    DRESSI_CHECK(vtx_neighbors_tex.getVType() == FLOAT &&
+                         vtx_neighbors_tex.getImgSize().w ==
+                                 pos_tex.getImgSize().w,
+                 "VertexNeighborMean: adjacency must be FLOAT {V,max_deg}");
+    OpDesc desc;
+    desc.name = "VertexNeighborMean";
+    desc.fwd_code = "__vertex_neighbor_mean__";
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch};
+    desc.infer = [](const Variables& xs) -> std::pair<VType, ImgSize> {
+        return {VEC3, xs[0].getImgSize()};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [](const std::vector<CpuTensor>& xs) {
+        const CpuTensor& pos = xs[0];
+        const CpuTensor& adj = xs[1];
+        const uint32_t n_verts = pos.size.w;
+        const uint32_t max_deg = adj.size.h;
+        CpuTensor out = pos;
+        for (uint32_t v = 0; v < n_verts; v++) {
+            float mean[3] = {0.f, 0.f, 0.f};
+            uint32_t count = 0;
+            for (uint32_t d = 0; d < max_deg; d++) {
+                const float nv = adj.data[size_t(d) * n_verts + v];
+                if (nv < -0.5f) {
+                    continue;
+                }
+                const size_t n = size_t(int64_t(nv + 0.5f));
+                for (int c = 0; c < 3; c++) {
+                    mean[c] += pos.data[n * 3 + size_t(c)];
+                }
+                count++;
+            }
+            if (count > 0) {
+                for (int c = 0; c < 3; c++) {
+                    out.data[size_t(v) * 3 + size_t(c)] =
+                            mean[c] / float(count);
+                }
+            }
+        }
+        return out;
+    };
+    return MakeOp(std::move(desc), {pos_tex, vtx_neighbors_tex});
+}
+
+Variable NormalConsistencyFaceTerm(const Variable& pos_tex,
+                                   const Variable& faces_tex,
+                                   const Variable& face_adj_tex) {
+    DRESSI_CHECK(pos_tex.getVType() == VEC3 && pos_tex.getImgSize().h == 1,
+                 "NormalConsistencyFaceTerm: pos_tex must be VEC3 {V,1}");
+    DRESSI_CHECK(faces_tex.getVType() == VEC3 &&
+                         face_adj_tex.getVType() == VEC3 &&
+                         face_adj_tex.getImgSize() == faces_tex.getImgSize(),
+                 "NormalConsistencyFaceTerm: faces/face_adj must be VEC3 "
+                 "{F,1}");
+    OpDesc desc;
+    desc.name = "NormalConsistencyFaceTerm";
+    desc.fwd_code = "__nc_face_term__";
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch};
+    desc.infer = [](const Variables& xs) -> std::pair<VType, ImgSize> {
+        return {VEC3, xs[1].getImgSize()};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [](const std::vector<CpuTensor>& xs) {
+        const CpuTensor& pos = xs[0];
+        const CpuTensor& faces = xs[1];
+        const CpuTensor& fadj = xs[2];
+        const uint32_t nf = faces.size.w;
+        CpuTensor out;
+        out.vtype = VEC3;
+        out.size = {nf, 1};
+        out.data.assign(size_t(nf) * 3, 0.f);
+        for (uint32_t f = 0; f < nf; f++) {
+            uint32_t ia[3];
+            float ca[3];
+            CrossOfFace(pos, faces, f, ia, ca);
+            const float la = std::sqrt(ca[0] * ca[0] + ca[1] * ca[1] +
+                                       ca[2] * ca[2]);
+            if (la < 1e-12f) {
+                continue;
+            }
+            const float na[3] = {ca[0] / la, ca[1] / la, ca[2] / la};
+            float g[3] = {0.f, 0.f, 0.f};
+            for (int j = 0; j < 3; j++) {
+                const float gv = fadj.data[size_t(f) * 3 + j];
+                if (gv < -0.5f) {
+                    continue;
+                }
+                uint32_t ib[3];
+                float cb[3];
+                CrossOfFace(pos, faces, uint32_t(int64_t(gv + 0.5f)), ib,
+                            cb);
+                const float lb = std::sqrt(cb[0] * cb[0] + cb[1] * cb[1] +
+                                           cb[2] * cb[2]);
+                if (lb < 1e-12f) {
+                    continue;
+                }
+                const float nb[3] = {cb[0] / lb, cb[1] / lb, cb[2] / lb};
+                const float d = na[0] * nb[0] + na[1] * nb[1] +
+                                na[2] * nb[2];
+                for (int c = 0; c < 3; c++) {
+                    g[c] += -(nb[c] - d * na[c]) / la;
+                }
+            }
+            for (int c = 0; c < 3; c++) {
+                out.data[size_t(f) * 3 + size_t(c)] = g[c];
+            }
+        }
+        return out;
+    };
+    return MakeOp(std::move(desc), {pos_tex, faces_tex, face_adj_tex});
+}
+
+Variable NormalConsistencyVertexGrad(const Variable& face_term,
+                                     const Variable& pos_tex,
+                                     const Variable& faces_tex,
+                                     const Variable& vtx_faces_tex) {
+    DRESSI_CHECK(face_term.getVType() == VEC3 &&
+                         face_term.getImgSize() == faces_tex.getImgSize(),
+                 "NormalConsistencyVertexGrad: face_term must be VEC3 {F,1}");
+    DRESSI_CHECK(vtx_faces_tex.getVType() == FLOAT &&
+                         vtx_faces_tex.getImgSize().w ==
+                                 pos_tex.getImgSize().w,
+                 "NormalConsistencyVertexGrad: vtx_faces_tex must be FLOAT "
+                 "{V,max_deg}");
+    OpDesc desc;
+    desc.name = "NormalConsistencyVertexGrad";
+    desc.fwd_code = "__nc_vertex_grad__";
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch, InputAccess::TexelFetch};
+    desc.infer = [](const Variables& xs) -> std::pair<VType, ImgSize> {
+        return {VEC3, xs[1].getImgSize()};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [](const std::vector<CpuTensor>& xs) {
+        const CpuTensor& term = xs[0];
+        const CpuTensor& pos = xs[1];
+        const CpuTensor& faces = xs[2];
+        const CpuTensor& vf = xs[3];
+        const uint32_t n_verts = pos.size.w;
+        const uint32_t max_deg = vf.size.h;
+        CpuTensor out;
+        out.vtype = VEC3;
+        out.size = {n_verts, 1};
+        out.data.assign(size_t(n_verts) * 3, 0.f);
+        for (uint32_t v = 0; v < n_verts; v++) {
+            float acc[3] = {0.f, 0.f, 0.f};
+            for (uint32_t d = 0; d < max_deg; d++) {
+                const float fv = vf.data[size_t(d) * n_verts + v];
+                if (fv < -0.5f) {
+                    continue;
+                }
+                const uint32_t f = uint32_t(int64_t(fv + 0.5f));
+                uint32_t idx[3];
+                for (int k = 0; k < 3; k++) {
+                    idx[k] = uint32_t(int64_t(
+                            faces.data[size_t(f) * 3 + k] + 0.5f));
+                }
+                const float* p0 = &pos.data[size_t(idx[0]) * 3];
+                const float* p1 = &pos.data[size_t(idx[1]) * 3];
+                const float* p2 = &pos.data[size_t(idx[2]) * 3];
+                const float e1[3] = {p1[0] - p0[0], p1[1] - p0[1],
+                                     p1[2] - p0[2]};
+                const float e2[3] = {p2[0] - p0[0], p2[1] - p0[1],
+                                     p2[2] - p0[2]};
+                const float* g = &term.data[size_t(f) * 3];
+                // c = e1 x e2: grad_p1 = e2 x g, grad_p2 = g x e1,
+                // grad_p0 = -(both)
+                const float g1[3] = {e2[1] * g[2] - e2[2] * g[1],
+                                     e2[2] * g[0] - e2[0] * g[2],
+                                     e2[0] * g[1] - e2[1] * g[0]};
+                const float g2[3] = {g[1] * e1[2] - g[2] * e1[1],
+                                     g[2] * e1[0] - g[0] * e1[2],
+                                     g[0] * e1[1] - g[1] * e1[0]};
+                for (int c = 0; c < 3; c++) {
+                    if (idx[1] == v) {
+                        acc[c] += g1[c];
+                    }
+                    if (idx[2] == v) {
+                        acc[c] += g2[c];
+                    }
+                    if (idx[0] == v) {
+                        acc[c] -= g1[c] + g2[c];
+                    }
+                }
+            }
+            for (int c = 0; c < 3; c++) {
+                out.data[size_t(v) * 3 + size_t(c)] = acc[c];
+            }
+        }
+        return out;
+    };
+    return MakeOp(std::move(desc),
+                  {face_term, pos_tex, faces_tex, vtx_faces_tex});
+}
+
 Variable RasterizeFaceId(const Variable& vtx_clip_pos,
                          const Variable& vtx_attrib_dummy,
                          const Variable& faces, ImgSize screen_size) {

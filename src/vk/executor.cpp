@@ -42,22 +42,35 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
             plan.imgs[var] = CreateVarImage(ctx, var);
         }
     };
-    // Geometry inputs live in vertex/index buffers (host-visible; filled by
-    // sendImg). vtx_vars order per Rasterize: {clip_pos, attrib, faces}.
+    // Geometry inputs live in vertex/index buffers. Leaves are host-visible
+    // (filled by sendImg); GPU-generated vertex data (a variable with a
+    // creator, or a leaf refreshed by the optimizer copy-back) is copied
+    // from its image on the GPU each frame -- no CPU round trip. vtx_vars
+    // order per Rasterize: {clip_pos, attrib, faces}.
     const auto ensure_vtx_buf = [&](const Variable& var, bool is_index) {
         if (plan.vtx_bufs.count(var)) {
             return;
         }
-        DRESSI_CHECK(!var.getCreator(),
-                     "GPU-generated vertex attributes are not supported yet");
+        const bool gpu_generated = bool(var.getCreator());
+        DRESSI_CHECK(!(gpu_generated && is_index),
+                     "faces must be a CPU leaf (uint conversion on upload)");
+        if (gpu_generated) {
+            // The image->buffer copy is texel-exact, so padded types
+            // (VEC3 -> RGBA32F) cannot feed a tightly packed buffer
+            DRESSI_CHECK(PhysChannels(var.getVType()) ==
+                                 NumComponents(var.getVType()),
+                         "GPU-generated geometry must be FLOAT/VEC2/VEC4");
+        }
         const ImgSize size = var.getImgSize();
         const size_t n_elems =
                 size_t(size.w) * size.h * NumComponents(var.getVType());
         plan.vtx_bufs[var] = vkw::CreateBufferPack(
                 ctx.physical_device, ctx.device, n_elems * 4,
-                is_index ? vk::BufferUsageFlagBits::eIndexBuffer
-                         : vk::BufferUsageFlagBits::eVertexBuffer,
-                vkw::HOST_VISIB_COHER_PROPS);
+                (is_index ? vk::BufferUsageFlagBits::eIndexBuffer
+                          : vk::BufferUsageFlagBits::eVertexBuffer) |
+                        vk::BufferUsageFlagBits::eTransferDst,
+                gpu_generated ? vk::MemoryPropertyFlagBits::eDeviceLocal
+                              : vkw::HOST_VISIB_COHER_PROPS);
     };
     for (const auto& stage : stages) {
         for (const auto& ss : stage.substages) {
@@ -105,6 +118,32 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
                                                   ctx.queue_family_idx, 1);
     const auto& cmd = plan.cmd_pack->cmd_bufs[0];
     vkw::BeginCommand(cmd, /*one_time_submit=*/false);
+
+    // Copies a variable's image into its vertex buffer on the GPU and makes
+    // the write visible to vertex fetch (GPU-resident geometry updates)
+    const auto copy_img_to_vtx_buf = [&](const Variable& v) {
+        vkw::CopyImageToBuffer(cmd, plan.imgs.at(v), plan.vtx_bufs.at(v),
+                               vk::ImageLayout::eShaderReadOnlyOptimal,
+                               vk::ImageLayout::eShaderReadOnlyOptimal);
+        const vk::BufferMemoryBarrier barrier(
+                vk::AccessFlagBits::eTransferWrite,
+                vk::AccessFlagBits::eVertexAttributeRead,
+                VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                plan.vtx_bufs.at(v)->buf.get(), 0, VK_WHOLE_SIZE);
+        cmd->pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                             vk::PipelineStageFlagBits::eVertexInput, {},
+                             nullptr, barrier, nullptr);
+    };
+
+    // Optimizer-updated geometry leaves: refresh the vertex buffer from the
+    // leaf's image at frame start (the copy-back wrote it last frame; on
+    // the first frame the image holds the same data sendImg uploaded)
+    for (const auto& [upd, inp] : upd_inp_map) {
+        (void)upd;
+        if (plan.vtx_bufs.count(inp) && plan.imgs.count(inp)) {
+            copy_img_to_vtx_buf(inp);
+        }
+    }
 
     // Records one RASTER stage: indexed depth-tested draw into a cleared
     // attribute attachment (deferred-shading G-buffer channel)
@@ -196,6 +235,15 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
                  {1, 1, attr_fmt, 0}},
                 pipeline_info, desc_packs, rp, 0);
         plan.pipelines.push_back(pipeline);
+
+        // GPU-generated vertex data: refresh the buffers from the producer
+        // stages' images (recorded earlier in this command buffer)
+        if (pos_var.getCreator()) {
+            copy_img_to_vtx_buf(pos_var);
+        }
+        if (attr_var.getCreator()) {
+            copy_img_to_vtx_buf(attr_var);
+        }
 
         const std::vector<vk::ClearValue> clear_vals = {
                 vk::ClearValue(vk::ClearColorValue(

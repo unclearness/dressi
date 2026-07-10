@@ -181,6 +181,13 @@ SubStages PackFunctionsIntoSubStages(const Functions& dirty_funcs,
         for (const auto& v : active.tex_vars) {
             used_vars.insert(v);
         }
+        // GPU-generated raster geometry: the executor copies the vertex
+        // buffer from the producer's image, so it must stay an output
+        for (const auto& v : active.vtx_vars) {
+            if (v.getCreator()) {
+                used_vars.insert(v);
+            }
+        }
         substages.push_back(std::move(active));
         active = SubStage{};
     };
@@ -223,8 +230,16 @@ SubStages PackFunctionsIntoSubStages(const Functions& dirty_funcs,
             }
         }
         if (!found) {
-            DRESSI_CHECK(!active.funcs.empty(),
-                         "No function is packable into an empty substage");
+            if (active.funcs.empty()) {
+                std::string names;
+                for (const auto& f : candidates) {
+                    names += " " + NodeAccess::Node(f)->name;
+                }
+                DRESSI_CHECK(false,
+                             "No function is packable into an empty "
+                             "substage; candidates:" +
+                                     names);
+            }
             close_active();
         }
     }

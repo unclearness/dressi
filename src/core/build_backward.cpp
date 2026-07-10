@@ -33,6 +33,32 @@ Variable SumToShape(const Variable& grad, const Variable& target) {
     return g;
 }
 
+namespace {
+
+// Sums gradient contributions as a tree of small SumPixelWise nodes: a
+// single n-ary node needs n input attachments, and Vulkan only guarantees
+// maxPerStageDescriptorInputAttachments >= 4
+Variable SumContribs(Variables contribs) {
+    constexpr size_t kMaxArity = 4;
+    while (contribs.size() > 1) {
+        Variables next;
+        for (size_t i = 0; i < contribs.size(); i += kMaxArity) {
+            const size_t n = std::min(kMaxArity, contribs.size() - i);
+            if (n == 1) {
+                next.push_back(contribs[i]);
+            } else {
+                next.push_back(F::SumPixelWise(
+                        Variables(contribs.begin() + int64_t(i),
+                                  contribs.begin() + int64_t(i + n))));
+            }
+        }
+        contribs = std::move(next);
+    }
+    return contribs[0];
+}
+
+}  // namespace
+
 std::tuple<Variables, Variables> BuildBackward(const Variable& loss_var) {
     DRESSI_CHECK(loss_var, "Null loss Variable");
     // The loss may be any float image (per the paper): seeding every pixel
@@ -76,7 +102,7 @@ std::tuple<Variables, Variables> BuildBackward(const Variable& loss_var) {
         if (it == fwd_bwds_map.end()) {
             continue;  // no gradient path reached this function
         }
-        Variable gy = F::SumPixelWise(it->second);
+        Variable gy = SumContribs(it->second);
         fwd_bwds_map.erase(it);
 
         const Variables xs = func.getInputVars();
@@ -104,7 +130,7 @@ std::tuple<Variables, Variables> BuildBackward(const Variable& loss_var) {
             continue;  // untouched seed (loss had no creator)
         }
         input_vars.push_back(x);
-        input_grad_vars.push_back(SumToShape(F::SumPixelWise(gxs), x));
+        input_grad_vars.push_back(SumToShape(SumContribs(gxs), x));
     }
     return {input_vars, input_grad_vars};
 }

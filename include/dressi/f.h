@@ -155,6 +155,39 @@ Variable AntiAlias(const Variable& img, const Variable& tri_id,
                    const Variable& vtx_clip, const Variable& faces,
                    const Variable& vtx_faces_tex);
 
+// ---------------------- Mesh utilities (GPU-resident) ------------------------
+// Forward-only helpers so geometry optimization runs without per-frame
+// CPU round trips. All inputs are texelFetch images; none are
+// differentiable (regularizer terms enter the OPTIMIZER update graph,
+// which is never differentiated).
+
+// HardSoftRas soft geometry on the GPU: per-face unwelded clip positions
+// enlarged about the screen-space centroid (the in-graph counterpart of
+// the examples' BuildSoftGeometry). Output VEC4 {3F,1}; behind-camera
+// faces pass through un-enlarged.
+Variable SoftClip(const Variable& vtx_clip_hard_tex, const Variable& faces_tex,
+                  ImgSize screen_size, float radius_px);
+
+// Mean of each vertex's neighbor positions: pos_tex VEC3 {V,1},
+// vtx_neighbors_tex FLOAT {V,max_deg} (-1 padding). Isolated vertices
+// return their own position (zero Laplacian).
+Variable VertexNeighborMean(const Variable& pos_tex,
+                            const Variable& vtx_neighbors_tex);
+
+// Normal-consistency gradient of sum over adjacent face pairs of
+// (1 - n_f . n_g), split in two stages:
+//   face term: d E / d cross(f) summed over the <= 3 edge neighbors
+//              (face_adj_tex VEC3 {F,1}, -1 padding) -> VEC3 {F,1}
+//   vertex grad: chain through the cross product to VEC3 {V,1} using the
+//                vertex -> incident-face adjacency
+Variable NormalConsistencyFaceTerm(const Variable& pos_tex,
+                                   const Variable& faces_tex,
+                                   const Variable& face_adj_tex);
+Variable NormalConsistencyVertexGrad(const Variable& face_term,
+                                     const Variable& pos_tex,
+                                     const Variable& faces_tex,
+                                     const Variable& vtx_faces_tex);
+
 // Samples `tex` (nearest) at per-pixel `uv`. Differentiable with respect to
 // the texture through the inverse-UV lookup table `inv_uv`: a VEC4
 // {tex_size} image of (screen_x, screen_y, valid, 0) built by rasterizing

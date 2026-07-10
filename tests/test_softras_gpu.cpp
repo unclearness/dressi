@@ -161,6 +161,96 @@ TEST(SoftRasGpu, BackwardParityCpu) {
     }
 }
 
+TEST(SoftRasGpu, FullyInGraphSilhouetteFit) {
+    // The paper's transfer model: upload once, then the whole iteration --
+    // projection, soft geometry, gradients, momentum SGD with GPU-resident
+    // state (addUpdate), vertex-buffer refresh from computed clip images --
+    // runs on the GPU with no per-iteration CPU traffic.
+    const ImgSize screen_sz = {kScreen, kScreen};
+    Variable pos(VEC3, {3, 1});
+    Variable ones(FLOAT, {3, 1});
+    Variable faces_i(IVEC3, {1, 1});
+    Variable faces_f(VEC3, {1, 1});
+    Variable vtx_faces(FLOAT, {3, 1});
+    Variable face_id(FLOAT, {3, 1});
+    Variable faces_soft(IVEC3, {1, 1});
+    Variable momentum(VEC3, {3, 1});
+    Variable target(FLOAT, {kScreen, kScreen});
+
+    // In-graph "projection": clip = (pos.xy, 0.5, 1)
+    Variable clip = F::Vec4(F::GetX(pos), F::GetY(pos), F::Float(0.5f),
+                            F::Float(1.f));
+    Variable soft_clip = F::SoftClip(clip, faces_f, screen_sz, kRadius);
+    Variable out = F::RasterizeSoft(soft_clip, face_id, faces_soft, clip,
+                                    faces_f, vtx_faces, screen_sz, kRadius);
+    Variable pred = softras_test::SoftSilhouette(out, kRadius);
+    Variable diff = F::StopGradient(target) - pred;
+    Variable loss = diff * diff;  // image loss, no reduction
+    Variable pos_mut = pos;
+    pos_mut.setRequiresGradRecursively();
+
+    DressiAD ad;
+    bool state_registered = false;
+    ad.setLossVar(loss);
+    ad.setOptimizer([&](Variables xs, Variables gxs) {
+        Variable m_new = momentum * 0.8f + gxs[0];
+        if (!state_registered) {
+            ad.addUpdate(momentum, m_new);
+            state_registered = true;
+        }
+        return Variables{xs[0] - m_new * 4e-4f};
+    });
+
+    // One-time uploads
+    CpuTensor t_pos = MakeTensor(
+            VEC3, {3, 1},
+            // NDC positions of screen (8,8), (22,10), (10,23)
+            {8.f / kScreen * 2 - 1, 8.f / kScreen * 2 - 1, 0.f,
+             22.f / kScreen * 2 - 1, 10.f / kScreen * 2 - 1, 0.f,
+             10.f / kScreen * 2 - 1, 23.f / kScreen * 2 - 1, 0.f});
+    CpuTensor t_target_clip = MakeTensor(
+            VEC4, {3, 1},
+            {(8 + 4.f) / kScreen * 2 - 1, (8 + 3.f) / kScreen * 2 - 1, 0.5f,
+             1.f, (22 + 4.f) / kScreen * 2 - 1,
+             (10 + 3.f) / kScreen * 2 - 1, 0.5f, 1.f,
+             (10 + 4.f) / kScreen * 2 - 1, (23 + 3.f) / kScreen * 2 - 1,
+             0.5f, 1.f});
+    CpuTensor t_faces = MakeTensor(IVEC3, {1, 1}, {0, 1, 2});
+    ad.sendImg(pos, CpuImageFromTensor(t_pos));
+    ad.sendImg(ones, CpuImage(3, 1, 1, 1.f));
+    ad.sendImg(faces_i, CpuImageFromTensor(t_faces));
+    CpuTensor t_faces_f = t_faces;
+    t_faces_f.vtype = VEC3;
+    ad.sendImg(faces_f, CpuImageFromTensor(t_faces_f));
+    ad.sendImg(vtx_faces, CpuImage(3, 1, 1, 0.f));  // all verts -> face 0
+    ad.sendImg(face_id, CpuImage(3, 1, 1, 0.f));
+    ad.sendImg(faces_soft, CpuImageFromTensor(t_faces));
+    ad.sendImg(momentum, CpuImage(3, 1, 3, 0.f));
+    ad.sendImg(target,
+               CpuImageFromTensor(HardMask(t_target_clip, t_faces_f)));
+
+    const auto loss_value = [&]() {
+        const CpuImage li = ad.recvImg(loss);
+        double s = 0.0;
+        for (float v : li.data) {
+            s += v;
+        }
+        return float(s);
+    };
+
+    float first_loss = 0.f;
+    float last_loss = 0.f;
+    for (int iter = 0; iter < 250; iter++) {
+        ad.execStep();  // no per-iteration CPU traffic
+        if (iter == 0) {
+            first_loss = loss_value();
+        }
+    }
+    last_loss = loss_value();
+    EXPECT_LT(last_loss, first_loss / 10.f)
+            << "first " << first_loss << " last " << last_loss;
+}
+
 TEST(SoftRasGpu, SingleTriangleSilhouetteFit) {
     // Optimize a triangle's clip xy toward a shifted target silhouette
     SoftScene scene({Clip(8, 8, 0.5f), Clip(22, 10, 0.5f),

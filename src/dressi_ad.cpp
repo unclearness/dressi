@@ -55,12 +55,19 @@ struct DressiAD::Impl {
     }
 
     Variables extra_outputs;  // user-demanded exports (markOutput)
+    // Extra end-of-frame copy-backs: {input leaf, updated} pairs for
+    // GPU-resident optimizer state (addUpdate)
+    std::vector<std::pair<Variable, Variable>> extra_updates;
 
     Variables rootVars() const {
         Variables roots = updated_vars;
         roots.push_back(loss_var);
         for (const auto& v : extra_outputs) {
             roots.push_back(v);
+        }
+        for (const auto& [inp, upd] : extra_updates) {
+            (void)inp;
+            roots.push_back(upd);
         }
         return roots;
     }
@@ -88,6 +95,10 @@ struct DressiAD::Impl {
             for (const auto& v : input_vars) {
                 seeds.push_back(v);
             }
+        }
+        for (const auto& [inp, upd] : extra_updates) {
+            (void)upd;
+            seeds.push_back(inp);
         }
         return seeds;
     }
@@ -134,6 +145,21 @@ void DressiAD::markOutput(const Variable& var) {
     m_impl->extra_outputs.push_back(var);
     if (m_impl->init_status > TRAVERSE) {
         m_impl->init_status = TRAVERSE;  // roots changed; rebuild packing
+    }
+}
+
+void DressiAD::addUpdate(const Variable& input_leaf, const Variable& updated) {
+    DRESSI_CHECK(input_leaf && updated, "addUpdate: null Variable");
+    DRESSI_CHECK(!input_leaf.getCreator(),
+                 "addUpdate: input must be a leaf Variable");
+    DRESSI_CHECK(updated.getCreator(),
+                 "addUpdate: updated must be a computed Variable");
+    DRESSI_CHECK(input_leaf.getVType() == updated.getVType() &&
+                         input_leaf.getImgSize() == updated.getImgSize(),
+                 "addUpdate: updated must match the input's type and size");
+    m_impl->extra_updates.emplace_back(input_leaf, updated);
+    if (m_impl->init_status > OPTIMIZER) {
+        m_impl->init_status = OPTIMIZER;  // copy-back set changed
     }
 }
 
@@ -244,6 +270,11 @@ void DressiAD::execStep() {
                              "and size");
                 im.upd_inp_map[upd] = inp;
             }
+        }
+        // Extra copy-backs for GPU-resident optimizer state (addUpdate;
+        // typically registered from inside the optimizer lambda above)
+        for (const auto& [inp, upd] : im.extra_updates) {
+            im.upd_inp_map[upd] = inp;
         }
         timer.mark("optimizer");
     }

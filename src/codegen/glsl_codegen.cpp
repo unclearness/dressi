@@ -137,12 +137,26 @@ std::string GenerateFragShader(const SubStage& ss) {
     // r = min(|edge_fn(p_s)| / edge_len, 1). Owner preference
     // {tri(n), tri(s)} approximates closest-depth selection.
     bool needs_aa_helper = false;
+    bool needs_face_cross = false;
     for (const auto& f : ss.funcs) {
         const std::string& c = NodeAccess::Node(f)->fwd_code;
         if (c == "__antialias__" || c == "__antialias_bwd_img__" ||
             c == "__antialias_bwd_vtx__") {
             needs_aa_helper = true;
         }
+        if (c == "__nc_face_term__") {
+            needs_face_cross = true;
+        }
+    }
+    if (needs_face_cross) {
+        head << R"(vec3 dressi_face_cross(sampler2D vpos, sampler2D faces, int f) {
+    ivec3 vi = ivec3(texelFetch(faces, ivec2(f, 0), 0).xyz + 0.5);
+    vec3 p0 = texelFetch(vpos, ivec2(vi.x, 0), 0).xyz;
+    vec3 p1 = texelFetch(vpos, ivec2(vi.y, 0), 0).xyz;
+    vec3 p2 = texelFetch(vpos, ivec2(vi.z, 0), 0).xyz;
+    return cross(p1 - p0, p2 - p0);
+}
+)";
     }
     if (needs_aa_helper) {
         head << R"(const ivec2 dressi_aa_offs[8] = ivec2[8](
@@ -208,7 +222,11 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
                code.rfind("__gather_dist_grad__", 0) == 0 ||
                code == "__antialias__" ||
                code == "__antialias_bwd_img__" ||
-               code == "__antialias_bwd_vtx__";
+               code == "__antialias_bwd_vtx__" ||
+               code.rfind("__soft_clip__", 0) == 0 ||
+               code == "__vertex_neighbor_mean__" ||
+               code == "__nc_face_term__" ||
+               code == "__nc_vertex_grad__";
     };
     std::map<Variable, size_t> slt_binding;
     for (size_t i = 0; i < ss.slt_vars.size(); i++) {
@@ -357,6 +375,152 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
             continue;
         }
 
+        if (node->fwd_code.rfind("__soft_clip__", 0) == 0) {
+            // xs = {vtx_clip_hard_tex, faces_tex}; output texel = soft
+            // vertex (face f = i/3, corner i%3): centroid-scaled clip
+            // position (GPU counterpart of BuildSoftGeometry)
+            const std::string& code2 = node->fwd_code;
+            const float radius_px =
+                    std::stof(code2.substr(code2.find("r=") + 2));
+            const int scr_w = std::stoi(code2.substr(code2.find("w=") + 2));
+            const int scr_h = std::stoi(code2.substr(code2.find("h=") + 2));
+            const size_t cl_bind = slt_binding.at(xs[0]);
+            const size_t fc_bind = slt_binding.at(xs[1]);
+            body << "    vec4 " << y_name << ";\n";
+            body << "    {\n";
+            body << "        int i = dressi_coord.x;\n";
+            body << "        int f = i / 3;\n";
+            body << "        int kc = i - f * 3;\n";
+            body << "        ivec3 vi = ivec3(texelFetch(u_slt" << fc_bind
+                 << ", ivec2(f, 0), 0).xyz + 0.5);\n";
+            body << "        vec4 cc[3]; vec2 s[3]; bool ok = true;\n";
+            body << "        for (int k = 0; k < 3; k++) {\n";
+            body << "            cc[k] = texelFetch(u_slt" << cl_bind
+                 << ", ivec2(vi[k], 0), 0);\n";
+            body << "            if (cc[k].w <= 1e-6) { ok = false; }\n";
+            body << "            else s[k] = (cc[k].xy / cc[k].w * 0.5"
+                    " + 0.5) * vec2("
+                 << scr_w << ".0, " << scr_h << ".0);\n";
+            body << "        }\n";
+            body << "        " << y_name << " = cc[kc];\n";
+            body << "        if (ok) {\n";
+            body << "            vec2 ce = (s[0] + s[1] + s[2]) / 3.0;\n";
+            body << "            float dmin = 1e30;\n";
+            body << "            for (int k = 0; k < 3; k++) {\n";
+            body << "                vec2 a = s[k];"
+                    " vec2 b = s[(k + 1) % 3];\n";
+            body << "                vec2 e = b - a;"
+                    " float len = length(e);\n";
+            body << "                if (len < 1e-6) continue;\n";
+            body << "                dmin = min(dmin, abs(e.x * (ce.y - a.y)"
+                    " - e.y * (ce.x - a.x)) / len);\n";
+            body << "            }\n";
+            body << "            float kk = dmin < 1e29 ? min(1.0 + "
+                 << FloatLit(radius_px)
+                 << " / max(dmin, 1e-3), 8.0) : 1.0;\n";
+            body << "            vec2 sv = ce + kk * (s[kc] - ce);\n";
+            body << "            " << y_name << ".x = (sv.x / " << scr_w
+                 << ".0 * 2.0 - 1.0) * cc[kc].w;\n";
+            body << "            " << y_name << ".y = (sv.y / " << scr_h
+                 << ".0 * 2.0 - 1.0) * cc[kc].w;\n";
+            body << "        }\n";
+            body << "    }\n";
+            continue;
+        }
+        if (node->fwd_code == "__vertex_neighbor_mean__") {
+            // xs = {pos_tex, vtx_neighbors_tex}
+            const size_t ps_bind = slt_binding.at(xs[0]);
+            const size_t ad_bind = slt_binding.at(xs[1]);
+            const uint32_t max_deg = xs[1].getImgSize().h;
+            body << "    vec3 " << y_name << ";\n";
+            body << "    {\n";
+            body << "        int vid = dressi_coord.x;\n";
+            body << "        vec3 mean = vec3(0.0); float cnt = 0.0;\n";
+            body << "        for (int d = 0; d < " << max_deg
+                 << "; d++) {\n";
+            body << "            float nv = texelFetch(u_slt" << ad_bind
+                 << ", ivec2(vid, d), 0).x;\n";
+            body << "            if (nv < -0.5) continue;\n";
+            body << "            mean += texelFetch(u_slt" << ps_bind
+                 << ", ivec2(int(nv + 0.5), 0), 0).xyz;\n";
+            body << "            cnt += 1.0;\n";
+            body << "        }\n";
+            body << "        " << y_name << " = cnt > 0.5 ? mean / cnt"
+                    " : texelFetch(u_slt"
+                 << ps_bind << ", ivec2(vid, 0), 0).xyz;\n";
+            body << "    }\n";
+            continue;
+        }
+        if (node->fwd_code == "__nc_face_term__") {
+            // xs = {pos_tex, faces_tex, face_adj_tex}: d E / d cross(f) of
+            // sum over adjacent face pairs of (1 - n_f . n_g)
+            const size_t ps_bind = slt_binding.at(xs[0]);
+            const size_t fc_bind = slt_binding.at(xs[1]);
+            const size_t fa_bind = slt_binding.at(xs[2]);
+            body << "    vec3 " << y_name << " = vec3(0.0);\n";
+            body << "    {\n";
+            body << "        int f = dressi_coord.x;\n";
+            body << "        vec3 ca = dressi_face_cross(u_slt" << ps_bind
+                 << ", u_slt" << fc_bind << ", f);\n";
+            body << "        float la = length(ca);\n";
+            body << "        if (la >= 1e-12) {\n";
+            body << "            vec3 na = ca / la;\n";
+            body << "            vec3 adjf = texelFetch(u_slt" << fa_bind
+                 << ", ivec2(f, 0), 0).xyz;\n";
+            body << "            for (int j = 0; j < 3; j++) {\n";
+            body << "                if (adjf[j] < -0.5) continue;\n";
+            body << "                vec3 cb = dressi_face_cross(u_slt"
+                 << ps_bind << ", u_slt" << fc_bind
+                 << ", int(adjf[j] + 0.5));\n";
+            body << "                float lb = length(cb);\n";
+            body << "                if (lb < 1e-12) continue;\n";
+            body << "                vec3 nb = cb / lb;\n";
+            body << "                " << y_name
+                 << " += -(nb - dot(na, nb) * na) / la;\n";
+            body << "            }\n";
+            body << "        }\n";
+            body << "    }\n";
+            continue;
+        }
+        if (node->fwd_code == "__nc_vertex_grad__") {
+            // xs = {face_term, pos_tex, faces_tex, vtx_faces_tex}: chain
+            // the per-face cross-product gradient to the vertices
+            const size_t tm_bind = slt_binding.at(xs[0]);
+            const size_t ps_bind = slt_binding.at(xs[1]);
+            const size_t fc_bind = slt_binding.at(xs[2]);
+            const size_t vf_bind = slt_binding.at(xs[3]);
+            const uint32_t max_deg = xs[3].getImgSize().h;
+            body << "    vec3 " << y_name << " = vec3(0.0);\n";
+            body << "    {\n";
+            body << "        int vid = dressi_coord.x;\n";
+            body << "        for (int d = 0; d < " << max_deg
+                 << "; d++) {\n";
+            body << "            float fv = texelFetch(u_slt" << vf_bind
+                 << ", ivec2(vid, d), 0).x;\n";
+            body << "            if (fv < -0.5) continue;\n";
+            body << "            int f = int(fv + 0.5);\n";
+            body << "            ivec3 vi = ivec3(texelFetch(u_slt"
+                 << fc_bind << ", ivec2(f, 0), 0).xyz + 0.5);\n";
+            body << "            vec3 p0 = texelFetch(u_slt" << ps_bind
+                 << ", ivec2(vi.x, 0), 0).xyz;\n";
+            body << "            vec3 e1 = texelFetch(u_slt" << ps_bind
+                 << ", ivec2(vi.y, 0), 0).xyz - p0;\n";
+            body << "            vec3 e2 = texelFetch(u_slt" << ps_bind
+                 << ", ivec2(vi.z, 0), 0).xyz - p0;\n";
+            body << "            vec3 g = texelFetch(u_slt" << tm_bind
+                 << ", ivec2(f, 0), 0).xyz;\n";
+            body << "            vec3 g1 = cross(e2, g);\n";
+            body << "            vec3 g2 = cross(g, e1);\n";
+            body << "            if (vi.y == vid) " << y_name
+                 << " += g1;\n";
+            body << "            if (vi.z == vid) " << y_name
+                 << " += g2;\n";
+            body << "            if (vi.x == vid) " << y_name
+                 << " -= g1 + g2;\n";
+            body << "        }\n";
+            body << "    }\n";
+            continue;
+        }
         if (node->fwd_code == "__antialias__") {
             // xs = {img, tri_id, vtx_clip, faces}: Eq.3-5 forward blend
             const size_t img_b = slt_binding.at(xs[0]);

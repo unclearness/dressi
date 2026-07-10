@@ -55,6 +55,13 @@ public:
     // before the first execStep() (or a rebuild follows).
     void markOutput(const Variable& var);
 
+    // Registers an extra end-of-frame copy-back: `updated` (a computed
+    // variable) overwrites `input_leaf`'s image each iteration, exactly
+    // like optimizer outputs. Lets optimizer STATE (momenta, iteration
+    // counters, ...) live entirely on the GPU with no per-frame CPU
+    // traffic. Safe to call from inside the optimizer lambda (once).
+    void addUpdate(const Variable& input_leaf, const Variable& updated);
+
     // Introspection (current build)
     size_t getStageCount() const;
     size_t getSubStageCount() const;
