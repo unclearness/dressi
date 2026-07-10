@@ -364,3 +364,26 @@ mesh), 1 view, full iteration:
 
 Self-reconstruction from a 0.8x shrunken copy converges to IoU 0.9858
 (2000 iters, K=3, 16 samples, 1 flipped pair of 961).
+
+## Follow-up: nvdiffrast head-to-head on the Avocado (same GPU)
+
+scripts/nvdiffrast_bench.py (uv venv: torch 2.13.0+cu130, nvdiffrast
+0.4.0 @ git head, RasterizeCudaContext) runs the same task on the same
+RTX PRO 6000: Avocado 406v/682f silhouette self-reconstruction, per
+iteration rasterize + antialias(mask) + MSE + backward + Adam.
+
+| resolution | nvdiffrast | ours K=1 | ours K=3 |
+|---|---|---|---|
+| 256^2  | 1.29 | 0.20 | 0.39 |
+| 512^2  | 1.44 | 0.28 | 0.65 |
+| 1024^2 | 1.27 | 0.58 | 1.38 |
+| 2048^2 | 1.30 | 1.54 | 4.49 |
+
+Ours is 6.5x / 5.1x / 2.2x faster at 256/512/1024. nvdiffrast's profile
+is flat (~1.3 ms) -- at this mesh size it is bound by PyTorch/host launch
+overhead, not GPU work -- so at 2048^2 it edges ahead of our K=1 (its
+CUDA kernels scale better than our ~10 full-screen RGBA32F passes).
+Note our iteration additionally runs the Laplacian/normal-consistency
+regularizers and in-graph Adam state, which the nvdiffrast script does
+not. Matches the paper's Table 4 relationship (Dressi ahead of
+nvdiffrast) at the primary resolutions.
