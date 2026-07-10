@@ -182,6 +182,27 @@ std::vector<std::array<uint32_t, 2>> BuildFaceAdjacency(
     return pairs;
 }
 
+dressi::CpuImage VertexFacesTex(const dressi::CpuImage& faces,
+                                uint32_t n_verts) {
+    std::vector<std::vector<uint32_t>> vf(n_verts);
+    for (uint32_t f = 0; f < faces.width; f++) {
+        for (int k = 0; k < 3; k++) {
+            vf[uint32_t(faces.at(f, 0, uint32_t(k)))].push_back(f);
+        }
+    }
+    uint32_t max_deg = 1;
+    for (const auto& fs : vf) {
+        max_deg = std::max(max_deg, uint32_t(fs.size()));
+    }
+    dressi::CpuImage tex(n_verts, max_deg, 1, -1.f);
+    for (uint32_t v = 0; v < n_verts; v++) {
+        for (uint32_t d = 0; d < vf[v].size(); d++) {
+            tex.at(v, d, 0) = float(vf[v][d]);
+        }
+    }
+    return tex;
+}
+
 dressi::CpuImage NormalConsistencyGrad(
         const dressi::CpuImage& pos, const dressi::CpuImage& faces,
         const std::vector<std::array<uint32_t, 2>>& face_adj, float lambda) {

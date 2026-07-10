@@ -118,11 +118,15 @@ Variable Rasterize(const Variable& vtx_clip_pos, const Variable& vtx_attrib,
 //   faces_soft:        IVEC3 {F,1} sequential (3i,3i+1,3i+2) faces (leaf)
 //   vtx_clip_hard_tex: VEC4 {V,1} original clip positions as an image leaf
 //   faces_tex:         VEC3 {F,1} float-valued vertex indices as an image
-// (see BuildSoftGeometry in the examples for the CPU-side enlargement)
+//   vtx_faces_tex:     FLOAT {V,max_deg} vertex -> incident-face ids
+//                      (-1 padding; static topology, bounds the backward's
+//                      per-vertex pixel scan)
+// (see BuildSoftGeometry / VertexFacesTex in the examples)
 Variable RasterizeSoft(const Variable& vtx_clip_soft, const Variable& face_id,
                        const Variable& faces_soft,
                        const Variable& vtx_clip_hard_tex,
-                       const Variable& faces_tex, ImgSize screen_size,
+                       const Variable& faces_tex,
+                       const Variable& vtx_faces_tex, ImgSize screen_size,
                        float radius_px);
 
 // Rasterizes the triangle-ID buffer: float(face_index) + 1 per covered
@@ -141,12 +145,15 @@ Variable RasterizeFaceId(const Variable& vtx_clip_pos,
 // `img` and w.r.t. `vtx_clip` (dense boundary gradients through the edge
 // distance). Pass the SAME clip-position leaf used for rasterization so
 // the gradient reaches it.
-//   img:      float image to anti-alias (the rasterized mask/color)
-//   tri_id:   FLOAT image from RasterizeFaceId (same size as img)
-//   vtx_clip: VEC4 {V,1} clip positions as an image leaf
-//   faces:    VEC3 {F,1} float-valued vertex indices as an image leaf
+//   img:           float image to anti-alias (the rasterized mask/color)
+//   tri_id:        FLOAT image from RasterizeFaceId (same size as img)
+//   vtx_clip:      VEC4 {V,1} clip positions as an image leaf
+//   faces:         VEC3 {F,1} float-valued vertex indices as an image leaf
+//   vtx_faces_tex: FLOAT {V,max_deg} vertex -> incident-face ids (-1
+//                  padding; bounds the vertex backward's pixel scan)
 Variable AntiAlias(const Variable& img, const Variable& tri_id,
-                   const Variable& vtx_clip, const Variable& faces);
+                   const Variable& vtx_clip, const Variable& faces,
+                   const Variable& vtx_faces_tex);
 
 // Samples `tex` (nearest) at per-pixel `uv`. Differentiable with respect to
 // the texture through the inverse-UV lookup table `inv_uv`: a VEC4

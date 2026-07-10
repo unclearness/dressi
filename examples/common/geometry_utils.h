@@ -29,6 +29,12 @@ dressi::CpuImage UniformLaplacianGrad(
 std::vector<std::array<uint32_t, 2>> BuildFaceAdjacency(
         const dressi::CpuImage& faces);
 
+// Vertex -> incident-face adjacency as a {V, max_degree} 1-channel image
+// (face index as float, -1 padding). Static topology; upload once and the
+// gather backwards skip their O(V*F) face scan.
+dressi::CpuImage VertexFacesTex(const dressi::CpuImage& faces,
+                                uint32_t n_verts);
+
 // Normal-consistency regularization gradient {V,1,3} of
 // lambda * sum_{adjacent faces (f,g)} (1 - n_f . n_g)
 // (analytic through the normalized cross products; penalizes creases and

@@ -157,14 +157,20 @@ int main(int argc, char* argv[]) try {
                  n_verts, n_faces, opt.n_views, screen.w, screen.h);
 
     // -------------------------- Shared leaves ----------------------------
+    // Static vertex->incident-face adjacency (bounds the gather backwards)
+    const CpuImage b_vf_img = VertexFacesTex(bunny.faces,
+                                             bunny.numVertices());
+    const CpuImage s_vf_img = VertexFacesTex(sphere.faces, n_verts);
     // Bunny (target) static leaves
     Variable b_ones(FLOAT, {bunny.numVertices(), 1});
     Variable b_faces_i(IVEC3, {bunny.numFaces(), 1});
     Variable b_faces_f(VEC3, {bunny.numFaces(), 1});
+    Variable b_vtx_faces(FLOAT, b_vf_img.getImgSize());
     // Sphere static leaves
     Variable s_ones(FLOAT, {n_verts, 1});
     Variable s_faces_i(IVEC3, {n_faces, 1});
     Variable s_faces_f(VEC3, {n_faces, 1});
+    Variable s_vtx_faces(FLOAT, s_vf_img.getImgSize());
     Variable s_face_id(FLOAT, {n_faces * 3, 1});   // hardsoftras
     Variable s_faces_soft(IVEC3, {n_faces, 1});    // hardsoftras
 
@@ -192,8 +198,8 @@ int main(int argc, char* argv[]) try {
             Variable t_tri = F::RasterizeFaceId(view.tgt_clip, b_ones,
                                                 b_faces_i, screen);
             // AA'd target so pred can match it exactly at convergence
-            view.target = F::StopGradient(
-                    F::AntiAlias(t_mask, t_tri, view.tgt_clip, b_faces_f));
+            view.target = F::StopGradient(F::AntiAlias(
+                    t_mask, t_tri, view.tgt_clip, b_faces_f, b_vtx_faces));
         }
 
         // Prediction: sphere silhouette, differentiable in the clip leaf
@@ -202,7 +208,7 @@ int main(int argc, char* argv[]) try {
             view.soft_clip = Variable(VEC4, {n_faces * 3, 1});
             Variable out = F::RasterizeSoft(view.soft_clip, s_face_id,
                                             s_faces_soft, view.clip,
-                                            s_faces_f, screen,
+                                            s_faces_f, s_vtx_faces, screen,
                                             opt.radius_px);
             Variable soft_sil = F::StopGradient(F::GetW(out)) *
                                 F::Sigmoid(F::GetX(out) * sigma_scale);
@@ -218,7 +224,8 @@ int main(int argc, char* argv[]) try {
                                          screen);
             Variable tri = F::RasterizeFaceId(view.clip, s_ones, s_faces_i,
                                               screen);
-            view.pred = F::AntiAlias(mask, tri, view.clip, s_faces_f);
+            view.pred = F::AntiAlias(mask, tri, view.clip, s_faces_f,
+                                     s_vtx_faces);
         }
         // Per-pixel loss IMAGE (no reduction to {1,1}, per the paper:
         // BuildBackward seeds gradient 1 at every pixel, so the log-step
@@ -267,9 +274,11 @@ int main(int argc, char* argv[]) try {
     ad.sendImg(b_ones, b_ones_img);
     ad.sendImg(b_faces_i, bunny.faces);
     ad.sendImg(b_faces_f, bunny.faces);
+    ad.sendImg(b_vtx_faces, b_vf_img);
     ad.sendImg(s_ones, s_ones_img);
     ad.sendImg(s_faces_i, sphere.faces);
     ad.sendImg(s_faces_f, sphere.faces);
+    ad.sendImg(s_vtx_faces, s_vf_img);
     for (auto& view : views) {
         ad.sendImg(view.tgt_clip, TransformToClip(bunny.pos, view.mvp));
     }

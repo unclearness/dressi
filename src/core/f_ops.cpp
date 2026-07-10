@@ -1113,15 +1113,17 @@ namespace {
 // the 1/w terms, z gradient is exactly zero).
 Variable GatherDistGrad(const Variable& gy_screen, const Variable& raster_out,
                         const Variable& vtx_clip_tex,
-                        const Variable& faces_tex, float radius_px) {
+                        const Variable& faces_tex,
+                        const Variable& vtx_faces_tex, float radius_px) {
     OpDesc desc;
     desc.name = "GatherDistGrad";
     // Special-cased by the shader codegen; the enlargement radius rides on
     // the marker so the shader can bound each vertex's pixel scan by the
-    // exact soft-triangle bbox of its incident faces
+    // exact soft-triangle bbox of its incident faces (from vtx_faces_tex)
     desc.fwd_code = "__gather_dist_grad__ r=" + FloatLiteral(radius_px);
     desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch,
-                         InputAccess::TexelFetch, InputAccess::TexelFetch};
+                         InputAccess::TexelFetch, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch};
     desc.infer = [](const Variables& xs) -> std::pair<VType, ImgSize> {
         return {VEC4, xs[2].getImgSize()};
     };
@@ -1186,8 +1188,8 @@ Variable GatherDistGrad(const Variable& gy_screen, const Variable& raster_out,
         }
         return out;
     };
-    return MakeOp(std::move(desc),
-                  {gy_screen, raster_out, vtx_clip_tex, faces_tex});
+    return MakeOp(std::move(desc), {gy_screen, raster_out, vtx_clip_tex,
+                                    faces_tex, vtx_faces_tex});
 }
 
 }  // namespace
@@ -1195,7 +1197,8 @@ Variable GatherDistGrad(const Variable& gy_screen, const Variable& raster_out,
 Variable RasterizeSoft(const Variable& vtx_clip_soft, const Variable& face_id,
                        const Variable& faces_soft,
                        const Variable& vtx_clip_hard_tex,
-                       const Variable& faces_tex, ImgSize screen_size,
+                       const Variable& faces_tex,
+                       const Variable& vtx_faces_tex, ImgSize screen_size,
                        float radius_px) {
     DRESSI_CHECK(vtx_clip_soft.getVType() == VEC4 &&
                          vtx_clip_soft.getImgSize().h == 1,
@@ -1215,6 +1218,10 @@ Variable RasterizeSoft(const Variable& vtx_clip_soft, const Variable& face_id,
     DRESSI_CHECK(faces_tex.getVType() == VEC3 &&
                          faces_tex.getImgSize() == faces_soft.getImgSize(),
                  "RasterizeSoft: faces_tex must be VEC3 {F,1}");
+    DRESSI_CHECK(vtx_faces_tex.getVType() == FLOAT &&
+                         vtx_faces_tex.getImgSize().w ==
+                                 vtx_clip_hard_tex.getImgSize().w,
+                 "RasterizeSoft: vtx_faces_tex must be FLOAT {V,max_deg}");
     DRESSI_CHECK(radius_px > 0.f, "RasterizeSoft: radius_px must be > 0");
 
     OpDesc desc;
@@ -1225,7 +1232,7 @@ Variable RasterizeSoft(const Variable& vtx_clip_soft, const Variable& face_id,
     desc.shader_type = RASTER;
     desc.input_access = {InputAccess::SamePixel, InputAccess::SamePixel,
                          InputAccess::SamePixel, InputAccess::TexelFetch,
-                         InputAccess::TexelFetch};
+                         InputAccess::TexelFetch, InputAccess::TexelFetch};
     desc.infer = [screen_size](const Variables&)
             -> std::pair<VType, ImgSize> { return {VEC4, screen_size}; };
     desc.cpu = [screen_size, radius_px](const std::vector<CpuTensor>& xs) {
@@ -1239,11 +1246,11 @@ Variable RasterizeSoft(const Variable& vtx_clip_soft, const Variable& face_id,
         if (bwd_idx != 3) {
             return nullptr;
         }
-        return GatherDistGrad(gy, y, xs[3], xs[4], radius_px);
+        return GatherDistGrad(gy, y, xs[3], xs[4], xs[5], radius_px);
     };
     return MakeOp(std::move(desc),
                   {vtx_clip_soft, face_id, faces_soft, vtx_clip_hard_tex,
-                   faces_tex});
+                   faces_tex, vtx_faces_tex});
 }
 
 Variable RasterizeFaceId(const Variable& vtx_clip_pos,
@@ -1349,13 +1356,14 @@ Variable AntiAliasBwdImg(const Variable& gy, const Variable& tri_id,
 // derivative + screen->clip Jacobian; zero when r clamps at 1).
 Variable AntiAliasBwdVtx(const Variable& gy, const Variable& img,
                          const Variable& tri_id, const Variable& vtx_clip,
-                         const Variable& faces) {
+                         const Variable& faces,
+                         const Variable& vtx_faces_tex) {
     OpDesc desc;
     desc.name = "AntiAliasBwdVtx";
     desc.fwd_code = "__antialias_bwd_vtx__";
     desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch,
                          InputAccess::TexelFetch, InputAccess::TexelFetch,
-                         InputAccess::TexelFetch};
+                         InputAccess::TexelFetch, InputAccess::TexelFetch};
     desc.infer = [](const Variables& xs) -> std::pair<VType, ImgSize> {
         return {VEC4, xs[3].getImgSize()};
     };
@@ -1430,13 +1438,15 @@ Variable AntiAliasBwdVtx(const Variable& gy, const Variable& img,
         }
         return out;
     };
-    return MakeOp(std::move(desc), {gy, img, tri_id, vtx_clip, faces});
+    return MakeOp(std::move(desc),
+                  {gy, img, tri_id, vtx_clip, faces, vtx_faces_tex});
 }
 
 }  // namespace
 
 Variable AntiAlias(const Variable& img, const Variable& tri_id,
-                   const Variable& vtx_clip, const Variable& faces) {
+                   const Variable& vtx_clip, const Variable& faces,
+                   const Variable& vtx_faces_tex) {
     const VType img_type = img.getVType();
     DRESSI_CHECK(!IsIntVType(img_type) && !IsMatrixVType(img_type),
                  "AntiAlias: img must be a float image");
@@ -1450,12 +1460,17 @@ Variable AntiAlias(const Variable& img, const Variable& tri_id,
                  "AntiAlias: vtx_clip must be VEC4 {V,1}");
     DRESSI_CHECK(faces.getVType() == VEC3 && faces.getImgSize().h == 1,
                  "AntiAlias: faces must be VEC3 {F,1}");
+    DRESSI_CHECK(vtx_faces_tex.getVType() == FLOAT &&
+                         vtx_faces_tex.getImgSize().w ==
+                                 vtx_clip.getImgSize().w,
+                 "AntiAlias: vtx_faces_tex must be FLOAT {V,max_deg}");
 
     OpDesc desc;
     desc.name = "AntiAlias";
     desc.fwd_code = "__antialias__";
     desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch,
-                         InputAccess::TexelFetch, InputAccess::TexelFetch};
+                         InputAccess::TexelFetch, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch};
     desc.infer = [img_type](const Variables& xs)
             -> std::pair<VType, ImgSize> {
         return {img_type, xs[0].getImgSize()};
@@ -1466,9 +1481,9 @@ Variable AntiAlias(const Variable& img, const Variable& tri_id,
             return AntiAliasBwdImg(gy, xs[1], xs[2], xs[3]);
         }
         if (bwd_idx == 2) {
-            return AntiAliasBwdVtx(gy, xs[0], xs[1], xs[2], xs[3]);
+            return AntiAliasBwdVtx(gy, xs[0], xs[1], xs[2], xs[3], xs[4]);
         }
-        return nullptr;  // tri_id / faces are not differentiable
+        return nullptr;  // tri_id / faces / adjacency not differentiable
     };
     desc.cpu = [](const std::vector<CpuTensor>& xs) {
         const CpuTensor& img_t = xs[0];
@@ -1515,7 +1530,8 @@ Variable AntiAlias(const Variable& img, const Variable& tri_id,
         }
         return out;
     };
-    return MakeOp(std::move(desc), {img, tri_id, vtx_clip, faces});
+    return MakeOp(std::move(desc),
+                  {img, tri_id, vtx_clip, faces, vtx_faces_tex});
 }
 
 namespace {

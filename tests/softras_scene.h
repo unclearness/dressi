@@ -29,10 +29,36 @@ inline std::array<float, 4> ClipOfScreen(float sx, float sy, float z,
             (sy / float(screen) * 2.f - 1.f) * w, z * w, w};
 }
 
+// Vertex -> incident-face adjacency tensor {V, max_deg} (-1 padding)
+inline dressi::CpuTensor VertexFacesTensor(
+        const std::vector<std::array<uint32_t, 3>>& faces, uint32_t n_verts) {
+    std::vector<std::vector<uint32_t>> vf(n_verts);
+    for (uint32_t f = 0; f < faces.size(); f++) {
+        for (int k = 0; k < 3; k++) {
+            vf[faces[f][size_t(k)]].push_back(f);
+        }
+    }
+    uint32_t max_deg = 1;
+    for (const auto& fs : vf) {
+        max_deg = std::max(max_deg, uint32_t(fs.size()));
+    }
+    dressi::CpuTensor t;
+    t.vtype = dressi::FLOAT;
+    t.size = {n_verts, max_deg};
+    t.data.assign(size_t(n_verts) * max_deg, -1.f);
+    for (uint32_t v = 0; v < n_verts; v++) {
+        for (uint32_t d = 0; d < vf[v].size(); d++) {
+            t.data[size_t(d) * n_verts + v] = float(vf[v][d]);
+        }
+    }
+    return t;
+}
+
 struct SoftScene {
-    dressi::Variable soft_clip, face_id, faces_soft, hard_clip, faces_tex;
+    dressi::Variable soft_clip, face_id, faces_soft, hard_clip, faces_tex,
+            vtx_faces;
     dressi::CpuTensor t_soft_clip, t_face_id, t_faces_soft, t_hard_clip,
-            t_faces_tex;
+            t_faces_tex, t_vtx_faces;
 
     SoftScene(const std::vector<std::array<float, 4>>& hard_verts,
               const std::vector<std::array<uint32_t, 3>>& faces, float scale)
@@ -40,7 +66,11 @@ struct SoftScene {
           face_id(dressi::FLOAT, {uint32_t(faces.size()) * 3, 1}),
           faces_soft(dressi::IVEC3, {uint32_t(faces.size()), 1}),
           hard_clip(dressi::VEC4, {uint32_t(hard_verts.size()), 1}),
-          faces_tex(dressi::VEC3, {uint32_t(faces.size()), 1}) {
+          faces_tex(dressi::VEC3, {uint32_t(faces.size()), 1}),
+          vtx_faces(nullptr) {
+        t_vtx_faces =
+                VertexFacesTensor(faces, uint32_t(hard_verts.size()));
+        vtx_faces = dressi::Variable(dressi::FLOAT, t_vtx_faces.size);
         const uint32_t n_faces = uint32_t(faces.size());
         t_face_id = MakeTensor(dressi::FLOAT, {n_faces * 3, 1},
                                std::vector<float>(n_faces * 3, 0.f));
@@ -103,6 +133,7 @@ struct SoftScene {
         ev.bind(faces_soft, t_faces_soft);
         ev.bind(hard_clip, t_hard_clip);
         ev.bind(faces_tex, t_faces_tex);
+        ev.bind(vtx_faces, t_vtx_faces);
     }
 
     void send(dressi::DressiAD& ad) const {
@@ -111,11 +142,13 @@ struct SoftScene {
         ad.sendImg(faces_soft, dressi::CpuImageFromTensor(t_faces_soft));
         ad.sendImg(hard_clip, dressi::CpuImageFromTensor(t_hard_clip));
         ad.sendImg(faces_tex, dressi::CpuImageFromTensor(t_faces_tex));
+        ad.sendImg(vtx_faces, dressi::CpuImageFromTensor(t_vtx_faces));
     }
 
     dressi::Variable rasterize(dressi::ImgSize screen, float radius) const {
         return dressi::F::RasterizeSoft(soft_clip, face_id, faces_soft,
-                                        hard_clip, faces_tex, screen, radius);
+                                        hard_clip, faces_tex, vtx_faces,
+                                        screen, radius);
     }
 
 private:

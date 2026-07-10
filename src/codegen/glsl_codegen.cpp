@@ -453,23 +453,26 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
             const std::string pair_args = "u_slt" + std::to_string(tri_b) +
                                           ", u_slt" + std::to_string(cl_b) +
                                           ", u_slt" + std::to_string(fc_b);
-            const uint32_t n_faces = xs[4].getImgSize().w;
+            const size_t vf_b = slt_binding.at(xs[5]);
+            const uint32_t max_deg = xs[5].getImgSize().h;
             body << "    vec4 " << y_name << " = vec4(0.0);\n";
             body << "    {\n";
             body << "        int vid = dressi_coord.x;\n";
             body << "        vec4 vc = texelFetch(u_slt" << cl_b
                  << ", ivec2(vid, 0), 0);\n";
-            // Per-vertex scan bbox: hard bboxes of incident faces padded by
-            // the 8-neighborhood reach (an active pair's edge belongs to a
-            // face whose ID covers one of the two pixels)
+            // Per-vertex scan bbox: hard bboxes of incident faces (from the
+            // precomputed adjacency texture) padded by the 8-neighborhood
+            // reach (an active pair's edge belongs to a face whose ID
+            // covers one of the two pixels)
             body << "        vec2 bbmin = vec2(1e30);"
                     " vec2 bbmax = vec2(-1e30);\n";
-            body << "        for (int f = 0; f < " << n_faces
-                 << "; f++) {\n";
+            body << "        for (int d = 0; d < " << max_deg
+                 << "; d++) {\n";
+            body << "            float fv = texelFetch(u_slt" << vf_b
+                 << ", ivec2(vid, d), 0).x;\n";
+            body << "            if (fv < -0.5) continue;\n";
             body << "            ivec3 bvi = ivec3(texelFetch(u_slt" << fc_b
-                 << ", ivec2(f, 0), 0).xyz + 0.5);\n";
-            body << "            if (vid != bvi.x && vid != bvi.y"
-                    " && vid != bvi.z) continue;\n";
+                 << ", ivec2(int(fv + 0.5), 0), 0).xyz + 0.5);\n";
             body << "            for (int k = 0; k < 3; k++) {\n";
             body << "                vec4 c = texelFetch(u_slt" << cl_b
                  << ", ivec2(bvi[k], 0), 0);\n";
@@ -550,21 +553,24 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
             continue;
         }
         if (node->fwd_code.rfind("__gather_dist_grad__", 0) == 0) {
-            // xs = {gy_screen, raster_out, vtx_clip_tex, faces_tex}; output
-            // texel = hard vertex. Gathers gy.x * d dist / d clip over every
-            // covered pixel of faces containing this vertex (the scatter-
-            // free formulation of the HardSoftRas backward). The pixel scan
-            // is bounded by the exact soft-triangle bbox of the vertex's
-            // incident faces (same centroid-scaling formula as the CPU-side
-            // BuildSoftGeometry, radius from the marker), padded 1 px.
+            // xs = {gy_screen, raster_out, vtx_clip_tex, faces_tex,
+            // vtx_faces_tex}; output texel = hard vertex. Gathers
+            // gy.x * d dist / d clip over every covered pixel of faces
+            // containing this vertex (the scatter-free formulation of the
+            // HardSoftRas backward). The pixel scan is bounded by the exact
+            // soft-triangle bbox of the vertex's incident faces (from the
+            // precomputed adjacency texture; same centroid-scaling formula
+            // as the CPU-side BuildSoftGeometry, radius from the marker),
+            // padded 1 px.
             const float radius_px = std::stof(node->fwd_code.substr(
                     std::strlen("__gather_dist_grad__ r=")));
             const size_t gy_bind = slt_binding.at(xs[0]);
             const size_t ro_bind = slt_binding.at(xs[1]);
             const size_t cl_bind = slt_binding.at(xs[2]);
             const size_t fc_bind = slt_binding.at(xs[3]);
+            const size_t vf_bind = slt_binding.at(xs[4]);
             const ImgSize scr = xs[1].getImgSize();
-            const uint32_t n_faces = xs[3].getImgSize().w;
+            const uint32_t max_deg = xs[4].getImgSize().h;
             const std::string wh = "vec2(" + std::to_string(scr.w) + ".0, " +
                                    std::to_string(scr.h) + ".0)";
             body << "    vec4 " << y_name << " = vec4(0.0);\n";
@@ -575,12 +581,13 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
             // Per-vertex scan bbox over the soft triangles of incident faces
             body << "        vec2 bbmin = vec2(1e30);"
                     " vec2 bbmax = vec2(-1e30);\n";
-            body << "        for (int f = 0; f < " << n_faces
-                 << "; f++) {\n";
+            body << "        for (int d = 0; d < " << max_deg
+                 << "; d++) {\n";
+            body << "            float fv = texelFetch(u_slt" << vf_bind
+                 << ", ivec2(vid, d), 0).x;\n";
+            body << "            if (fv < -0.5) continue;\n";
             body << "            ivec3 bvi = ivec3(texelFetch(u_slt"
-                 << fc_bind << ", ivec2(f, 0), 0).xyz + 0.5);\n";
-            body << "            if (vid != bvi.x && vid != bvi.y"
-                    " && vid != bvi.z) continue;\n";
+                 << fc_bind << ", ivec2(int(fv + 0.5), 0), 0).xyz + 0.5);\n";
             body << "            vec2 bs[3]; bool bok = true;\n";
             body << "            for (int k = 0; k < 3; k++) {\n";
             body << "                vec4 c = texelFetch(u_slt" << cl_bind

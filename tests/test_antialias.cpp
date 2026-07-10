@@ -94,13 +94,17 @@ struct FixedBufferAa {
     Variable tri{FLOAT, {kScreen, kScreen}};
     Variable clip;
     Variable faces_f;
-    CpuTensor t_img, t_tri, t_clip, t_faces_f;
+    Variable vtx_faces{nullptr};
+    CpuTensor t_img, t_tri, t_clip, t_faces_f, t_vtx_faces;
 
     FixedBufferAa(const std::vector<std::array<float, 4>>& verts,
                   const std::vector<std::array<uint32_t, 3>>& faces,
                   std::vector<float> attr = {})
         : clip(VEC4, {uint32_t(verts.size()), 1}),
           faces_f(VEC3, {uint32_t(faces.size()), 1}) {
+        t_vtx_faces =
+                aa_test::VertexFacesTensor(faces, uint32_t(verts.size()));
+        vtx_faces = Variable(FLOAT, t_vtx_faces.size);
         std::vector<float> vc;
         for (const auto& v : verts) {
             vc.insert(vc.end(), v.begin(), v.end());
@@ -129,12 +133,15 @@ struct FixedBufferAa {
     }
 
     Variable antialiased() const {
-        return F::AntiAlias(img, tri, clip, faces_f);
+        return F::AntiAlias(img, tri, clip, faces_f, vtx_faces);
     }
 
     std::vector<Binding> bindings() const {
-        return {{img, t_img}, {tri, t_tri}, {clip, t_clip},
-                {faces_f, t_faces_f}};
+        return {{img, t_img},
+                {tri, t_tri},
+                {clip, t_clip},
+                {faces_f, t_faces_f},
+                {vtx_faces, t_vtx_faces}};
     }
 };
 
