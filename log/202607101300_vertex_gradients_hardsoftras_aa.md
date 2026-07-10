@@ -445,3 +445,25 @@ result. At 4096^2, where both are pixel-bound, nvdiffrast's hand-tuned
 kernels are leaner per pixel than our fused fragment passes (3.47 vs
 ~5.5 ms) -- reducing full-screen RGBA32F traffic in the loss/AA chains
 is the known lever if that regime matters.
+
+## Follow-up: the AA technique vs nvdiffrast up to 4K
+
+The Dr.Hair AA is the direct methodological counterpart of nvdiffrast's
+antialias (both differentiate through screen-space edge blending), so
+this is the apples-to-apples pairing. Avocado, 1 view, ms/iter
+(RTX PRO 6000; ours = stochastic backward, 8 samples):
+
+| resolution | nvdr GL v0.2.6 | nvdr CUDA v0.4.0 | ours AA | ours HSR K=1 |
+|---|---|---|---|---|
+| 256^2  | 1.78 | 1.11 | 0.49 | 0.20 |
+| 512^2  | 1.76 | 1.18 | 0.52 | 0.28 |
+| 1024^2 | 1.82 | 1.21 | 0.54 | 0.58 |
+| 2048^2 | 1.70 | 1.28 | 0.60 | 1.54 |
+| 4096^2 | 3.47 | 3.28 | 0.81 | ~5.5 |
+
+The AA beats BOTH nvdiffrast backends at every resolution including 4K
+(0.81 vs 3.3-3.5 ms, 4x): its same-ID early-out makes the forward
+perimeter-bound rather than area-bound, and the stochastic vertex
+backward is O(F). Avocado self-reconstruction quality: IoU 0.9765
+(2000 iters, 16 samples). HSR K=1 stays the fastest technique up to
+1024^2; the AA is the strongest at high resolutions.
