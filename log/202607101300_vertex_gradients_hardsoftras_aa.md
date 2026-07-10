@@ -467,3 +467,45 @@ perimeter-bound rather than area-bound, and the stochastic vertex
 backward is O(F). Avocado self-reconstruction quality: IoU 0.9765
 (2000 iters, 16 samples). HSR K=1 stays the fastest technique up to
 1024^2; the AA is the strongest at high resolutions.
+
+## Follow-up: DRTK comparison (scripts/drtk_bench.py)
+
+Same protocol (Avocado 406v/682f, 1 view, mask MSE + Adam, warmup 50 /
+measure 200). DRTK 0.1.0 built from source against torch 2.13.0+cu130 /
+CUDA 13.3 / sm_120. Canonical DRTK silhouette pipeline:
+`rasterize` -> `render` (bary) -> `edge_grad_estimator` on the hard mask.
+
+| resolution | DRTK opt ms/iter | DRTK static fwd+bwd | ours HSR K=1 | ours AA |
+|---|---|---|---|---|
+| 256^2  | 2.12   | 1.2 | 0.20 | 0.49 |
+| 512^2  | 6.15   | 1.5 | 0.28 | 0.52 |
+| 1024^2 | 19.6   | 4.6 | 0.58 | 0.54 |
+| 2048^2 | 67-108 | 17  | 1.54 | 0.60 |
+| 4096^2 | ~220   | 67  | ~5.5 | 0.81 |
+
+Findings:
+- DRTK's rasterizer is a brute-force CUDA kernel (no HW raster, no
+  binning): per-op profile at 2048^2 = rasterize 16.3 ms, everything
+  else (render/edge_grad/backward/Adam math) < 1 ms combined. It leaves
+  the host-launch floor already at 512^2 and scales ~4x per resolution
+  step.
+- The >=2048^2 optimization numbers are inflated beyond the static cost
+  and vary between runs (67-108 ms at 2048^2): silhouette-only edge
+  gradients leave interior vertices unconstrained, the mesh transiently
+  folds, and large/degenerate triangles multiply the per-triangle
+  covered-pixel cost. Bisect: fwd 16.6 / +bwd 17.0 / +adam.step 64-108.
+- Quality converges fine (final mask MSE ~7e-4 at 1024^2+).
+- Conclusion recorded in README: ours (both techniques) is faster than
+  DRTK at every resolution; DRTK targets differentiable shading
+  pipelines and a bare silhouette benchmark exercises its weakest
+  component, which is the honest caveat to the 270x headline number.
+
+Windows/CUDA 13.3 build notes for DRTK (all patched locally in the
+scratchpad clone, not upstreamed): oem-codec crash in setup.py
+(PYTHONUTF8=1 + SUBPROCESS_DECODE_ARGS override), /GR- breaks torch's
+dynamic_pointer_cast (dropped), CCCL requires /Zc:preprocessor on both
+cl and nvcc host paths, /MT + /GL link mismatch vs torch's /MD (LNK1319;
+switched to /MD, dropped /GL), VS 18 preview toolchain contamination
+(vcvars64 + DISTUTILS_USE_SDK=1 to pin MSVC 14.44), and a genuine DRTK
+bug: `string_format(const std::string&, ...)` passes a reference to
+va_start (UB; MSVC C++20 rejects statically) -- changed to const char*.

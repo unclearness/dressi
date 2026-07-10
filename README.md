@@ -65,20 +65,24 @@ generation an effective ~3-5x remains, which maps onto the known
 unimplemented items (`{1,1}` values as real uniforms, zero-copy optimizer
 aliasing).
 
-### vs nvdiffrast (same GPU, same task; `scripts/nvdiffrast_bench.py`)
+### vs nvdiffrast and DRTK (same GPU, same task; `scripts/nvdiffrast_bench.py`, `scripts/drtk_bench.py`)
 
 The current nvdiffrast (0.4.0) has removed the OpenGL rasterizer
 (`RasterizeGLContext` delegates to CUDA), so the paper-era GL backend is
 measured on a pinned v0.2.6 (late 2021 — the version the paper compared
 against; the CUDA rasterizer only appeared in v0.3.0, 2022-03).
+[DRTK](https://github.com/facebookresearch/DRTK) (Meta's PyTorch CUDA
+differentiable-rasterization kit) is measured with its canonical
+silhouette pipeline: `rasterize` + `render` + `edge_grad_estimator`
+for the boundary gradients.
 
-| resolution | nvdiffrast GL v0.2.6 | nvdiffrast CUDA v0.4.0 | ours HSR K=1 | ours AA |
-|---|---|---|---|---|
-| 256²  | 1.78 | 1.11 | **0.20** | 0.49 |
-| 512²  | 1.76 | 1.18 | **0.28** | 0.52 |
-| 1024² | 1.82 | 1.21 | **0.58** | 0.54 |
-| 2048² | 1.70 | 1.28 | 1.54 | **0.60** |
-| 4096² | 3.47 | 3.28 | ~5.5 | **0.81** |
+| resolution | nvdiffrast GL v0.2.6 | nvdiffrast CUDA v0.4.0 | DRTK 0.1.0 | ours HSR K=1 | ours AA |
+|---|---|---|---|---|---|
+| 256²  | 1.78 | 1.11 | 2.12 | **0.20** | 0.49 |
+| 512²  | 1.76 | 1.18 | 6.15 | **0.28** | 0.52 |
+| 1024² | 1.82 | 1.21 | 19.6 | **0.58** | 0.54 |
+| 2048² | 1.70 | 1.28 | 67-108 | 1.54 | **0.60** |
+| 4096² | 3.47 | 3.28 | ~220 | ~5.5 | **0.81** |
 
 ### Discussion
 
@@ -98,7 +102,17 @@ against; the CUDA rasterizer only appeared in v0.3.0, 2022-03).
   for a 256x pixel increase): its 8-neighbor forward early-outs on equal
   triangle IDs, making the cost silhouette-perimeter-bound rather than
   area-bound, and its stochastic vertex backward is O(faces). It beats
-  both nvdiffrast backends at every resolution, including 4x at 4096².
+  both nvdiffrast backends and DRTK at every resolution, including 4x
+  vs nvdiffrast (270x vs DRTK) at 4096².
+- **DRTK is pixel-bound from 512² up** — its brute-force CUDA rasterizer
+  (no hardware rasterization, no coarse binning) scales ~4x per
+  resolution step (static-geometry step: 1.2 / 1.5 / 4.6 / 17 / 67 ms).
+  The ≥2048² optimization numbers are inflated further and vary
+  run-to-run because per-triangle cost grows with covered pixels: once
+  the silhouette-only gradients deform the mesh (interior vertices are
+  unconstrained), transient large/degenerate triangles multiply the
+  rasterization cost. DRTK targets differentiable *shading* pipelines;
+  a bare silhouette task exercises exactly its weakest component.
 - **Honest limitation:** in the pixel-bound regime (HardSoftRas at
   4096²) nvdiffrast's hand-tuned CUDA kernels are leaner per pixel than
   our generated full-screen RGBA32F passes (3.3-3.5 vs ~5.5 ms); reducing
