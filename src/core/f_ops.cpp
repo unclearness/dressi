@@ -1113,11 +1113,13 @@ namespace {
 // the 1/w terms, z gradient is exactly zero).
 Variable GatherDistGrad(const Variable& gy_screen, const Variable& raster_out,
                         const Variable& vtx_clip_tex,
-                        const Variable& faces_tex) {
+                        const Variable& faces_tex, float radius_px) {
     OpDesc desc;
     desc.name = "GatherDistGrad";
-    // Special-cased by the shader codegen
-    desc.fwd_code = "__gather_dist_grad__";
+    // Special-cased by the shader codegen; the enlargement radius rides on
+    // the marker so the shader can bound each vertex's pixel scan by the
+    // exact soft-triangle bbox of its incident faces
+    desc.fwd_code = "__gather_dist_grad__ r=" + FloatLiteral(radius_px);
     desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch,
                          InputAccess::TexelFetch, InputAccess::TexelFetch};
     desc.infer = [](const Variables& xs) -> std::pair<VType, ImgSize> {
@@ -1232,12 +1234,12 @@ Variable RasterizeSoft(const Variable& vtx_clip_soft, const Variable& face_id,
     };
     // Only the dist channel is differentiable, and only w.r.t. the hard
     // clip positions; coverage/face_id/depth are piecewise constant in them
-    desc.bwd = [](const Variables& xs, const Variable& y, const Variable& gy,
-                  uint32_t bwd_idx) -> Variable {
+    desc.bwd = [radius_px](const Variables& xs, const Variable& y,
+                           const Variable& gy, uint32_t bwd_idx) -> Variable {
         if (bwd_idx != 3) {
             return nullptr;
         }
-        return GatherDistGrad(gy, y, xs[3], xs[4]);
+        return GatherDistGrad(gy, y, xs[3], xs[4], radius_px);
     };
     return MakeOp(std::move(desc),
                   {vtx_clip_soft, face_id, faces_soft, vtx_clip_hard_tex,

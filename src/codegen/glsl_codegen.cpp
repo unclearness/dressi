@@ -205,7 +205,7 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
         return code == "__reduce_2x2_sum__" ||
                code == "__upsample_nearest_2x__" ||
                code == "__gather_inv_uv__" ||
-               code == "__gather_dist_grad__" ||
+               code.rfind("__gather_dist_grad__", 0) == 0 ||
                code == "__antialias__" ||
                code == "__antialias_bwd_img__" ||
                code == "__antialias_bwd_vtx__";
@@ -453,15 +453,44 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
             const std::string pair_args = "u_slt" + std::to_string(tri_b) +
                                           ", u_slt" + std::to_string(cl_b) +
                                           ", u_slt" + std::to_string(fc_b);
+            const uint32_t n_faces = xs[4].getImgSize().w;
             body << "    vec4 " << y_name << " = vec4(0.0);\n";
             body << "    {\n";
             body << "        int vid = dressi_coord.x;\n";
             body << "        vec4 vc = texelFetch(u_slt" << cl_b
                  << ", ivec2(vid, 0), 0);\n";
-            body << "        for (int py = 0; py < " << scr.h
-                 << "; py++)\n";
-            body << "        for (int px = 0; px < " << scr.w
-                 << "; px++) {\n";
+            // Per-vertex scan bbox: hard bboxes of incident faces padded by
+            // the 8-neighborhood reach (an active pair's edge belongs to a
+            // face whose ID covers one of the two pixels)
+            body << "        vec2 bbmin = vec2(1e30);"
+                    " vec2 bbmax = vec2(-1e30);\n";
+            body << "        for (int f = 0; f < " << n_faces
+                 << "; f++) {\n";
+            body << "            ivec3 bvi = ivec3(texelFetch(u_slt" << fc_b
+                 << ", ivec2(f, 0), 0).xyz + 0.5);\n";
+            body << "            if (vid != bvi.x && vid != bvi.y"
+                    " && vid != bvi.z) continue;\n";
+            body << "            for (int k = 0; k < 3; k++) {\n";
+            body << "                vec4 c = texelFetch(u_slt" << cl_b
+                 << ", ivec2(bvi[k], 0), 0);\n";
+            body << "                if (abs(c.w) < 1e-6) continue;\n";
+            body << "                vec2 sv = (c.xy / c.w * 0.5 + 0.5) * "
+                 << wh << ";\n";
+            body << "                bbmin = min(bbmin, sv);"
+                    " bbmax = max(bbmax, sv);\n";
+            body << "            }\n";
+            body << "        }\n";
+            body << "        int px0 = clamp(int(floor(bbmin.x - 3.0)), 0, "
+                 << (scr.w - 1) << ");\n";
+            body << "        int py0 = clamp(int(floor(bbmin.y - 3.0)), 0, "
+                 << (scr.h - 1) << ");\n";
+            body << "        int px1 = clamp(int(ceil(bbmax.x + 2.0)), 0, "
+                 << (scr.w - 1) << ");\n";
+            body << "        int py1 = clamp(int(ceil(bbmax.y + 2.0)), 0, "
+                 << (scr.h - 1) << ");\n";
+            body << "        if (bbmin.x > bbmax.x) px1 = -1;\n";
+            body << "        for (int py = py0; py <= py1; py++)\n";
+            body << "        for (int px = px0; px <= px1; px++) {\n";
             body << "            ivec2 sc = ivec2(px, py);\n";
             body << "            for (int k = 0; k < 8; k++) {\n";
             body << "                ivec2 nc = sc + dressi_aa_offs[k];\n";
@@ -520,25 +549,79 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
             body << "    }\n";
             continue;
         }
-        if (node->fwd_code == "__gather_dist_grad__") {
+        if (node->fwd_code.rfind("__gather_dist_grad__", 0) == 0) {
             // xs = {gy_screen, raster_out, vtx_clip_tex, faces_tex}; output
             // texel = hard vertex. Gathers gy.x * d dist / d clip over every
             // covered pixel of faces containing this vertex (the scatter-
-            // free formulation of the HardSoftRas backward).
+            // free formulation of the HardSoftRas backward). The pixel scan
+            // is bounded by the exact soft-triangle bbox of the vertex's
+            // incident faces (same centroid-scaling formula as the CPU-side
+            // BuildSoftGeometry, radius from the marker), padded 1 px.
+            const float radius_px = std::stof(node->fwd_code.substr(
+                    std::strlen("__gather_dist_grad__ r=")));
             const size_t gy_bind = slt_binding.at(xs[0]);
             const size_t ro_bind = slt_binding.at(xs[1]);
             const size_t cl_bind = slt_binding.at(xs[2]);
             const size_t fc_bind = slt_binding.at(xs[3]);
             const ImgSize scr = xs[1].getImgSize();
+            const uint32_t n_faces = xs[3].getImgSize().w;
+            const std::string wh = "vec2(" + std::to_string(scr.w) + ".0, " +
+                                   std::to_string(scr.h) + ".0)";
             body << "    vec4 " << y_name << " = vec4(0.0);\n";
             body << "    {\n";
             body << "        int vid = dressi_coord.x;\n";
             body << "        vec4 vc = texelFetch(u_slt" << cl_bind
                  << ", ivec2(vid, 0), 0);\n";
-            body << "        for (int py = 0; py < " << scr.h
-                 << "; py++)\n";
-            body << "        for (int px = 0; px < " << scr.w
-                 << "; px++) {\n";
+            // Per-vertex scan bbox over the soft triangles of incident faces
+            body << "        vec2 bbmin = vec2(1e30);"
+                    " vec2 bbmax = vec2(-1e30);\n";
+            body << "        for (int f = 0; f < " << n_faces
+                 << "; f++) {\n";
+            body << "            ivec3 bvi = ivec3(texelFetch(u_slt"
+                 << fc_bind << ", ivec2(f, 0), 0).xyz + 0.5);\n";
+            body << "            if (vid != bvi.x && vid != bvi.y"
+                    " && vid != bvi.z) continue;\n";
+            body << "            vec2 bs[3]; bool bok = true;\n";
+            body << "            for (int k = 0; k < 3; k++) {\n";
+            body << "                vec4 c = texelFetch(u_slt" << cl_bind
+                 << ", ivec2(bvi[k], 0), 0);\n";
+            body << "                if (c.w < 1e-6)"
+                    " { bok = false; break; }\n";
+            body << "                bs[k] = (c.xy / c.w * 0.5 + 0.5) * "
+                 << wh << ";\n";
+            body << "            }\n";
+            body << "            if (!bok) continue;\n";
+            body << "            vec2 ce = (bs[0] + bs[1] + bs[2]) / 3.0;\n";
+            body << "            float dmin = 1e30;\n";
+            body << "            for (int k = 0; k < 3; k++) {\n";
+            body << "                vec2 a = bs[k];"
+                    " vec2 b = bs[(k + 1) % 3];\n";
+            body << "                vec2 e = b - a;"
+                    " float len = length(e);\n";
+            body << "                if (len < 1e-6) continue;\n";
+            body << "                dmin = min(dmin, abs(e.x * (ce.y - a.y)"
+                    " - e.y * (ce.x - a.x)) / len);\n";
+            body << "            }\n";
+            body << "            float kk = dmin < 1e29 ? min(1.0 + "
+                 << FloatLit(radius_px)
+                 << " / max(dmin, 1e-3), 8.0) : 1.0;\n";
+            body << "            for (int k = 0; k < 3; k++) {\n";
+            body << "                vec2 sv = ce + kk * (bs[k] - ce);\n";
+            body << "                bbmin = min(bbmin, sv);"
+                    " bbmax = max(bbmax, sv);\n";
+            body << "            }\n";
+            body << "        }\n";
+            body << "        int px0 = clamp(int(floor(bbmin.x - 1.5)), 0, "
+                 << (scr.w - 1) << ");\n";
+            body << "        int py0 = clamp(int(floor(bbmin.y - 1.5)), 0, "
+                 << (scr.h - 1) << ");\n";
+            body << "        int px1 = clamp(int(ceil(bbmax.x + 0.5)), 0, "
+                 << (scr.w - 1) << ");\n";
+            body << "        int py1 = clamp(int(ceil(bbmax.y + 0.5)), 0, "
+                 << (scr.h - 1) << ");\n";
+            body << "        if (bbmin.x > bbmax.x) px1 = -1;\n";
+            body << "        for (int py = py0; py <= py1; py++)\n";
+            body << "        for (int px = px0; px <= px1; px++) {\n";
             body << "            ivec2 sp = ivec2(px, py);\n";
             body << "            vec4 ro = texelFetch(u_slt" << ro_bind
                  << ", sp, 0);\n";
