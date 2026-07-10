@@ -4,7 +4,8 @@ target_link_libraries(image_fitting PRIVATE dressi)
 add_executable(texture_optimization
     texture_optimization/main.cpp
     common/asset_utils.cpp)
-target_link_libraries(texture_optimization PRIVATE dressi dressi_assets)
+target_link_libraries(texture_optimization PRIVATE dressi dressi_assets
+                                                   spdlog::spdlog)
 
 foreach(_tgt image_fitting texture_optimization)
     if(MSVC)

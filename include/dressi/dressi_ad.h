@@ -50,6 +50,11 @@ public:
     // does. Pass 0 to disable either.
     void setRebuildCounts(uint32_t fast, uint32_t full);
 
+    // Forces the variable to stay a substage output so recvImg() can read
+    // it even when packing would otherwise fuse it into a shader. Call
+    // before the first execStep() (or a rebuild follows).
+    void markOutput(const Variable& var);
+
     // Introspection (current build)
     size_t getStageCount() const;
     size_t getSubStageCount() const;

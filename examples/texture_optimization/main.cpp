@@ -1,16 +1,27 @@
 // Multi-view texture optimization on the bunny mesh with deferred unlit
-// shading. G-buffer channels (screen-space UV + coverage mask) come from
+// shading and Sobol-jittered sampling.
+//
+// G-buffer channels (screen-space UV + coverage mask) come from
 // non-differentiable rasterization; shading samples the texture, which is
-// differentiable through the inverse-UV backward. Starting from a black
-// texture, MSE against GT renders (rendered with the GT texture atlas from
-// the same pipeline) recovers the atlas on all texels visible in any view.
+// differentiable through the inverse-UV backward. Every iteration the
+// sampling UVs are offset by a quasi-random Sobol point (the paper's
+// countermeasure against texels that never receive updates), and the target
+// is rendered in-graph with the GT texture under the same jitter, so each
+// iteration constrains a fresh subset of texels. Starting from a black
+// texture, the summed per-view MSE densely recovers the GT atlas.
 
+#include <spdlog/cfg/env.h>
+#include <spdlog/spdlog.h>
+
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 #include "../common/asset_utils.h"
+#include "../common/sobol.h"
 #include "dressi/dressi.h"
 
 using namespace dressi;
@@ -21,7 +32,8 @@ namespace {
 struct View {
     Variable clip{nullptr};         // {V,1} VEC4 clip positions
     Variable inv_uv_attr{nullptr};  // {V,1} VEC4 inverse-UV screen attr
-    Variable target{nullptr};       // {screen} VEC3 GT render
+    Variable target{nullptr};       // {screen} VEC3 in-graph GT render
+    Variable pred{nullptr};         // {screen} VEC3 optimized render
     CpuImage clip_img;
     CpuImage inv_uv_attr_img;
 };
@@ -29,24 +41,32 @@ struct View {
 }  // namespace
 
 int main(int argc, char* argv[]) try {
+    spdlog::cfg::load_env_levels();  // e.g. SPDLOG_LEVEL=debug for timings
+
     const std::string data_dir = argc > 1 ? argv[1] : "data/bunny";
+    const std::string out_dir = "texopt_out";
     const ImgSize screen = {256, 256};
     const uint32_t n_views = 6;
-    const int n_iters = 400;
+    const int n_iters = 4000;
+    const float jitter_texels = 8.f;  // Sobol jitter amplitude (texels)
+
+    std::filesystem::create_directories(out_dir);
 
     // ------------------------- Load assets (CPU) -------------------------
     const Mesh mesh = LoadObjMesh(data_dir + "/bunny.obj");
     const CpuImage gt_tex_img = LoadImageRgb(data_dir + "/bunny-atlas.jpg");
     const ImgSize tex_size = {gt_tex_img.width, gt_tex_img.height};
-    std::printf("mesh: %u verts, %u faces; atlas: %ux%u\n",
-                mesh.numVertices(), mesh.numFaces(), tex_size.w, tex_size.h);
+    spdlog::info("mesh: {} verts, {} faces; atlas: {}x{}",
+                 mesh.numVertices(), mesh.numFaces(), tex_size.w, tex_size.h);
 
     // ------------------------ Graph leaf variables ------------------------
     Variable vtx_uv(VEC2, {mesh.numVertices(), 1});
     Variable faces(IVEC3, {mesh.numFaces(), 1});
     Variable uv_clip(VEC4, {mesh.numVertices(), 1});  // UV-space positions
     Variable ones(FLOAT, {mesh.numVertices(), 1});
-    Variable tex(VEC3, tex_size);
+    Variable gt_tex(VEC3, tex_size);  // GT atlas (no gradient)
+    Variable tex(VEC3, tex_size);     // optimized texture
+    Variable jitter(VEC2, {1, 1});    // per-iteration Sobol offset (UV units)
 
     const CpuImage uv_clip_img = UvAsClip(mesh.uv);
     const CpuImage ones_img(mesh.numVertices(), 1, 1, 1.f);
@@ -62,65 +82,35 @@ int main(int argc, char* argv[]) try {
         const Mat4 mvp = Mul(proj, LookAt(eye, {0, 0, 0}, {0, 1, 0}));
         views[v].clip = Variable(VEC4, {mesh.numVertices(), 1});
         views[v].inv_uv_attr = Variable(VEC4, {mesh.numVertices(), 1});
-        views[v].target = Variable(VEC3, screen);
         views[v].clip_img = TransformToClip(mesh.pos, mvp);
         views[v].inv_uv_attr_img = ScreenAttr(views[v].clip_img, screen);
     }
 
     // ------------------- Deferred unlit rendering graph -------------------
-    // G-buffer per view: screen-space UV + coverage mask; shading pass:
-    // color = mask * texture(tex, uv)
-    Variables colors;
+    // G-buffer per view: screen-space UV + coverage mask. Shading samples
+    // both textures at the jittered UV; the GT-textured render is the
+    // per-iteration target.
     Variables view_losses;
     for (auto& view : views) {
         Variable g_uv = F::Rasterize(view.clip, vtx_uv, faces, screen);
         Variable g_mask = F::Rasterize(view.clip, ones, faces, screen);
         Variable inv_uv =
                 F::Rasterize(uv_clip, view.inv_uv_attr, faces, tex_size);
-        Variable color = g_mask * F::Texture(tex, g_uv, inv_uv);
-        Variable diff = view.target - color;
-        colors.push_back(color);
+        Variable uv_j = g_uv + jitter;
+        view.target = g_mask * F::Texture(gt_tex, uv_j, inv_uv);
+        view.pred = g_mask * F::Texture(tex, uv_j, inv_uv);
+        Variable diff = F::StopGradient(view.target) - view.pred;
         view_losses.push_back(F::Mean(diff * diff));
     }
     Variable loss = F::SumPixelWise(view_losses);
 
-    const auto send_shared = [&](DressiAD& ad) {
-        ad.sendImg(vtx_uv, mesh.uv);
-        ad.sendImg(faces, mesh.faces);
-        ad.sendImg(uv_clip, uv_clip_img);
-        ad.sendImg(ones, ones_img);
-        for (auto& view : views) {
-            ad.sendImg(view.clip, view.clip_img);
-            ad.sendImg(view.inv_uv_attr, view.inv_uv_attr_img);
-        }
-    };
-
-    // ----------------------- GT renders (GT texture) ----------------------
-    std::vector<CpuImage> gt_renders;
-    {
-        DressiAD gt_ad;
-        gt_ad.setPackingMode(DressiAD::PackingMode::Naive);
-        gt_ad.setLossVar(loss);
-        send_shared(gt_ad);
-        gt_ad.sendImg(tex, gt_tex_img);
-        for (auto& view : views) {
-            gt_ad.sendImg(view.target,
-                          CpuImage(screen.w, screen.h, 3, 0.f));
-        }
-        gt_ad.execStep();
-        for (uint32_t v = 0; v < n_views; v++) {
-            gt_renders.push_back(gt_ad.recvImg(colors[v]));
-        }
-        SaveImagePng("gt_view0.png", gt_renders[0]);
-    }
-
-    // --------------- Optimization: black texture -> GT atlas ---------------
     Variable tex_mut = tex;
     tex_mut.setRequiresGradRecursively();
 
-    // MSE mean divides by N; with up to n_views gradient contributions per
-    // texel, keep the effective per-texel step below 1
-    const float lr = 0.4f * float(screen.w * screen.h * 3) / (2.f * n_views);
+    // MSE mean divides by N. Under jitter a texel typically receives its
+    // gradient from one view at a time, so scale per single contribution
+    // while keeping the worst case (all views hitting at once) stable (<2).
+    const float lr = 0.6f * float(screen.w * screen.h * 3) / (2.f * n_views);
 
     DressiAD ad;
     ad.setLossVar(loss);
@@ -131,28 +121,75 @@ int main(int argc, char* argv[]) try {
         }
         return updated;
     });
-    send_shared(ad);
-    ad.sendImg(tex, CpuImage(tex_size.w, tex_size.h, 3, 0.f));  // black
-    for (uint32_t v = 0; v < n_views; v++) {
-        ad.sendImg(views[v].target, gt_renders[v]);
+    for (auto& view : views) {
+        ad.markOutput(view.target);
+        ad.markOutput(view.pred);
     }
 
+    ad.sendImg(vtx_uv, mesh.uv);
+    ad.sendImg(faces, mesh.faces);
+    ad.sendImg(uv_clip, uv_clip_img);
+    ad.sendImg(ones, ones_img);
+    for (auto& view : views) {
+        ad.sendImg(view.clip, view.clip_img);
+        ad.sendImg(view.inv_uv_attr, view.inv_uv_attr_img);
+    }
+    ad.sendImg(gt_tex, gt_tex_img);
+    ad.sendImg(tex, CpuImage(tex_size.w, tex_size.h, 3, 0.f));  // black
+
+    // --------------------------- Optimization ----------------------------
+    const auto send_jitter = [&](int iter) {
+        const auto s = Sobol2D(uint32_t(iter));
+        CpuImage j(1, 1, 2);
+        j.data[0] = (s[0] - 0.5f) * jitter_texels / float(tex_size.w);
+        j.data[1] = (s[1] - 0.5f) * jitter_texels / float(tex_size.h);
+        ad.sendImg(jitter, j);
+    };
+
+    auto t_last = std::chrono::steady_clock::now();
     for (int iter = 0; iter < n_iters; iter++) {
+        send_jitter(iter);
         ad.execStep();
+
+        if (iter == 0) {
+            for (uint32_t v = 0; v < n_views; v++) {
+                SaveImagePng(fmt::format("{}/target_view{}.png", out_dir, v),
+                             ad.recvImg(views[v].target));
+            }
+            SaveImagePng(out_dir + "/render_first_view0.png",
+                         ad.recvImg(views[0].pred));
+        }
         if (iter % 50 == 0 || iter == n_iters - 1) {
-            std::printf("iter %4d  loss %.8f  (stages %zu)\n", iter,
-                        ad.recvImg(loss).data[0], ad.getStageCount());
+            const auto now = std::chrono::steady_clock::now();
+            const double ms =
+                    std::chrono::duration<double, std::milli>(now - t_last)
+                            .count();
+            t_last = now;
+            spdlog::info(
+                    "iter {:4d}  loss {:.8f}  stages {}  avg {:.2f} ms/iter",
+                    iter, ad.recvImg(loss).data[0], ad.getStageCount(),
+                    ms / (iter == 0 ? 1.0 : 50.0));
         }
     }
 
-    // ------------------------------ Validate ------------------------------
+    // ------------------------------ Outputs -------------------------------
+    // Final evaluation and renders at zero jitter (clean pixel centers)
+    {
+        CpuImage j0(1, 1, 2, 0.f);
+        ad.sendImg(jitter, j0);
+        ad.execStep();
+    }
     const float final_loss = ad.recvImg(loss).data[0];
     const CpuImage recovered = ad.recvImg(tex);
-    SaveImagePng("recovered_texture.png", recovered);
+    SaveImagePng(out_dir + "/recovered_texture.png", recovered);
+    for (uint32_t v = 0; v < n_views; v++) {
+        SaveImagePng(fmt::format("{}/render_last_view{}.png", out_dir, v),
+                     ad.recvImg(views[v].pred));
+    }
 
-    // Texels recovered to the GT atlas (only texels visible in some view
-    // receive gradients; the rest stay black)
-    size_t visible = 0;
+    // Texels recovered to the GT atlas (texels observed under some jitter
+    // in some view; the rest stay black)
+    size_t updated = 0;
     size_t recovered_ok = 0;
     for (size_t p = 0; p < size_t(tex_size.w) * tex_size.h; p++) {
         float rec_mag = 0.f;
@@ -163,21 +200,21 @@ int main(int argc, char* argv[]) try {
                                          gt_tex_img.data[p * 3 + c]));
         }
         if (rec_mag > 0.01f) {
-            visible++;
+            updated++;
             if (err < 0.1f) {
                 recovered_ok++;
             }
         }
     }
-    std::printf("final loss %.8f\n", final_loss);
-    std::printf("recovered texels: %zu / %zu visible (%.1f%% accurate)\n",
-                recovered_ok, visible,
-                visible ? 100.f * float(recovered_ok) / float(visible) : 0.f);
-    std::printf("wrote gt_view0.png, recovered_texture.png\n");
+    spdlog::info("final loss {:.8f}", final_loss);
+    spdlog::info("recovered texels: {} / {} updated ({:.1f}% accurate)",
+                 recovered_ok, updated,
+                 updated ? 100.f * float(recovered_ok) / float(updated)
+                         : 0.f);
+    spdlog::info("outputs in {}/", out_dir);
 
-    const bool ok = final_loss < 1e-4f &&
-                    visible > 0 &&
-                    float(recovered_ok) / float(visible) > 0.95f;
+    const bool ok = final_loss < 1e-4f && updated > 0 &&
+                    float(recovered_ok) / float(updated) > 0.95f;
     return ok ? 0 : 1;
 } catch (const std::exception& e) {
     std::printf("error: %s\n", e.what());

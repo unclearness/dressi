@@ -19,6 +19,7 @@ Testing/
 # Example outputs
 /gt_view0.png
 /recovered_texture.png
+/texopt_out/
 
 # Datasets
 /data/

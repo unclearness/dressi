@@ -253,8 +253,10 @@ std::string GenerateFragShader(const SubStage& ss) {
             // pass but their centers fall outside the UV-space triangles)
             body << "        vec4 iv = texelFetch(u_slt" << iv_bind
                  << ", dressi_coord, 0);\n";
-            body << "        for (int ny = -1; ny <= 1 && iv.z < 0.5; ny++)"
-                 << " for (int nx = -1; nx <= 1; nx++) {\n";
+            // Dilation must reach at least as far as the sampling jitter
+            // pushes reads beyond the UV charts
+            body << "        for (int ny = -4; ny <= 4 && iv.z < 0.5; ny++)"
+                 << " for (int nx = -4; nx <= 4; nx++) {\n";
             body << "            ivec2 tp = dressi_coord + ivec2(nx, ny);\n";
             body << "            if (tp.x < 0 || tp.y < 0 || tp.x >= "
                  << tex_size.w << " || tp.y >= " << tex_size.h
@@ -265,8 +267,8 @@ std::string GenerateFragShader(const SubStage& ss) {
             body << "        }\n";
             body << "        if (iv.z > 0.5) {\n";
             body << "            ivec2 sc = ivec2(iv.xy);\n";
-            body << "            for (int dy = -2; dy <= 2; dy++)"
-                 << " for (int dx = -2; dx <= 2; dx++) {\n";
+            body << "            for (int dy = -3; dy <= 3; dy++)"
+                 << " for (int dx = -3; dx <= 3; dx++) {\n";
             body << "                ivec2 sp = sc + ivec2(dx, dy);\n";
             body << "                if (sp.x < 0 || sp.y < 0 || sp.x >= "
                  << scr_size.w << " || sp.y >= " << scr_size.h
@@ -277,7 +279,7 @@ std::string GenerateFragShader(const SubStage& ss) {
                  << tex_size.w << ".0, " << tex_size.h << ".0));\n";
             body << "                if (st == dressi_coord) { " << y_name
                  << " = texelFetch(u_slt" << gy_bind << ", sp, 0)"
-                 << SwizzleOf(n) << "; dy = 3; break; }\n";
+                 << SwizzleOf(n) << "; dy = 4; break; }\n";
             body << "            }\n";
             body << "        }\n";
             body << "    }\n";

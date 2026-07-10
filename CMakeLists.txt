@@ -59,6 +59,14 @@ add_library(dressi_assets INTERFACE)
 target_include_directories(dressi_assets SYSTEM INTERFACE
     "${tinyobjloader_SOURCE_DIR}" "${stb_SOURCE_DIR}")
 
+# Logging / performance measurement
+set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(spdlog
+    GIT_REPOSITORY https://github.com/gabime/spdlog.git
+    GIT_TAG v1.15.3
+    GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(spdlog)
+
 # ------------------------------------------------------------------------------
 # dressi_vkw: takiyu/VulkanWrapper compiled by our own target (its bundled
 # CMake/third_party predate CMake 4.x and current glslang, so we do not
@@ -87,7 +95,7 @@ target_link_libraries(dressi_vkw PUBLIC
 file(GLOB_RECURSE DRESSI_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 add_library(dressi STATIC ${DRESSI_SOURCES})
 target_include_directories(dressi PUBLIC include PRIVATE src)
-target_link_libraries(dressi PUBLIC dressi_vkw)
+target_link_libraries(dressi PUBLIC dressi_vkw PRIVATE spdlog::spdlog)
 if(MSVC)
     target_compile_options(dressi PRIVATE /W4 /permissive- /bigobj /utf-8)
 endif()

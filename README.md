@@ -21,10 +21,17 @@ any Vulkan-capable GPU. The public C++ API follows Appendix A of the paper.
   respect to the texture via the paper's inverse-UV lookup (the mesh
   rasterized in UV space with screen positions as the attribute), with an
   occlusion guard and on-the-fly dilation for chart-boundary texels.
+- Sobol-jittered sampling (the paper's quasi-random countermeasure against
+  texels that never receive updates): each iteration offsets the sampling
+  UVs by a 2D Sobol point and renders the target in-graph with the GT
+  texture under the same jitter, so fresh texels are constrained every step.
 - `examples/texture_optimization`: multi-view unlit rendering of
-  `data/bunny`. GT views are rendered with the GT atlas; starting from a
-  black texture, the summed per-view MSE recovers the atlas on every texel
-  observed by any view (rendered loss converges to zero).
+  `data/bunny`. Starting from a black texture, the summed per-view MSE
+  densely recovers the atlas (~640k texels, zero-jitter rendered loss
+  ~5e-6). Saves target views and first/last renders under `texopt_out/`.
+- spdlog-based performance logging: `SPDLOG_LEVEL=debug` prints per-phase
+  execStep timings (backward / packing / codegen / Vulkan build / upload /
+  GPU execute) and rebuild summaries.
 
 ## Milestone 1 scope
 

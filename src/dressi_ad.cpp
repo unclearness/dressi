@@ -3,6 +3,9 @@
 #include <map>
 
 #include <algorithm>
+#include <chrono>
+
+#include <spdlog/spdlog.h>
 
 #include "codegen/glsl_codegen.h"
 #include "core/build_backward.h"
@@ -51,9 +54,14 @@ struct DressiAD::Impl {
         }
     }
 
+    Variables extra_outputs;  // user-demanded exports (markOutput)
+
     Variables rootVars() const {
         Variables roots = updated_vars;
         roots.push_back(loss_var);
+        for (const auto& v : extra_outputs) {
+            roots.push_back(v);
+        }
         return roots;
     }
 
@@ -121,6 +129,14 @@ void DressiAD::setRebuildCounts(uint32_t fast, uint32_t full) {
     m_impl->full_rebuild_count = full;
 }
 
+void DressiAD::markOutput(const Variable& var) {
+    DRESSI_CHECK(var, "markOutput: null Variable");
+    m_impl->extra_outputs.push_back(var);
+    if (m_impl->init_status > TRAVERSE) {
+        m_impl->init_status = TRAVERSE;  // roots changed; rebuild packing
+    }
+}
+
 size_t DressiAD::getStageCount() const {
     return m_impl->stages.size();
 }
@@ -133,10 +149,53 @@ size_t DressiAD::getSubStageCount() const {
     return n;
 }
 
+namespace {
+
+// Phase stopwatch for execStep performance logging (milliseconds)
+class PhaseTimer {
+public:
+    using Clock = std::chrono::steady_clock;
+    explicit PhaseTimer(bool enabled) : m_enabled(enabled) {}
+    void mark(const char* phase) {
+        if (!m_enabled) {
+            return;
+        }
+        const auto now = Clock::now();
+        const double ms =
+                std::chrono::duration<double, std::milli>(now - m_last)
+                        .count();
+        m_last = now;
+        if (ms >= 0.005) {
+            m_entries.emplace_back(phase, ms);
+        }
+    }
+    void report(const char* header) const {
+        if (!m_enabled || m_entries.empty()) {
+            return;
+        }
+        std::string line;
+        double total = 0.0;
+        for (const auto& [phase, ms] : m_entries) {
+            line += fmt::format(" {}={:.2f}ms", phase, ms);
+            total += ms;
+        }
+        spdlog::debug("[dressi] {} total={:.2f}ms{}", header, total, line);
+    }
+
+private:
+    bool m_enabled;
+    Clock::time_point m_last = Clock::now();
+    std::vector<std::pair<const char*, double>> m_entries;
+};
+
+}  // namespace
+
 void DressiAD::execStep() {
     Impl& im = *m_impl;
     DRESSI_CHECK(im.loss_var, "setLossVar() must be called before execStep()");
     im.ensureCtx();
+    PhaseTimer timer(spdlog::should_log(spdlog::level::debug));
+    const InitStatus entry_status = im.init_status;
 
     // Reactive cache: watch the dirty pattern of data leaves. A stable
     // pattern lets rebuilds prune clean cached branches; a changed pattern
@@ -161,10 +220,12 @@ void DressiAD::execStep() {
         im.prev_dirty_ids = cur_dirty;
     }
 
+    timer.mark("dirty-check");
     if (im.init_status <= BACKWARD) {
         // 1) Traverse the forward graph and generate the backward graph
         std::tie(im.input_vars, im.input_grad_vars) =
                 BuildBackward(im.loss_var);
+        timer.mark("backward");
     }
     if (im.init_status <= OPTIMIZER) {
         // 2) Build the optimizer to connect forward and backward passes
@@ -184,6 +245,7 @@ void DressiAD::execStep() {
                 im.upd_inp_map[upd] = inp;
             }
         }
+        timer.mark("optimizer");
     }
     if (im.init_status <= TRAVERSE) {
         // 3) Traverse the full computational graph
@@ -200,6 +262,7 @@ void DressiAD::execStep() {
                 }
             }
         }
+        timer.mark("traverse");
     }
 
     const auto has_cached = [&](const Variable& v) {
@@ -228,6 +291,7 @@ void DressiAD::execStep() {
         } else {
             im.substages = TrivialPackSubStages(exec_funcs);
         }
+        timer.mark("substage-pack");
         for (auto& ss : im.substages) {
             if (ss.shader_type == RASTER) {
                 const RasterShaders shaders = GenerateRasterShaders(ss);
@@ -237,6 +301,7 @@ void DressiAD::execStep() {
                 ss.shader_code = GenerateFragShader(ss);
             }
         }
+        timer.mark("codegen");
     }
     if (im.init_status <= STAGE) {
         // 5) Pack the substages into stages, skipping clean cached substages
@@ -250,6 +315,7 @@ void DressiAD::execStep() {
         } else {
             im.stages = WrapSubStagesIntoStages(std::move(filtered));
         }
+        timer.mark("stage-pack");
     }
     if (im.init_status <= VULKAN) {
         // 6) Parse stages into Vulkan objects (images persist across builds)
@@ -257,6 +323,7 @@ void DressiAD::execStep() {
         im.plan = BuildGpuPlan(*im.ctx, im.stages, im.upd_inp_map,
                                std::move(prev_imgs));
         im.plan_valid = true;
+        timer.mark("vulkan-build");
     }
 
     // Flush pending CPU->GPU transfers now that images/buffers exist
@@ -271,9 +338,21 @@ void DressiAD::execStep() {
         }
     }
     im.pending_sends.clear();
+    timer.mark("upload");
 
     // 7) Execute the command buffer
     ExecuteGpuPlan(*im.ctx, im.plan);
+    timer.mark("gpu-execute");
+
+    if (entry_status < FINISHED) {
+        spdlog::info(
+                "[dressi] rebuilt from status {} -> {} stages / {} substages "
+                "({} funcs)",
+                int(entry_status), im.stages.size(), getSubStageCount(),
+                im.all_funcs.size());
+    }
+    timer.report(entry_status < FINISHED ? "execStep(rebuild)"
+                                         : "execStep(cached)");
 
     // Everything computed this iteration is now consistent: mark all data
     // leaves (and their downstream) as clean
