@@ -37,7 +37,8 @@ void CheckGradAgainstFd(const Variable& loss, const SoftScene& scene,
                         const Variable& wrt, CpuTensor wrt_tensor,
                         const CpuTensor& target_tensor,
                         const Variable& target, float h = 1e-3f,
-                        float rel_tol = 2e-2f, float abs_tol = 2e-3f) {
+                        float rel_tol = 2e-2f, float abs_tol = 2e-3f,
+                        bool zero_z_grad = true) {
     Variable wrt_mut = wrt;
     wrt_mut.setRequiresGradRecursively();
     auto [input_vars, input_grad_vars] = BuildBackward(loss);
@@ -71,7 +72,8 @@ void CheckGradAgainstFd(const Variable& loss, const SoftScene& scene,
         const float numeric = (f_plus - f_minus) / (2.f * h);
         const float tol = abs_tol + rel_tol * std::abs(numeric);
         EXPECT_NEAR(analytic.data[i], numeric, tol) << "component " << i;
-        if (i % 4 == 2) {  // clip z never influences the dist channel
+        if (zero_z_grad && i % 4 == 2) {
+            // clip z never influences the dist channel
             EXPECT_FLOAT_EQ(analytic.data[i], 0.f);
         }
     }
@@ -149,6 +151,54 @@ TEST(SoftRas, DistGradMatchesFiniteDifferences) {
     Variable loss = SilhouetteLoss(scene, target);
     CheckGradAgainstFd(loss, scene, scene.hard_clip, scene.t_hard_clip,
                        t_target, target);
+}
+
+TEST(SoftRas, LookupFacesGradMatchesFiniteDifferences) {
+    // Exact backward of the per-face corner gather (paper's LookupFaces)
+    SoftScene scene({Clip(4.3f, 3.8f, 0.5f), Clip(12.4f, 5.2f, 0.5f, 1.3f),
+                     Clip(5.1f, 12.6f, 0.5f), Clip(11.2f, 12.1f, 0.5f)},
+                    {{0, 1, 2}, {1, 3, 2}}, 1.5f);
+    // Loss touches all three corners of both faces
+    Variable loss(nullptr);
+    for (uint32_t k = 0; k < 3; k++) {
+        Variable tri = F::LookupFaces(scene.hard_clip, scene.faces_tex,
+                                      scene.vtx_faces, k);
+        Variable term = F::Mean(F::Sigmoid(tri * (0.7f + 0.3f * float(k))));
+        loss = loss ? loss + term : term;
+    }
+    CheckGradAgainstFd(loss, scene, scene.hard_clip, scene.t_hard_clip,
+                       MakeTensor(FLOAT, {1, 1}, {0.f}),
+                       Variable(FLOAT, {1, 1}), 1e-3f, 2e-2f, 2e-3f,
+                       /*zero_z_grad=*/false);
+}
+
+TEST(SoftRas, FaceFetchForward) {
+    // out(p) = tri_attr[idx(p)-1], 0 at background
+    const uint32_t W = 4, H = 3;
+    Variable attr(VEC2, {2, 1});
+    Variable idx(FLOAT, {W, H});
+    Variable prj(VEC4, {2, 1});
+    Variable seed(FLOAT, {1, 1});
+    CpuTensor t_attr = MakeTensor(VEC2, {2, 1}, {1.f, 2.f, 3.f, 4.f});
+    CpuTensor t_idx = MakeTensor(
+            FLOAT, {W, H},
+            {0, 1, 1, 2, 2, 0, 1, 0, 0, 2, 2, 1});
+    CpuTensor t_prj = MakeTensor(VEC4, {2, 1},
+                                 {0, 0, 0, 1, 0, 0, 0, 1});
+    Variable y = F::FaceFetch(attr, idx, prj, prj, prj, seed, 2.f, 4);
+    CpuEvaluator ev;
+    ev.bind(attr, t_attr);
+    ev.bind(idx, t_idx);
+    ev.bind(prj, t_prj);
+    ev.bind(seed, MakeTensor(FLOAT, {1, 1}, {0.f}));
+    const CpuTensor out = ev.eval(y);
+    for (size_t p = 0; p < size_t(W) * H; p++) {
+        const int f = int(t_idx.data[p] + 0.5f) - 1;
+        const float ex = f < 0 ? 0.f : t_attr.data[size_t(f) * 2];
+        const float ey = f < 0 ? 0.f : t_attr.data[size_t(f) * 2 + 1];
+        EXPECT_FLOAT_EQ(out.data[p * 2 + 0], ex) << "pixel " << p;
+        EXPECT_FLOAT_EQ(out.data[p * 2 + 1], ey) << "pixel " << p;
+    }
 }
 
 TEST(SoftRas, DistGradPerspectiveW) {

@@ -155,6 +155,36 @@ Variable AntiAlias(const Variable& img, const Variable& tri_id,
                    const Variable& vtx_clip, const Variable& faces,
                    const Variable& vtx_faces_tex);
 
+// ---------------- Indexed access (the paper's HardSoftRas core) --------------
+
+// Pixel-center screen coordinates as a VEC2 image (x+0.5, y+0.5); no
+// inputs, not differentiable. Feeds image-space geometric math.
+Variable ScreenCoord(ImgSize size);
+
+// Per-face corner attribute: out{F,1} = vtx_attr[faces[f][corner]]
+// (the paper's LookupFaces). Differentiable w.r.t. vtx_attr with an EXACT
+// backward (each vertex sums the gradients of its incident face corners
+// through the vertex->face adjacency texture).
+Variable LookupFaces(const Variable& vtx_attr, const Variable& faces_tex,
+                     const Variable& vtx_faces_tex, uint32_t corner);
+
+// Per-pixel indexed fetch: out(p) = tri_attr[idx(p) - 1], 0 where
+// idx(p) == 0 (background). The backward w.r.t. tri_attr follows the
+// paper's inverse-UV philosophy (Alg.1): instead of an exact sum over all
+// covered pixels (which a graphics pipeline cannot scatter without float
+// atomics), each face samples `n_samples` quasi-random points along its
+// hard edges (band offset in [-radius_px, radius_px], jittered by `seed`,
+// e.g. the in-graph iteration counter) and gathers gy where the ID buffer
+// confirms visibility -- a stochastic, fully parallel O(F) gather.
+//   tri_attr:      {F,1} float per-face values (a LookupFaces output)
+//   idx_img:       FLOAT {S,S} face ids from the rasterizer (0=background)
+//   tri_prj_0/1/2: VEC4 {F,1} corner clip positions (sampling geometry)
+//   seed:          FLOAT {1,1} jitter seed, changes every iteration
+Variable FaceFetch(const Variable& tri_attr, const Variable& idx_img,
+                   const Variable& tri_prj_0, const Variable& tri_prj_1,
+                   const Variable& tri_prj_2, const Variable& seed,
+                   float radius_px, uint32_t n_samples = 4);
+
 // ---------------------- Mesh utilities (GPU-resident) ------------------------
 // Forward-only helpers so geometry optimization runs without per-frame
 // CPU round trips. All inputs are texelFetch images; none are

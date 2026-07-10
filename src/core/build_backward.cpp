@@ -104,6 +104,19 @@ std::tuple<Variables, Variables> BuildBackward(const Variable& loss_var) {
         }
         Variable gy = SumContribs(it->second);
         fwd_bwds_map.erase(it);
+        // Materialize broadcast gradients to y's full shape: elementwise
+        // backwards tolerate {1,1}/scalar gy via broadcasting, but special
+        // backward ops read gy as a texture and cannot
+        const uint32_t y_comps = NumComponents(y.getVType());
+        if (NumComponents(gy.getVType()) == 1 && y_comps > 1) {
+            gy = F::Mul(gy, y_comps == 2 ? F::Vec2(1.f, 1.f)
+                            : y_comps == 3
+                                    ? F::Vec3(1.f, 1.f, 1.f)
+                                    : F::Vec4(1.f, 1.f, 1.f, 1.f));
+        }
+        if (gy.getImgSize().isUniform() && !y.getImgSize().isUniform()) {
+            gy = F::Broadcast(gy, y.getImgSize());
+        }
 
         const Variables xs = func.getInputVars();
         for (uint32_t x_idx = 0; x_idx < xs.size(); x_idx++) {

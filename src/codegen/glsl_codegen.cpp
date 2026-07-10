@@ -138,6 +138,7 @@ std::string GenerateFragShader(const SubStage& ss) {
     // {tri(n), tri(s)} approximates closest-depth selection.
     bool needs_aa_helper = false;
     bool needs_face_cross = false;
+    bool needs_hash = false;
     for (const auto& f : ss.funcs) {
         const std::string& c = NodeAccess::Node(f)->fwd_code;
         if (c == "__antialias__" || c == "__antialias_bwd_img__" ||
@@ -147,6 +148,23 @@ std::string GenerateFragShader(const SubStage& ss) {
         if (c == "__nc_face_term__") {
             needs_face_cross = true;
         }
+        if (c.rfind("__face_fetch_bwd__", 0) == 0) {
+            needs_hash = true;
+        }
+    }
+    if (needs_hash) {
+        // Wang hash -> [0,1); integer arithmetic identical to the CPU
+        // kernel so the stochastic backward is reproducible
+        head << R"(float dressi_hash(uint f, uint s, uint seed, uint salt) {
+    uint x = f * 9781u ^ s * 6151u ^ seed * 26699u ^ salt * 42589u;
+    x = (x ^ 61u) ^ (x >> 16);
+    x *= 9u;
+    x ^= x >> 4;
+    x *= 0x27d4eb2du;
+    x ^= x >> 15;
+    return float(x & 0xFFFFFFu) / 16777216.0;
+}
+)";
     }
     if (needs_face_cross) {
         head << R"(vec3 dressi_face_cross(sampler2D vpos, sampler2D faces, int f) {
@@ -226,7 +244,12 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
                code.rfind("__soft_clip__", 0) == 0 ||
                code == "__vertex_neighbor_mean__" ||
                code == "__nc_face_term__" ||
-               code == "__nc_vertex_grad__";
+               code == "__nc_vertex_grad__" ||
+               code == "__screen_coord__" ||
+               code.rfind("__lookup_faces__", 0) == 0 ||
+               code.rfind("__lookup_faces_bwd__", 0) == 0 ||
+               code == "__face_fetch__" ||
+               code.rfind("__face_fetch_bwd__", 0) == 0;
     };
     std::map<Variable, size_t> slt_binding;
     for (size_t i = 0; i < ss.slt_vars.size(); i++) {
@@ -375,6 +398,137 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
             continue;
         }
 
+        if (node->fwd_code == "__screen_coord__") {
+            body << "    vec2 " << y_name
+                 << " = vec2(dressi_coord) + 0.5;\n";
+            continue;
+        }
+        if (node->fwd_code.rfind("__lookup_faces__", 0) == 0) {
+            // xs = {vtx_attr, faces_tex, vtx_faces_tex}
+            const int corner = std::stoi(node->fwd_code.substr(
+                    node->fwd_code.find("k=") + 2));
+            const size_t at_bind = slt_binding.at(xs[0]);
+            const size_t fc_bind = slt_binding.at(xs[1]);
+            const uint32_t n = NumComponents(y.getVType());
+            body << "    " << y_type << " " << y_name
+                 << " = texelFetch(u_slt" << at_bind
+                 << ", ivec2(int(texelFetch(u_slt" << fc_bind
+                 << ", ivec2(dressi_coord.x, 0), 0)[" << corner
+                 << "] + 0.5), 0), 0)" << SwizzleOf(n) << ";\n";
+            continue;
+        }
+        if (node->fwd_code.rfind("__lookup_faces_bwd__", 0) == 0) {
+            // xs = {gy {F,1}, faces_tex, vtx_faces_tex}; output {V,1}
+            const int corner = std::stoi(node->fwd_code.substr(
+                    node->fwd_code.find("k=") + 2));
+            const size_t gy_bind = slt_binding.at(xs[0]);
+            const size_t fc_bind = slt_binding.at(xs[1]);
+            const size_t vf_bind = slt_binding.at(xs[2]);
+            const uint32_t max_deg = xs[2].getImgSize().h;
+            const uint32_t n = NumComponents(y.getVType());
+            body << "    " << y_type << " " << y_name << " = " << y_type
+                 << "(0.0);\n";
+            body << "    {\n";
+            body << "        int vid = dressi_coord.x;\n";
+            body << "        for (int d = 0; d < " << max_deg
+                 << "; d++) {\n";
+            body << "            float fv = texelFetch(u_slt" << vf_bind
+                 << ", ivec2(vid, d), 0).x;\n";
+            body << "            if (fv < -0.5) continue;\n";
+            body << "            int f = int(fv + 0.5);\n";
+            body << "            if (int(texelFetch(u_slt" << fc_bind
+                 << ", ivec2(f, 0), 0)[" << corner
+                 << "] + 0.5) != vid) continue;\n";
+            body << "            " << y_name << " += texelFetch(u_slt"
+                 << gy_bind << ", ivec2(f, 0), 0)" << SwizzleOf(n) << ";\n";
+            body << "        }\n";
+            body << "    }\n";
+            continue;
+        }
+        if (node->fwd_code == "__face_fetch__") {
+            // xs = {tri_attr, idx_img, tri_prj_0..2, seed}; only the first
+            // two are read in the forward
+            const size_t at_bind = slt_binding.at(xs[0]);
+            const size_t id_bind = slt_binding.at(xs[1]);
+            const uint32_t n = NumComponents(y.getVType());
+            body << "    " << y_type << " " << y_name << " = " << y_type
+                 << "(0.0);\n";
+            body << "    {\n";
+            body << "        int f = int(texelFetch(u_slt" << id_bind
+                 << ", dressi_coord, 0).x + 0.5) - 1;\n";
+            body << "        if (f >= 0) " << y_name
+                 << " = texelFetch(u_slt" << at_bind << ", ivec2(f, 0), 0)"
+                 << SwizzleOf(n) << ";\n";
+            body << "    }\n";
+            continue;
+        }
+        if (node->fwd_code.rfind("__face_fetch_bwd__", 0) == 0) {
+            // xs = {gy, idx_img, tri_prj_0..2, seed}; output {F,1}. Per
+            // face: gather gy at n quasi-random points along the hard
+            // edges (band +-r px), guarded by the ID buffer (the paper's
+            // Alg.1 inverse-table philosophy without a scatter pass).
+            const std::string& code2 = node->fwd_code;
+            const float radius_px =
+                    std::stof(code2.substr(code2.find("r=") + 2));
+            const int n_samples =
+                    std::stoi(code2.substr(code2.find("n=") + 2));
+            const size_t gy_bind = slt_binding.at(xs[0]);
+            const size_t id_bind = slt_binding.at(xs[1]);
+            const size_t p0_bind = slt_binding.at(xs[2]);
+            const size_t p1_bind = slt_binding.at(xs[3]);
+            const size_t p2_bind = slt_binding.at(xs[4]);
+            const size_t sd_bind = slt_binding.at(xs[5]);
+            const ImgSize scr = xs[1].getImgSize();
+            const uint32_t n = NumComponents(y.getVType());
+            const char* swz = SwizzleOf(n);
+            body << "    " << y_type << " " << y_name << " = " << y_type
+                 << "(0.0);\n";
+            body << "    {\n";
+            body << "        int f = dressi_coord.x;\n";
+            body << "        uint seed = uint(texelFetch(u_slt" << sd_bind
+                 << ", ivec2(0, 0), 0).x + 0.5);\n";
+            body << "        vec2 s[3]; bool ok = true;\n";
+            body << "        {\n";
+            for (int k = 0; k < 3; k++) {
+                const size_t b = k == 0 ? p0_bind : (k == 1 ? p1_bind
+                                                            : p2_bind);
+                body << "            vec4 c" << k << " = texelFetch(u_slt"
+                     << b << ", ivec2(f, 0), 0);\n";
+                body << "            if (c" << k
+                     << ".w <= 1e-6) ok = false;\n";
+                body << "            else s[" << k << "] = (c" << k
+                     << ".xy / c" << k << ".w * 0.5 + 0.5) * vec2(" << scr.w
+                     << ".0, " << scr.h << ".0);\n";
+            }
+            body << "        }\n";
+            body << "        if (ok) {\n";
+            body << "            for (int smp = 0; smp < " << n_samples
+                 << "; smp++) {\n";
+            body << "                int e = smp % 3;\n";
+            body << "                vec2 a = s[e];"
+                    " vec2 b = s[(e + 1) % 3];\n";
+            body << "                vec2 ev = b - a;"
+                    " float len = length(ev);\n";
+            body << "                if (len < 1e-6) continue;\n";
+            body << "                float u = dressi_hash(uint(f),"
+                    " uint(smp), seed, 0u);\n";
+            body << "                float o = (dressi_hash(uint(f),"
+                    " uint(smp), seed, 1u) * 2.0 - 1.0) * "
+                 << FloatLit(radius_px) << ";\n";
+            body << "                vec2 p = a + u * ev"
+                    " + o * vec2(-ev.y, ev.x) / len;\n";
+            body << "                ivec2 pi = ivec2(floor(p));\n";
+            body << "                if (pi.x < 0 || pi.y < 0 || pi.x >= "
+                 << scr.w << " || pi.y >= " << scr.h << ") continue;\n";
+            body << "                if (int(texelFetch(u_slt" << id_bind
+                 << ", pi, 0).x + 0.5) != f + 1) continue;\n";
+            body << "                " << y_name << " += texelFetch(u_slt"
+                 << gy_bind << ", pi, 0)" << swz << ";\n";
+            body << "            }\n";
+            body << "        }\n";
+            body << "    }\n";
+            continue;
+        }
         if (node->fwd_code.rfind("__soft_clip__", 0) == 0) {
             // xs = {vtx_clip_hard_tex, faces_tex}; output texel = soft
             // vertex (face f = i/3, corner i%3): centroid-scaled clip

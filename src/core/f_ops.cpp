@@ -1253,6 +1253,312 @@ Variable RasterizeSoft(const Variable& vtx_clip_soft, const Variable& face_id,
                    faces_tex, vtx_faces_tex});
 }
 
+// ---------------- Indexed access (the paper's HardSoftRas core) --------------
+
+namespace {
+
+// Wang hash -> [0,1); identical integer arithmetic in GLSL and C++ so the
+// stochastic backward is bit-reproducible across CPU/GPU
+inline uint32_t WangHash(uint32_t x) {
+    x = (x ^ 61u) ^ (x >> 16);
+    x *= 9u;
+    x ^= x >> 4;
+    x *= 0x27d4eb2du;
+    x ^= x >> 15;
+    return x;
+}
+
+inline float HashToUnit(uint32_t f, uint32_t s, uint32_t seed,
+                        uint32_t salt) {
+    const uint32_t h =
+            WangHash(f * 9781u ^ s * 6151u ^ seed * 26699u ^ salt * 42589u);
+    return float(h & 0xFFFFFFu) / 16777216.f;
+}
+
+}  // namespace
+
+Variable ScreenCoord(ImgSize size) {
+    DRESSI_CHECK(!size.isUniform(), "ScreenCoord: size must be non-uniform");
+    OpDesc desc;
+    desc.name = "ScreenCoord";
+    desc.fwd_code = "__screen_coord__";
+    desc.infer = [size](const Variables&) -> std::pair<VType, ImgSize> {
+        return {VEC2, size};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [size](const std::vector<CpuTensor>&) {
+        CpuTensor y;
+        y.vtype = VEC2;
+        y.size = size;
+        y.data.resize(size_t(size.w) * size.h * 2);
+        for (uint32_t py = 0; py < size.h; py++) {
+            for (uint32_t px = 0; px < size.w; px++) {
+                const size_t o = (size_t(py) * size.w + px) * 2;
+                y.data[o + 0] = float(px) + 0.5f;
+                y.data[o + 1] = float(py) + 0.5f;
+            }
+        }
+        return y;
+    };
+    return MakeOp(std::move(desc), {});
+}
+
+namespace {
+
+// Exact backward of LookupFaces: each vertex sums the gradients of its
+// incident face corners (adjacency texture; corner match checked)
+Variable LookupFacesBwd(const Variable& gy, const Variable& faces_tex,
+                        const Variable& vtx_faces_tex, uint32_t corner) {
+    OpDesc desc;
+    desc.name = "LookupFacesBwd";
+    desc.fwd_code = "__lookup_faces_bwd__ k=" + std::to_string(corner);
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch};
+    desc.infer = [](const Variables& xs) -> std::pair<VType, ImgSize> {
+        return {xs[0].getVType(), {xs[2].getImgSize().w, 1}};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [corner](const std::vector<CpuTensor>& xs) {
+        const CpuTensor& gy_t = xs[0];
+        const CpuTensor& faces = xs[1];
+        const CpuTensor& vf = xs[2];
+        const uint32_t n_verts = vf.size.w;
+        const uint32_t max_deg = vf.size.h;
+        const uint32_t n = gy_t.numComp();
+        CpuTensor out;
+        out.vtype = gy_t.vtype;
+        out.size = {n_verts, 1};
+        out.data.assign(size_t(n_verts) * n, 0.f);
+        for (uint32_t v = 0; v < n_verts; v++) {
+            for (uint32_t d = 0; d < max_deg; d++) {
+                const float fv = vf.data[size_t(d) * n_verts + v];
+                if (fv < -0.5f) {
+                    continue;
+                }
+                const uint32_t f = uint32_t(int64_t(fv + 0.5f));
+                const uint32_t vi = uint32_t(int64_t(
+                        faces.data[size_t(f) * 3 + corner] + 0.5f));
+                if (vi != v) {
+                    continue;
+                }
+                for (uint32_t c = 0; c < n; c++) {
+                    out.data[size_t(v) * n + c] +=
+                            gy_t.data[size_t(f) * n + c];
+                }
+            }
+        }
+        return out;
+    };
+    return MakeOp(std::move(desc), {gy, faces_tex, vtx_faces_tex});
+}
+
+}  // namespace
+
+Variable LookupFaces(const Variable& vtx_attr, const Variable& faces_tex,
+                     const Variable& vtx_faces_tex, uint32_t corner) {
+    DRESSI_CHECK(!IsIntVType(vtx_attr.getVType()) &&
+                         !IsMatrixVType(vtx_attr.getVType()) &&
+                         vtx_attr.getImgSize().h == 1,
+                 "LookupFaces: vtx_attr must be a float {V,1} Variable");
+    DRESSI_CHECK(faces_tex.getVType() == VEC3 &&
+                         faces_tex.getImgSize().h == 1,
+                 "LookupFaces: faces_tex must be VEC3 {F,1}");
+    DRESSI_CHECK(vtx_faces_tex.getVType() == FLOAT &&
+                         vtx_faces_tex.getImgSize().w ==
+                                 vtx_attr.getImgSize().w,
+                 "LookupFaces: vtx_faces_tex must be FLOAT {V,max_deg}");
+    DRESSI_CHECK(corner < 3, "LookupFaces: corner must be 0, 1 or 2");
+
+    OpDesc desc;
+    desc.name = "LookupFaces";
+    desc.fwd_code = "__lookup_faces__ k=" + std::to_string(corner);
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch};
+    const VType vtype = vtx_attr.getVType();
+    const uint32_t n_faces = faces_tex.getImgSize().w;
+    desc.infer = [vtype, n_faces](const Variables&)
+            -> std::pair<VType, ImgSize> { return {vtype, {n_faces, 1}}; };
+    desc.bwd = [corner](const Variables& xs, const Variable&,
+                        const Variable& gy, uint32_t bwd_idx) -> Variable {
+        if (bwd_idx != 0) {
+            return nullptr;
+        }
+        return LookupFacesBwd(gy, xs[1], xs[2], corner);
+    };
+    desc.cpu = [corner](const std::vector<CpuTensor>& xs) {
+        const CpuTensor& attr = xs[0];
+        const CpuTensor& faces = xs[1];
+        const uint32_t nf = faces.size.w;
+        const uint32_t n = attr.numComp();
+        CpuTensor out;
+        out.vtype = attr.vtype;
+        out.size = {nf, 1};
+        out.data.resize(size_t(nf) * n);
+        for (uint32_t f = 0; f < nf; f++) {
+            const uint32_t vi = uint32_t(int64_t(
+                    faces.data[size_t(f) * 3 + corner] + 0.5f));
+            for (uint32_t c = 0; c < n; c++) {
+                out.data[size_t(f) * n + c] =
+                        attr.data[size_t(vi) * n + c];
+            }
+        }
+        return out;
+    };
+    return MakeOp(std::move(desc), {vtx_attr, faces_tex, vtx_faces_tex});
+}
+
+namespace {
+
+// Stochastic backward of FaceFetch (the paper's inverse-UV philosophy,
+// Alg.1 adapted): per face, gather gy at n_samples quasi-random points
+// along the hard edges (offset within +-radius_px), guarded by the ID
+// buffer. Fully parallel O(F); the sampling jitter (`seed`) makes the
+// estimate cover the gradient band over iterations.
+Variable FaceFetchBwd(const Variable& gy, const Variable& idx_img,
+                      const Variable& tri_prj_0, const Variable& tri_prj_1,
+                      const Variable& tri_prj_2, const Variable& seed,
+                      float radius_px, uint32_t n_samples) {
+    OpDesc desc;
+    desc.name = "FaceFetchBwd";
+    desc.fwd_code = "__face_fetch_bwd__ r=" + FloatLiteral(radius_px) +
+                    " n=" + std::to_string(n_samples);
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch, InputAccess::TexelFetch};
+    desc.infer = [](const Variables& xs) -> std::pair<VType, ImgSize> {
+        return {xs[0].getVType(), xs[2].getImgSize()};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [radius_px, n_samples](const std::vector<CpuTensor>& xs) {
+        const CpuTensor& gy_t = xs[0];
+        const CpuTensor& idx = xs[1];
+        const CpuTensor* prj[3] = {&xs[2], &xs[3], &xs[4]};
+        const uint32_t seed_u = uint32_t(int64_t(xs[5].data[0] + 0.5f));
+        const ImgSize screen = idx.size;
+        const uint32_t nf = xs[2].size.w;
+        const uint32_t n = gy_t.numComp();
+        CpuTensor out;
+        out.vtype = gy_t.vtype;
+        out.size = {nf, 1};
+        out.data.assign(size_t(nf) * n, 0.f);
+        for (uint32_t f = 0; f < nf; f++) {
+            float s[3][2];
+            bool ok = true;
+            for (int k = 0; k < 3; k++) {
+                const float* c = &prj[k]->data[size_t(f) * 4];
+                if (c[3] <= 1e-6f) {
+                    ok = false;
+                    break;
+                }
+                s[k][0] = (c[0] / c[3] * 0.5f + 0.5f) * float(screen.w);
+                s[k][1] = (c[1] / c[3] * 0.5f + 0.5f) * float(screen.h);
+            }
+            if (!ok) {
+                continue;
+            }
+            float* dst = &out.data[size_t(f) * n];
+            for (uint32_t smp = 0; smp < n_samples; smp++) {
+                const int e = int(smp % 3);
+                const float* a = s[e];
+                const float* b = s[(e + 1) % 3];
+                const float ex = b[0] - a[0];
+                const float ey = b[1] - a[1];
+                const float len = std::sqrt(ex * ex + ey * ey);
+                if (len < 1e-6f) {
+                    continue;
+                }
+                const float u = HashToUnit(f, smp, seed_u, 0);
+                const float o = (HashToUnit(f, smp, seed_u, 1) * 2.f - 1.f) *
+                                radius_px;
+                const float px = a[0] + u * ex - o * (ey / len);
+                const float py = a[1] + u * ey + o * (ex / len);
+                const int ix = int(std::floor(px));
+                const int iy = int(std::floor(py));
+                if (ix < 0 || iy < 0 || ix >= int(screen.w) ||
+                    iy >= int(screen.h)) {
+                    continue;
+                }
+                const size_t p = size_t(iy) * screen.w + ix;
+                if (uint32_t(int64_t(idx.data[p] + 0.5f)) != f + 1) {
+                    continue;  // not visible as this face here
+                }
+                for (uint32_t c = 0; c < n; c++) {
+                    dst[c] += gy_t.data[p * n + c];
+                }
+            }
+        }
+        return out;
+    };
+    return MakeOp(std::move(desc),
+                  {gy, idx_img, tri_prj_0, tri_prj_1, tri_prj_2, seed});
+}
+
+}  // namespace
+
+Variable FaceFetch(const Variable& tri_attr, const Variable& idx_img,
+                   const Variable& tri_prj_0, const Variable& tri_prj_1,
+                   const Variable& tri_prj_2, const Variable& seed,
+                   float radius_px, uint32_t n_samples) {
+    DRESSI_CHECK(!IsIntVType(tri_attr.getVType()) &&
+                         !IsMatrixVType(tri_attr.getVType()) &&
+                         tri_attr.getImgSize().h == 1,
+                 "FaceFetch: tri_attr must be a float {F,1} Variable");
+    DRESSI_CHECK(idx_img.getVType() == FLOAT &&
+                         !idx_img.getImgSize().isUniform(),
+                 "FaceFetch: idx_img must be a FLOAT image");
+    for (const Variable* prj : {&tri_prj_0, &tri_prj_1, &tri_prj_2}) {
+        DRESSI_CHECK(prj->getVType() == VEC4 &&
+                             prj->getImgSize() == tri_attr.getImgSize(),
+                     "FaceFetch: tri_prj must be VEC4 {F,1}");
+    }
+    DRESSI_CHECK(seed.getVType() == FLOAT && seed.getImgSize().isUniform(),
+                 "FaceFetch: seed must be FLOAT {1,1}");
+    DRESSI_CHECK(radius_px > 0.f && n_samples > 0,
+                 "FaceFetch: radius/samples must be positive");
+
+    OpDesc desc;
+    desc.name = "FaceFetch";
+    desc.fwd_code = "__face_fetch__";
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch, InputAccess::TexelFetch};
+    const VType vtype = tri_attr.getVType();
+    desc.infer = [vtype](const Variables& xs) -> std::pair<VType, ImgSize> {
+        return {vtype, xs[1].getImgSize()};
+    };
+    desc.bwd = [radius_px, n_samples](const Variables& xs, const Variable&,
+                                      const Variable& gy,
+                                      uint32_t bwd_idx) -> Variable {
+        if (bwd_idx != 0) {
+            return nullptr;  // ids / sampling geometry / seed: no gradient
+        }
+        return FaceFetchBwd(gy, xs[1], xs[2], xs[3], xs[4], xs[5],
+                            radius_px, n_samples);
+    };
+    desc.cpu = [](const std::vector<CpuTensor>& xs) {
+        const CpuTensor& attr = xs[0];
+        const CpuTensor& idx = xs[1];
+        const uint32_t n = attr.numComp();
+        CpuTensor out;
+        out.vtype = attr.vtype;
+        out.size = idx.size;
+        out.data.assign(idx.data.size() * n, 0.f);
+        for (size_t p = 0; p < idx.data.size(); p++) {
+            const int f = int(idx.data[p] + 0.5f) - 1;
+            if (f < 0 || uint32_t(f) >= attr.size.w) {
+                continue;
+            }
+            for (uint32_t c = 0; c < n; c++) {
+                out.data[p * n + c] = attr.data[size_t(f) * n + c];
+            }
+        }
+        return out;
+    };
+    return MakeOp(std::move(desc),
+                  {tri_attr, idx_img, tri_prj_0, tri_prj_1, tri_prj_2,
+                   seed});
+}
+
 // ---------------------- Mesh utilities (GPU-resident) ------------------------
 
 namespace {

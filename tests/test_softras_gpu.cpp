@@ -161,6 +161,68 @@ TEST(SoftRasGpu, BackwardParityCpu) {
     }
 }
 
+TEST(SoftRasGpu, PaperBackwardParityCpu) {
+    // Paper-style gradient path (LookupFaces -> FaceFetch with the
+    // stochastic inverse-sampling backward): the integer-hash jitter is
+    // identical in GLSL and C++, so GPU and CPU gradients must agree.
+    SoftScene scene = GenericScene();
+    // Fixed face-ID buffer from the CPU reference rasterizer (f+1, 0=bg)
+    CpuTensor faces_i = scene.t_faces_tex;
+    faces_i.vtype = IVEC3;
+    const CpuTensor t_idx =
+            RasterizeFaceIdCpu(scene.t_hard_clip, faces_i,
+                               {kScreen, kScreen});
+    Variable idx(FLOAT, {kScreen, kScreen});
+    Variable seed(FLOAT, {1, 1});
+
+    Variable tri0 = F::LookupFaces(scene.hard_clip, scene.faces_tex,
+                                   scene.vtx_faces, 0);
+    Variable tri1 = F::LookupFaces(scene.hard_clip, scene.faces_tex,
+                                   scene.vtx_faces, 1);
+    Variable tri2 = F::LookupFaces(scene.hard_clip, scene.faces_tex,
+                                   scene.vtx_faces, 2);
+    Variable c0 = F::FaceFetch(tri0, idx, tri0, tri1, tri2, seed, kRadius,
+                               8);
+    Variable c1 = F::FaceFetch(tri1, idx, tri0, tri1, tri2, seed, kRadius,
+                               8);
+    Variable loss = (c0 * c0 + c1 * F::Float(0.25f)) *
+                    (1.f / float(kScreen * kScreen));  // image loss
+    Variable hard_mut = scene.hard_clip;
+    hard_mut.setRequiresGradRecursively();
+
+    DressiAD ad;
+    ad.setPackingMode(DressiAD::PackingMode::Naive);
+    GradCapture cap;
+    ad.setLossVar(loss);
+    ad.setOptimizer(IdentityOptimizer(ad, cap));
+    scene.send(ad);
+    ad.sendImg(idx, CpuImageFromTensor(t_idx));
+    ad.sendImg(seed, CpuImage(1, 1, 1, 7.f));
+    ad.execStep();
+
+    const Variable grad = GradOf(cap, scene.hard_clip);
+    ASSERT_TRUE(grad);
+    const CpuImage gpu_grad = ad.recvImg(grad);
+
+    CpuEvaluator ev;
+    scene.bind(ev);
+    ev.bind(idx, t_idx);
+    ev.bind(seed, softras_test::MakeTensor(FLOAT, {1, 1}, {7.f}));
+    const CpuTensor cpu_grad = ev.eval(grad);
+
+    ASSERT_EQ(gpu_grad.data.size(), cpu_grad.data.size());
+    float max_abs = 0.f;
+    for (float g : cpu_grad.data) {
+        max_abs = std::max(max_abs, std::abs(g));
+    }
+    ASSERT_GT(max_abs, 0.f) << "stochastic samples all missed";
+    for (size_t i = 0; i < cpu_grad.data.size(); i++) {
+        EXPECT_NEAR(gpu_grad.data[i], cpu_grad.data[i],
+                    1e-4f + 1e-3f * max_abs)
+                << "component " << i;
+    }
+}
+
 TEST(SoftRasGpu, FullyInGraphSilhouetteFit) {
     // The paper's transfer model: upload once, then the whole iteration --
     // projection, soft geometry, gradients, momentum SGD with GPU-resident
