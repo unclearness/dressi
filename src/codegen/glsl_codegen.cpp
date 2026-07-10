@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <sstream>
+#include <string>
 
 #include "core/node.h"
 
@@ -331,12 +333,12 @@ RasterShaders GenerateRasterShaders(const SubStage& ss) {
                  "RASTER substage must hold exactly one Rasterize function");
     const Function& func = ss.funcs[0];
     const Variable y = func.getOutputVar();
-    const uint32_t n = NumComponents(y.getVType());
+    const std::string& code = NodeAccess::Node(func)->fwd_code;
+    DRESSI_CHECK(ss.vtx_vars.size() == 3,
+                 "RASTER substage expects {pos, attrib, faces}");
+    const uint32_t attr_n = NumComponents(ss.vtx_vars[1].getVType());
     const std::string attr_type =
-            n == 1 ? "float" : ("vec" + std::to_string(n));
-    const uint32_t phys = PhysChannels(y.getVType());
-    const std::string out_type =
-            phys == 1 ? "float" : ("vec" + std::to_string(phys));
+            attr_n == 1 ? "float" : ("vec" + std::to_string(attr_n));
 
     RasterShaders shaders;
     {
@@ -351,7 +353,91 @@ RasterShaders GenerateRasterShaders(const SubStage& ss) {
         vs << "}\n";
         shaders.vert = vs.str();
     }
+
+    if (code.rfind("__rasterize_soft__", 0) == 0) {
+        // HardSoftRas forward: v_attr carries the hard face index; the hard
+        // triangle is fetched from the clip/faces textures, the signed
+        // screen-space distance to it is the differentiable output and the
+        // Eq.3 depth shift goes to gl_FragDepth.
+        constexpr const char* kPrefix = "__rasterize_soft__ r=";
+        const float radius_px = std::stof(code.substr(std::strlen(kPrefix)));
+        DRESSI_CHECK(radius_px > 0.f,
+                     "__rasterize_soft__ marker must carry the radius");
+        const Variables xs = func.getInputVars();
+        std::map<Variable, size_t> slt_binding;
+        for (size_t i = 0; i < ss.slt_vars.size(); i++) {
+            slt_binding[ss.slt_vars[i]] = i;
+        }
+        const size_t clip_bind = slt_binding.at(xs[3]);
+        const size_t faces_bind = slt_binding.at(xs[4]);
+        const ImgSize screen = y.getImgSize();
+
+        std::ostringstream fs;
+        fs << "#version 450\n";
+        fs << "layout(location=0) in float v_attr;\n";
+        fs << "layout(location=0) out vec4 o_0;\n";
+        for (size_t i = 0; i < ss.slt_vars.size(); i++) {
+            fs << "layout(set=0, binding=" << i
+               << ") uniform sampler2D u_slt" << i << ";\n";
+        }
+        fs << "void main() {\n";
+        fs << "    int f = int(v_attr + 0.5);\n";
+        fs << "    vec3 fidx = texelFetch(u_slt" << faces_bind
+           << ", ivec2(f, 0), 0).xyz;\n";
+        fs << "    vec2 s[3]; float z[3];\n";
+        fs << "    for (int k = 0; k < 3; k++) {\n";
+        fs << "        vec4 c = texelFetch(u_slt" << clip_bind
+           << ", ivec2(int(fidx[k] + 0.5), 0), 0);\n";
+        fs << "        s[k] = (c.xy / c.w * 0.5 + 0.5) * vec2(" << screen.w
+           << ".0, " << screen.h << ".0);\n";
+        fs << "        z[k] = c.z / c.w;\n";
+        fs << "    }\n";
+        fs << "    vec2 p = gl_FragCoord.xy;\n";
+        // Signed distance to the hard triangle (same algorithm as
+        // SignedDistToTri in cpu_raster.cpp)
+        fs << "    float best_d2 = -1.0; int npos = 0; int nneg = 0;\n";
+        fs << "    for (int k = 0; k < 3; k++) {\n";
+        fs << "        vec2 a = s[k]; vec2 b = s[(k + 1) % 3];\n";
+        fs << "        vec2 e = b - a; float len2 = dot(e, e);\n";
+        fs << "        float t = len2 > 1e-12 ?"
+              " clamp(dot(p - a, e) / len2, 0.0, 1.0) : 0.0;\n";
+        fs << "        vec2 q = a + t * e; float d2 = dot(p - q, p - q);\n";
+        fs << "        if (best_d2 < 0.0 || d2 < best_d2) best_d2 = d2;\n";
+        fs << "        float cr = e.x * (p.y - a.y) - e.y * (p.x - a.x);\n";
+        fs << "        if (cr >= 0.0) npos++;\n";
+        fs << "        if (cr <= 0.0) nneg++;\n";
+        fs << "    }\n";
+        fs << "    float sgn = (npos == 3 || nneg == 3) ? 1.0 : -1.0;\n";
+        fs << "    float dist = sgn * sqrt(max(best_d2, 0.0));\n";
+        // Hard depth via (unclamped) screen barycentrics: NDC z is affine
+        fs << "    float area = (s[1].x - s[0].x) * (s[2].y - s[0].y)"
+              " - (s[1].y - s[0].y) * (s[2].x - s[0].x);\n";
+        fs << "    float hard_z = 0.5;\n";
+        fs << "    if (abs(area) > 1e-9) {\n";
+        fs << "        float l0 = ((s[1].x - p.x) * (s[2].y - p.y)"
+              " - (s[1].y - p.y) * (s[2].x - p.x)) / area;\n";
+        fs << "        float l1 = ((s[2].x - p.x) * (s[0].y - p.y)"
+              " - (s[2].y - p.y) * (s[0].x - p.x)) / area;\n";
+        fs << "        hard_z = l0 * z[0] + l1 * z[1]"
+              " + (1.0 - l0 - l1) * z[2];\n";
+        fs << "    }\n";
+        fs << "    gl_FragDepth = dist >= 0.0"
+              " ? 0.5 * clamp(hard_z, 0.0, 1.0)"
+              " : 0.5 + 0.5 * clamp(-dist / "
+           << FloatLit(radius_px) << ", 0.0, 1.0);\n";
+        fs << "    o_0 = vec4(dist, v_attr, hard_z, 1.0);\n";
+        fs << "}\n";
+        shaders.frag = fs.str();
+        return shaders;
+    }
+
+    DRESSI_CHECK(code == "__rasterize__",
+                 "Unknown RASTER marker: " + code);
     {
+        const uint32_t n = NumComponents(y.getVType());
+        const uint32_t phys = PhysChannels(y.getVType());
+        const std::string out_type =
+                phys == 1 ? "float" : ("vec" + std::to_string(phys));
         std::ostringstream fs;
         fs << "#version 450\n";
         fs << "layout(location=0) in " << attr_type << " v_attr;\n";

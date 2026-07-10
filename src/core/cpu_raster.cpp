@@ -224,6 +224,129 @@ CpuTensor RasterizeHardCpu(const CpuTensor& clip, const CpuTensor& attrib,
     return out;
 }
 
+bool ProjectClipToScreen(const float clip[4], ImgSize screen, float s_xy[2],
+                         float* z_ndc) {
+    if (std::abs(clip[3]) <= kWEps || clip[3] < 0.f) {
+        return false;
+    }
+    const ScreenVert v = ProjectToScreen(clip, screen);
+    s_xy[0] = v.x;
+    s_xy[1] = v.y;
+    if (z_ndc) {
+        *z_ndc = v.z;
+    }
+    return true;
+}
+
+CpuTensor RasterizeSoftCpu(const CpuTensor& soft_clip,
+                           const CpuTensor& face_id,
+                           const CpuTensor& faces_soft,
+                           const CpuTensor& hard_clip,
+                           const CpuTensor& faces_tex, ImgSize screen,
+                           float radius_px) {
+    CpuTensor out;
+    out.vtype = VEC4;
+    out.size = screen;
+    out.data.assign(size_t(screen.w) * screen.h * 4, 0.f);
+    std::vector<float> zbuf(size_t(screen.w) * screen.h, 1.f);
+
+    const uint32_t n_soft = soft_clip.size.w;
+    const uint32_t n_hard = hard_clip.size.w;
+    const uint32_t n_faces = faces_soft.size.w;
+    DRESSI_CHECK(faces_tex.size.w == n_faces,
+                 "RasterizeSoftCpu: faces_tex/faces_soft size mismatch");
+
+    for (uint32_t f = 0; f < n_faces; f++) {
+        // Soft (coverage) triangle
+        float ss[3][2];
+        float sz[3];
+        float fid = 0.f;
+        bool valid = true;
+        for (int k = 0; k < 3; k++) {
+            const uint32_t vi =
+                    uint32_t(int64_t(faces_soft.data[size_t(f) * 3 + k]));
+            DRESSI_CHECK(vi < n_soft, "RasterizeSoftCpu: soft index range");
+            if (!ProjectClipToScreen(&soft_clip.data[size_t(vi) * 4], screen,
+                                     ss[k], &sz[k])) {
+                valid = false;
+                break;
+            }
+            fid = face_id.data[vi];
+        }
+        if (!valid) {
+            continue;
+        }
+        // Hard (distance) triangle
+        const uint32_t hf = uint32_t(int64_t(fid + 0.5f));
+        DRESSI_CHECK(hf < n_faces, "RasterizeSoftCpu: face id range");
+        float hs[3][2];
+        float hz[3];
+        for (int k = 0; k < 3; k++) {
+            const uint32_t vi = uint32_t(
+                    int64_t(faces_tex.data[size_t(hf) * 3 + k] + 0.5f));
+            DRESSI_CHECK(vi < n_hard, "RasterizeSoftCpu: hard index range");
+            if (!ProjectClipToScreen(&hard_clip.data[size_t(vi) * 4], screen,
+                                     hs[k], &hz[k])) {
+                valid = false;
+                break;
+            }
+        }
+        if (!valid) {
+            continue;
+        }
+
+        const float min_x = std::min({ss[0][0], ss[1][0], ss[2][0]});
+        const float max_x = std::max({ss[0][0], ss[1][0], ss[2][0]});
+        const float min_y = std::min({ss[0][1], ss[1][1], ss[2][1]});
+        const float max_y = std::max({ss[0][1], ss[1][1], ss[2][1]});
+        const int x0 = std::max(0, int(std::floor(min_x - 0.5f)));
+        const int x1 = std::min(int(screen.w) - 1,
+                                int(std::ceil(max_x - 0.5f)));
+        const int y0 = std::max(0, int(std::floor(min_y - 0.5f)));
+        const int y1 = std::min(int(screen.h) - 1,
+                                int(std::ceil(max_y - 0.5f)));
+        for (int y = y0; y <= y1; y++) {
+            for (int x = x0; x <= x1; x++) {
+                const float p[2] = {float(x) + 0.5f, float(y) + 0.5f};
+                float sl[3];
+                if (!ScreenBarycentric(p, ss, sl) || sl[0] < 0.f ||
+                    sl[1] < 0.f || sl[2] < 0.f) {
+                    continue;  // outside the soft triangle
+                }
+                const float soft_z =
+                        sl[0] * sz[0] + sl[1] * sz[1] + sl[2] * sz[2];
+                if (soft_z < 0.f || soft_z > 1.f) {
+                    continue;  // vertex-z clip approximation
+                }
+                const TriDist td = SignedDistToTri(p, hs);
+                // Hard depth: unclamped screen-barycentric interpolation
+                float hl[3];
+                float hard_z = 0.5f;
+                if (ScreenBarycentric(p, hs, hl)) {
+                    hard_z = hl[0] * hz[0] + hl[1] * hz[1] + hl[2] * hz[2];
+                }
+                // Eq.3 depth shift: hard region [0, 0.5], soft rim [0.5, 1]
+                const float depth =
+                        td.dist >= 0.f
+                                ? 0.5f * std::min(std::max(hard_z, 0.f), 1.f)
+                                : 0.5f + 0.5f * std::min(-td.dist / radius_px,
+                                                         1.f);
+                float& zb = zbuf[size_t(y) * screen.w + x];
+                if (depth > zb) {
+                    continue;
+                }
+                zb = depth;
+                float* dst = &out.data[(size_t(y) * screen.w + x) * 4];
+                dst[0] = td.dist;
+                dst[1] = fid;
+                dst[2] = hard_z;
+                dst[3] = 1.f;
+            }
+        }
+    }
+    return out;
+}
+
 CpuTensor RasterizeFaceIdCpu(const CpuTensor& clip, const CpuTensor& faces,
                              ImgSize screen) {
     CpuTensor out;

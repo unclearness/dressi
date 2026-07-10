@@ -1074,6 +1074,52 @@ Variable Rasterize(const Variable& vtx_clip_pos, const Variable& vtx_attrib,
     return MakeOp(std::move(desc), {vtx_clip_pos, vtx_attrib, faces});
 }
 
+Variable RasterizeSoft(const Variable& vtx_clip_soft, const Variable& face_id,
+                       const Variable& faces_soft,
+                       const Variable& vtx_clip_hard_tex,
+                       const Variable& faces_tex, ImgSize screen_size,
+                       float radius_px) {
+    DRESSI_CHECK(vtx_clip_soft.getVType() == VEC4 &&
+                         vtx_clip_soft.getImgSize().h == 1,
+                 "RasterizeSoft: vtx_clip_soft must be VEC4 {3F,1}");
+    DRESSI_CHECK(face_id.getVType() == FLOAT &&
+                         face_id.getImgSize() == vtx_clip_soft.getImgSize(),
+                 "RasterizeSoft: face_id must be FLOAT {3F,1}");
+    DRESSI_CHECK(faces_soft.getVType() == IVEC3 &&
+                         faces_soft.getImgSize().h == 1,
+                 "RasterizeSoft: faces_soft must be IVEC3 {F,1}");
+    DRESSI_CHECK(vtx_clip_soft.getImgSize().w ==
+                         faces_soft.getImgSize().w * 3,
+                 "RasterizeSoft: soft vertices must be unwelded (3 per face)");
+    DRESSI_CHECK(vtx_clip_hard_tex.getVType() == VEC4 &&
+                         vtx_clip_hard_tex.getImgSize().h == 1,
+                 "RasterizeSoft: vtx_clip_hard_tex must be VEC4 {V,1}");
+    DRESSI_CHECK(faces_tex.getVType() == VEC3 &&
+                         faces_tex.getImgSize() == faces_soft.getImgSize(),
+                 "RasterizeSoft: faces_tex must be VEC3 {F,1}");
+    DRESSI_CHECK(radius_px > 0.f, "RasterizeSoft: radius_px must be > 0");
+
+    OpDesc desc;
+    desc.name = "RasterizeSoft";
+    // Special-cased by the shader codegen; the enlargement radius rides on
+    // the marker string (it is compiled into the depth-shift constant)
+    desc.fwd_code = "__rasterize_soft__ r=" + FloatLiteral(radius_px);
+    desc.shader_type = RASTER;
+    desc.input_access = {InputAccess::SamePixel, InputAccess::SamePixel,
+                         InputAccess::SamePixel, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch};
+    desc.infer = [screen_size](const Variables&)
+            -> std::pair<VType, ImgSize> { return {VEC4, screen_size}; };
+    desc.cpu = [screen_size, radius_px](const std::vector<CpuTensor>& xs) {
+        return RasterizeSoftCpu(xs[0], xs[1], xs[2], xs[3], xs[4],
+                                screen_size, radius_px);
+    };
+    desc.bwd = NullBwd;  // dist-channel backward wired below (GatherDistGrad)
+    return MakeOp(std::move(desc),
+                  {vtx_clip_soft, face_id, faces_soft, vtx_clip_hard_tex,
+                   faces_tex});
+}
+
 namespace {
 
 // Gathers the screen-space gradient into texture space through the

@@ -42,6 +42,21 @@ CpuTensor RasterizeHardCpu(const CpuTensor& clip, const CpuTensor& attrib,
 CpuTensor RasterizeFaceIdCpu(const CpuTensor& clip, const CpuTensor& faces,
                              ImgSize screen);
 
+// CPU reference for F::RasterizeSoft: rasterizes the enlarged (soft)
+// triangles, evaluates the signed distance to the hard face and depth-tests
+// with the Eq.3 depth shift. Output VEC4 (dist_px, face_id, hard_z, coverage).
+CpuTensor RasterizeSoftCpu(const CpuTensor& soft_clip,
+                           const CpuTensor& face_id,
+                           const CpuTensor& faces_soft,
+                           const CpuTensor& hard_clip,
+                           const CpuTensor& faces_tex, ImgSize screen,
+                           float radius_px);
+
+// Projects clip vertex `v` (VEC4) to screen pixels; z = NDC depth [0,1].
+// Returns false when |w| <= eps or w < 0 (behind the camera).
+bool ProjectClipToScreen(const float clip[4], ImgSize screen, float s_xy[2],
+                         float* z_ndc);
+
 }  // namespace dressi
 
 #endif  // DRESSI_CORE_CPU_RASTER_H

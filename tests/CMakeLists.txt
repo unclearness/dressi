@@ -17,7 +17,9 @@ add_executable(dressi_tests_cpu
     test_cpu_eval.cpp
     test_backward.cpp
     test_packing.cpp
-    test_codegen.cpp)
+    test_codegen.cpp
+    test_softras.cpp
+    test_antialias.cpp)
 target_link_libraries(dressi_tests_cpu PRIVATE dressi GTest::gtest_main)
 target_include_directories(dressi_tests_cpu PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(MSVC)
@@ -34,7 +36,9 @@ add_executable(dressi_tests_gpu
     test_executor_naive.cpp
     test_executor_rsp.cpp
     test_reactive.cpp
-    test_raster.cpp)
+    test_raster.cpp
+    test_softras_gpu.cpp
+    test_antialias_gpu.cpp)
 target_link_libraries(dressi_tests_gpu PRIVATE dressi GTest::gtest_main)
 target_include_directories(dressi_tests_gpu PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(MSVC)

@@ -100,6 +100,26 @@ Variable PeelDepth(const Variable& frag_depth, const Variable& prev_frag_depth);
 Variable Rasterize(const Variable& vtx_clip_pos, const Variable& vtx_attrib,
                    const Variable& faces, ImgSize screen_size);
 
+// HardSoftRas soft rasterization (arXiv:2204.01386 Alg.2, K=1): rasterizes
+// CPU-enlarged ("soft") triangles and outputs per pixel
+//   VEC4 (signed_dist_px, face_id, hard_depth_ndc, coverage)
+// where signed_dist_px is the screen-space distance to the ORIGINAL (hard)
+// triangle (>= 0 inside) and gl_FragDepth applies the paper's Eq.3 depth
+// shift (hard region in [0, 0.5], soft rim in [0.5, 1]). Background stays
+// (0,0,0,0); gate downstream sigmoids with the coverage channel.
+// Differentiable w.r.t. vtx_clip_hard_tex only (through the dist channel).
+//   vtx_clip_soft:     VEC4 {3F,1} enlarged unwelded clip positions (leaf)
+//   face_id:           FLOAT {3F,1} face index vertex attribute
+//   faces_soft:        IVEC3 {F,1} sequential (3i,3i+1,3i+2) faces (leaf)
+//   vtx_clip_hard_tex: VEC4 {V,1} original clip positions as an image leaf
+//   faces_tex:         VEC3 {F,1} float-valued vertex indices as an image
+// (see BuildSoftGeometry in the examples for the CPU-side enlargement)
+Variable RasterizeSoft(const Variable& vtx_clip_soft, const Variable& face_id,
+                       const Variable& faces_soft,
+                       const Variable& vtx_clip_hard_tex,
+                       const Variable& faces_tex, ImgSize screen_size,
+                       float radius_px);
+
 // Samples `tex` (nearest) at per-pixel `uv`. Differentiable with respect to
 // the texture through the inverse-UV lookup table `inv_uv`: a VEC4
 // {tex_size} image of (screen_x, screen_y, valid, 0) built by rasterizing
