@@ -1047,6 +1047,31 @@ Variable Broadcast(const Variable& x, ImgSize size) {
     return MakeOp(std::move(desc), {x});
 }
 
+Variable SumAll(const Variable& x) {
+    DRESSI_CHECK(!IsIntVType(x.getVType()) && !IsMatrixVType(x.getVType()),
+                 "SumAll: input must be a float image");
+    OpDesc desc;
+    desc.name = "SumAll";
+    desc.fwd_code = "__sum_all__";
+    desc.input_access = {InputAccess::TexelFetch};
+    desc.infer = [](const Variables&) -> std::pair<VType, ImgSize> {
+        return {FLOAT, {1, 1}};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [](const std::vector<CpuTensor>& xs) {
+        CpuTensor y;
+        y.vtype = FLOAT;
+        y.size = {1, 1};
+        double s = 0.0;
+        for (float v : xs[0].data) {
+            s += v;
+        }
+        y.data = {float(s)};
+        return y;
+    };
+    return MakeOp(std::move(desc), {x});
+}
+
 // ------------------------------- DR functions --------------------------------
 Variable StopGradient(const Variable& x) {
     OpDesc desc;
@@ -1601,6 +1626,74 @@ Variable FaceFetch(const Variable& tri_attr, const Variable& idx_img,
     return MakeOp(std::move(desc),
                   {tri_attr, idx_img, tri_prj_0, tri_prj_1, tri_prj_2,
                    seed});
+}
+
+// -------------------- Dynamic selection (GPU-resident) -----------------------
+
+Variable PixelFetch(const Variable& tex, uint32_t x_index,
+                    const Variable& row_idx) {
+    DRESSI_CHECK(!IsIntVType(tex.getVType()) &&
+                         !IsMatrixVType(tex.getVType()),
+                 "PixelFetch: tex must be a float image");
+    DRESSI_CHECK(x_index < tex.getImgSize().w, "PixelFetch: x out of range");
+    DRESSI_CHECK(row_idx.getVType() == FLOAT &&
+                         row_idx.getImgSize().isUniform(),
+                 "PixelFetch: row_idx must be FLOAT {1,1}");
+    OpDesc desc;
+    desc.name = "PixelFetch";
+    desc.fwd_code = "__pixel_fetch__ x=" + std::to_string(x_index);
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch};
+    const VType vtype = tex.getVType();
+    desc.infer = [vtype](const Variables&) -> std::pair<VType, ImgSize> {
+        return {vtype, {1, 1}};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [x_index](const std::vector<CpuTensor>& xs) {
+        const uint32_t n = xs[0].numComp();
+        const uint32_t row = uint32_t(int64_t(xs[1].data[0] + 0.5f));
+        CpuTensor y;
+        y.vtype = xs[0].vtype;
+        y.size = {1, 1};
+        const size_t o = (size_t(row) * xs[0].size.w + x_index) * n;
+        y.data.assign(xs[0].data.begin() + int64_t(o),
+                      xs[0].data.begin() + int64_t(o + n));
+        return y;
+    };
+    return MakeOp(std::move(desc), {tex, row_idx});
+}
+
+Variable TileFetch(const Variable& atlas, const Variable& tile_idx,
+                   uint32_t tile_h) {
+    DRESSI_CHECK(!IsIntVType(atlas.getVType()) &&
+                         !IsMatrixVType(atlas.getVType()) &&
+                         atlas.getImgSize().h % tile_h == 0,
+                 "TileFetch: atlas height must be a multiple of tile_h");
+    DRESSI_CHECK(tile_idx.getVType() == FLOAT &&
+                         tile_idx.getImgSize().isUniform(),
+                 "TileFetch: tile_idx must be FLOAT {1,1}");
+    OpDesc desc;
+    desc.name = "TileFetch";
+    desc.fwd_code = "__tile_fetch__ h=" + std::to_string(tile_h);
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch};
+    const VType vtype = atlas.getVType();
+    const uint32_t w = atlas.getImgSize().w;
+    desc.infer = [vtype, w, tile_h](const Variables&)
+            -> std::pair<VType, ImgSize> { return {vtype, {w, tile_h}}; };
+    desc.bwd = NullBwd;
+    desc.cpu = [tile_h](const std::vector<CpuTensor>& xs) {
+        const uint32_t n = xs[0].numComp();
+        const uint32_t w = xs[0].size.w;
+        const uint32_t idx = uint32_t(int64_t(xs[1].data[0] + 0.5f));
+        CpuTensor y;
+        y.vtype = xs[0].vtype;
+        y.size = {w, tile_h};
+        const size_t o = size_t(idx) * tile_h * w * n;
+        y.data.assign(xs[0].data.begin() + int64_t(o),
+                      xs[0].data.begin() +
+                              int64_t(o + size_t(tile_h) * w * n));
+        return y;
+    };
+    return MakeOp(std::move(desc), {atlas, tile_idx});
 }
 
 // ---------------------- Mesh utilities (GPU-resident) ------------------------

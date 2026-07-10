@@ -266,6 +266,9 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
                code == "__nc_face_term__" ||
                code == "__nc_vertex_grad__" ||
                code == "__screen_coord__" ||
+               code == "__sum_all__" ||
+               code.rfind("__pixel_fetch__", 0) == 0 ||
+               code.rfind("__tile_fetch__", 0) == 0 ||
                code.rfind("__lookup_faces__", 0) == 0 ||
                code.rfind("__lookup_faces_bwd__", 0) == 0 ||
                code == "__face_fetch__" ||
@@ -424,6 +427,57 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
         if (node->fwd_code == "__screen_coord__") {
             body << "    vec2 " << y_name
                  << " = vec2(dressi_coord) + 0.5;\n";
+            continue;
+        }
+        if (node->fwd_code.rfind("__pixel_fetch__", 0) == 0) {
+            const int px_x = std::stoi(node->fwd_code.substr(
+                    node->fwd_code.find("x=") + 2));
+            const size_t tx_bind = slt_binding.at(xs[0]);
+            const size_t id_bind = slt_binding.at(xs[1]);
+            const uint32_t n = NumComponents(y.getVType());
+            body << "    " << y_type << " " << y_name
+                 << " = texelFetch(u_slt" << tx_bind << ", ivec2(" << px_x
+                 << ", int(texelFetch(u_slt" << id_bind
+                 << ", ivec2(0, 0), 0).x + 0.5)), 0)" << SwizzleOf(n)
+                 << ";\n";
+            continue;
+        }
+        if (node->fwd_code.rfind("__tile_fetch__", 0) == 0) {
+            const int tile_h = std::stoi(node->fwd_code.substr(
+                    node->fwd_code.find("h=") + 2));
+            const size_t at_bind = slt_binding.at(xs[0]);
+            const size_t id_bind = slt_binding.at(xs[1]);
+            const uint32_t n = NumComponents(y.getVType());
+            body << "    " << y_type << " " << y_name
+                 << " = texelFetch(u_slt" << at_bind
+                 << ", ivec2(dressi_coord.x, dressi_coord.y"
+                    " + int(texelFetch(u_slt"
+                 << id_bind << ", ivec2(0, 0), 0).x + 0.5) * " << tile_h
+                 << "), 0)" << SwizzleOf(n) << ";\n";
+            continue;
+        }
+        if (node->fwd_code == "__sum_all__") {
+            // Single-thread whole-image sum (small inputs only)
+            const size_t in_bind = slt_binding.at(xs[0]);
+            const ImgSize src = xs[0].getImgSize();
+            const uint32_t n = NumComponents(xs[0].getVType());
+            body << "    float " << y_name << " = 0.0;\n";
+            body << "    for (int sy = 0; sy < " << src.h << "; sy++)\n";
+            body << "    for (int sx = 0; sx < " << src.w << "; sx++) {\n";
+            if (n == 1) {
+                body << "        " << y_name << " += texelFetch(u_slt"
+                     << in_bind << ", ivec2(sx, sy), 0).x;\n";
+            } else {
+                body << "        " << GlslTypeName(xs[0].getVType())
+                     << " v = texelFetch(u_slt" << in_bind
+                     << ", ivec2(sx, sy), 0)" << SwizzleOf(n) << ";\n";
+                body << "        " << y_name << " += "
+                     << (n == 2 ? "v.x + v.y"
+                                : n == 3 ? "v.x + v.y + v.z"
+                                         : "v.x + v.y + v.z + v.w")
+                     << ";\n";
+            }
+            body << "    }\n";
             continue;
         }
         if (node->fwd_code == "__rasterize__") {

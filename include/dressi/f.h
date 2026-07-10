@@ -90,6 +90,11 @@ Variable SumPixelWise(const Variables& xs);
 // Spatial reductions over the whole image
 Variable Sum(const Variable& x);   // -> same vtype, {1,1}
 Variable Mean(const Variable& x);  // -> FLOAT, {1,1} (component average)
+// Single-pass sum of ALL pixels and components -> FLOAT {1,1}. One thread
+// loops the whole image, so use it for SMALL inputs (per-vertex/per-face
+// arrays) where the log-step reduction chain's pass overhead dominates.
+// Forward-only (no backward); intended for optimizer-side statistics.
+Variable SumAll(const Variable& x);
 
 // ------------------------------- DR functions --------------------------------
 Variable StopGradient(const Variable& x);
@@ -202,6 +207,19 @@ Variable FaceFetch(const Variable& tri_attr, const Variable& idx_img,
                    const Variable& tri_prj_0, const Variable& tri_prj_1,
                    const Variable& tri_prj_2, const Variable& seed,
                    float radius_px, uint32_t n_samples = 4);
+
+// -------------------- Dynamic selection (GPU-resident) -----------------------
+// Uniform {1,1} fetch of texel (x_index, row_idx): selects per-iteration
+// parameters (e.g. a view's MVP column) from a static atlas with an
+// in-graph index. Forward-only.
+Variable PixelFetch(const Variable& tex, uint32_t x_index,
+                    const Variable& row_idx);
+
+// Tile-row fetch: out(p) = atlas(p.x, p.y + round(tile_idx) * tile_h),
+// selecting one {W, tile_h} tile from a vertically stacked atlas (e.g.
+// per-view target images) with an in-graph index. Forward-only.
+Variable TileFetch(const Variable& atlas, const Variable& tile_idx,
+                   uint32_t tile_h);
 
 // ---------------------- Mesh utilities (GPU-resident) ------------------------
 // Forward-only helpers so geometry optimization runs without per-frame
