@@ -29,6 +29,10 @@ public:
 
     void setTitle(const std::string& title);
 
+    // Moves the window (client area origin) to a fixed screen position --
+    // deterministic layout for recording. No-op when headless.
+    void setPosition(int x, int y);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;

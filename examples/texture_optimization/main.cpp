@@ -165,6 +165,9 @@ int main(int argc, char* argv[]) try {
     const uint32_t win_h = 256 * tile_rows;
     VkViewer viewer_target(win_w, win_h, "targets (GT, fixed views)");
     VkViewer viewer_pred(win_w, win_h, "optimized render");
+    // Fixed side-by-side layout (deterministic placement for recording)
+    viewer_target.setPosition(80, 80);
+    viewer_pred.setPosition(80 + int(win_w) + 16, 80);
     bool viewer_open = viewer_target.valid() && viewer_pred.valid();
     if (!viewer_open) {
         spdlog::warn("live viewer unavailable; continuing headless");

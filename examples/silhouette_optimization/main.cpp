@@ -294,10 +294,14 @@ int main(int argc, char* argv[]) try {
     // ------------------------------ Viewer --------------------------------
     const uint32_t tile_cols = 4;
     const uint32_t tile_rows = (opt.n_views + tile_cols - 1) / tile_cols;
-    VkViewer viewer_target(screen.w * tile_cols, screen.h * tile_rows,
+    const uint32_t win_w = screen.w * tile_cols;
+    VkViewer viewer_target(win_w, screen.h * tile_rows,
                            "bunny silhouette targets");
-    VkViewer viewer_pred(screen.w * tile_cols, screen.h * tile_rows,
+    VkViewer viewer_pred(win_w, screen.h * tile_rows,
                          "optimized silhouette");
+    // Fixed side-by-side layout (deterministic placement for recording)
+    viewer_target.setPosition(80, 80);
+    viewer_pred.setPosition(80 + int(win_w) + 16, 80);
     bool viewer_open = viewer_target.valid() && viewer_pred.valid();
     if (!viewer_open) {
         spdlog::warn("live viewer unavailable; continuing headless");

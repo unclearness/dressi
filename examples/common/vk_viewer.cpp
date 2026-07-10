@@ -275,6 +275,12 @@ void VkViewer::setTitle(const std::string& title) {
     }
 }
 
+void VkViewer::setPosition(int x, int y) {
+    if (m_impl->ok) {
+        glfwSetWindowPos(m_impl->window, x, y);
+    }
+}
+
 bool VkViewer::update(const CpuImage& img) {
     Impl& im = *m_impl;
     if (!im.ok) {
