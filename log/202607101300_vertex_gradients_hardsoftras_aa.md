@@ -132,6 +132,16 @@ hardsoftras. Remaining flips cluster where no view's silhouette constrains
 the surface (more/better-placed views or a remeshing step would address
 them).
 
+Second sweep (`a5115fb`): the hardsoftras deformation was under-fit at
+0.5/0.5 (user report) — its sigmoid-band gradients are weaker than the AA
+boundary gradients, so the same relative regularization over-smooths.
+Weight sweep (lap x normal): 0.5/0.5 IoU 0.9706 flips 8; 0.25/0.25 0.9801
+/22; 0.1/0.25 0.9825/27; **0.15/0.4 0.9824/16 (new hardsoftras default)**;
+0/0.25 0.9847/121. aa keeps 0.5/0.5. Same commit fixes TileImages reading
+c=0..2 from 1-channel sources (neighboring pixels bled into G/B: green
+speckles on black in the live viewer, colored silhouette fringes in the
+saved tiles).
+
 ## Measurements (RTX PRO 6000, bunny 16k v / 30k f targets, icosphere level 3 = 642 v / 1280 f, 8 views, 128x128, 300 iters, Adam lr 0.01, laplacian 0.5)
 
 | technique   | loss                  | mean IoU | opt ms/iter |
