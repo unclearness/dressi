@@ -22,6 +22,11 @@ struct Mesh {
 // centered at the origin with maximum extent 1.
 Mesh LoadObjMesh(const std::string& path);
 
+// Loads the first primitive of the first mesh from a glTF 2.0 file
+// (.gltf/.glb via tinygltf): POSITION + indices (+ TEXCOORD_0 when
+// present), normalized like LoadObjMesh.
+Mesh LoadGltfMesh(const std::string& path);
+
 // Loads an RGB image as float [0,1]
 dressi::CpuImage LoadImageRgb(const std::string& path);
 

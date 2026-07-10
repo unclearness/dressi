@@ -45,6 +45,8 @@ namespace {
 
 struct Options {
     std::string data_dir = "data/bunny";
+    std::string mesh_path;     // glTF self-reconstruction benchmark
+    float init_scale = 0.8f;   // initial shrink for --mesh
     std::string technique = "hardsoftras";
     uint32_t n_views = 8;
     uint32_t screen = 128;
@@ -73,6 +75,10 @@ Options ParseArgs(int argc, char* argv[]) {
         }
         if (key == "--technique") {
             opt.technique = value;
+        } else if (key == "--mesh") {
+            opt.mesh_path = value;
+        } else if (key == "--init-scale") {
+            opt.init_scale = std::stof(value);
         } else if (key == "--views") {
             opt.n_views = uint32_t(std::stoul(value));
         } else if (key == "--screen") {
@@ -134,10 +140,23 @@ int main(int argc, char* argv[]) try {
     std::filesystem::create_directories(out_dir);
 
     // ------------------------- Assets / geometry -------------------------
-    const Mesh bunny = LoadObjMesh(opt.data_dir + "/bunny.obj");
-    Mesh sphere = GenerateIcosphere(opt.sphere_level);
-    for (float& p : sphere.pos.data) {
-        p *= 0.55f;
+    // Default: deform an icosphere toward the bunny. With --mesh=<gltf>:
+    // self-reconstruction of the loaded mesh from a shrunken copy (the
+    // paper's geometry-optimization benchmark shape, e.g. the Avocado)
+    Mesh bunny;   // target geometry
+    Mesh sphere;  // optimized geometry
+    if (!opt.mesh_path.empty()) {
+        bunny = LoadGltfMesh(opt.mesh_path);
+        sphere = bunny;
+        for (float& p : sphere.pos.data) {
+            p *= opt.init_scale;
+        }
+    } else {
+        bunny = LoadObjMesh(opt.data_dir + "/bunny.obj");
+        sphere = GenerateIcosphere(opt.sphere_level);
+        for (float& p : sphere.pos.data) {
+            p *= 0.55f;
+        }
     }
     const uint32_t n_verts = sphere.numVertices();
     const uint32_t n_faces = sphere.numFaces();

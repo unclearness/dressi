@@ -55,9 +55,17 @@ FetchContent_Declare(stb
     GIT_SHALLOW TRUE
     SOURCE_SUBDIR nonexistent_disable_add_subdirectory)
 FetchContent_MakeAvailable(stb)
+# tinygltf (glTF 2.0; the successor of tinygltfloader)
+FetchContent_Declare(tinygltf
+    GIT_REPOSITORY https://github.com/syoyo/tinygltf.git
+    GIT_TAG v2.9.5
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR nonexistent_disable_add_subdirectory)
+FetchContent_MakeAvailable(tinygltf)
 add_library(dressi_assets INTERFACE)
 target_include_directories(dressi_assets SYSTEM INTERFACE
-    "${tinyobjloader_SOURCE_DIR}" "${stb_SOURCE_DIR}")
+    "${tinyobjloader_SOURCE_DIR}" "${stb_SOURCE_DIR}"
+    "${tinygltf_SOURCE_DIR}")
 
 # glad Vulkan loader (user-provided) for the example live viewer.
 # The SDK include path comes first so the full vk_video header set is used

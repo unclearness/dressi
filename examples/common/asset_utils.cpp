@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <stdexcept>
 #include <utility>
@@ -16,10 +17,138 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
+// tinygltf reuses the stb implementations compiled above
+#define TINYGLTF_IMPLEMENTATION
+#define TINYGLTF_NO_INCLUDE_STB_IMAGE
+#define TINYGLTF_NO_INCLUDE_STB_IMAGE_WRITE
+#include <tiny_gltf.h>
+
 namespace dressi_examples {
 
 using dressi::CpuImage;
 using dressi::ImgSize;
+
+namespace {
+
+// Normalizes positions to center origin / max extent 1 (shared with the
+// OBJ loader's convention)
+void NormalizeMesh(Mesh& mesh) {
+    float mins[3] = {1e30f, 1e30f, 1e30f};
+    float maxs[3] = {-1e30f, -1e30f, -1e30f};
+    for (uint32_t v = 0; v < mesh.numVertices(); v++) {
+        for (uint32_t c = 0; c < 3; c++) {
+            mins[c] = std::min(mins[c], mesh.pos.at(v, 0, c));
+            maxs[c] = std::max(maxs[c], mesh.pos.at(v, 0, c));
+        }
+    }
+    float extent = 1e-12f;
+    for (uint32_t c = 0; c < 3; c++) {
+        extent = std::max(extent, maxs[c] - mins[c]);
+    }
+    for (uint32_t v = 0; v < mesh.numVertices(); v++) {
+        for (uint32_t c = 0; c < 3; c++) {
+            mesh.pos.at(v, 0, c) =
+                    (mesh.pos.at(v, 0, c) - 0.5f * (mins[c] + maxs[c])) /
+                    extent;
+        }
+    }
+}
+
+// Reads accessor element `i`, component `c` as float (handles bufferView
+// byte stride; float and normalized/unnormalized integer components)
+float ReadAccessorFloat(const tinygltf::Model& model,
+                        const tinygltf::Accessor& acc, size_t i,
+                        uint32_t c) {
+    const auto& bv = model.bufferViews[size_t(acc.bufferView)];
+    const auto& buf = model.buffers[size_t(bv.buffer)];
+    const int n_comp = tinygltf::GetNumComponentsInType(uint32_t(acc.type));
+    const int comp_size =
+            tinygltf::GetComponentSizeInBytes(uint32_t(acc.componentType));
+    const size_t stride = bv.byteStride
+                                  ? bv.byteStride
+                                  : size_t(n_comp) * size_t(comp_size);
+    const uint8_t* p = buf.data.data() + bv.byteOffset + acc.byteOffset +
+                       i * stride + size_t(c) * size_t(comp_size);
+    switch (acc.componentType) {
+        case TINYGLTF_COMPONENT_TYPE_FLOAT: {
+            float f;
+            std::memcpy(&f, p, 4);
+            return f;
+        }
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT: {
+            uint32_t u;
+            std::memcpy(&u, p, 4);
+            return float(u);
+        }
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
+            uint16_t u;
+            std::memcpy(&u, p, 2);
+            return float(u);
+        }
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+            return float(*p);
+        default:
+            throw std::runtime_error("glTF: unsupported component type");
+    }
+}
+
+}  // namespace
+
+Mesh LoadGltfMesh(const std::string& path) {
+    tinygltf::Model model;
+    tinygltf::TinyGLTF loader;
+    std::string err, warn;
+    const bool binary = path.size() > 4 &&
+                        path.compare(path.size() - 4, 4, ".glb") == 0;
+    const bool ok = binary
+                            ? loader.LoadBinaryFromFile(&model, &err, &warn,
+                                                        path)
+                            : loader.LoadASCIIFromFile(&model, &err, &warn,
+                                                       path);
+    if (!ok) {
+        throw std::runtime_error("Failed to load glTF: " + path + " " +
+                                 err);
+    }
+    if (model.meshes.empty() || model.meshes[0].primitives.empty()) {
+        throw std::runtime_error("glTF has no mesh primitives: " + path);
+    }
+    const auto& prim = model.meshes[0].primitives[0];
+    const auto pos_it = prim.attributes.find("POSITION");
+    if (pos_it == prim.attributes.end() || prim.indices < 0) {
+        throw std::runtime_error("glTF primitive needs POSITION + indices");
+    }
+    const auto& pos_acc = model.accessors[size_t(pos_it->second)];
+    const auto uv_it = prim.attributes.find("TEXCOORD_0");
+    const auto& idx_acc = model.accessors[size_t(prim.indices)];
+    const uint32_t n_verts = uint32_t(pos_acc.count);
+    const uint32_t n_faces = uint32_t(idx_acc.count / 3);
+
+    Mesh mesh;
+    mesh.pos = CpuImage(n_verts, 1, 3);
+    mesh.uv = CpuImage(n_verts, 1, 2, 0.f);
+    mesh.faces = CpuImage(n_faces, 1, 3);
+    for (uint32_t v = 0; v < n_verts; v++) {
+        for (uint32_t c = 0; c < 3; c++) {
+            mesh.pos.at(v, 0, c) = ReadAccessorFloat(model, pos_acc, v, c);
+        }
+    }
+    if (uv_it != prim.attributes.end()) {
+        const auto& uv_acc = model.accessors[size_t(uv_it->second)];
+        for (uint32_t v = 0; v < n_verts; v++) {
+            mesh.uv.at(v, 0, 0) = ReadAccessorFloat(model, uv_acc, v, 0);
+            mesh.uv.at(v, 0, 1) =
+                    1.f - ReadAccessorFloat(model, uv_acc, v, 1);
+        }
+    }
+    for (uint32_t f = 0; f < n_faces; f++) {
+        for (uint32_t k = 0; k < 3; k++) {
+            mesh.faces.at(f, 0, k) =
+                    ReadAccessorFloat(model, idx_acc, size_t(f) * 3 + k, 0);
+        }
+    }
+    NormalizeMesh(mesh);
+    return mesh;
+}
 
 Mesh LoadObjMesh(const std::string& path) {
     tinyobj::ObjReader reader;
