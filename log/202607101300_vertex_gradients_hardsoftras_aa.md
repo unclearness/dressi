@@ -247,3 +247,44 @@ loop); aa 158x / IoU 0.9810 / 13 flipped at 42.5 ms/iter. New GPU test
 projection + SoftClip + momentum SGD via addUpdate, zero per-iteration
 transfers). Next parallelism lever for the gathers stays tiled partial
 sums / atomic scatter.
+
+## Follow-up: paper-faithful HardSoftRas re-architecture (`14d29ee`)
+
+Author feedback: the implementation likely deviated from the paper. A full
+re-read of the PDF (main body + Appendix A) confirmed two structural
+deviations that explained the remaining ~100x performance gap:
+
+1. **Backward mechanism.** The paper computes the pixel-edge distance from
+   per-face corner variables (`LookupFaces` -> `{F,1}`) indexed per pixel
+   by a rasterized ID buffer, with ordinary image-space ops ("All our DR
+   algorithms are written in AD, and there are no special backward
+   declarations"; `F::Rasterize` itself has NO backward). Gradients cross
+   the indexed read the same way texture gradients cross `texture()`: the
+   inverse-UV philosophy (Alg.1) -- sparse jittered samples, NOT an exact
+   per-vertex sum ("current APIs of Vulkan do not fully support atomic
+   float add operations"). My exact O(V*pixels) gather (V fragment threads,
+   latency-bound) was solving a harder problem than the paper.
+2. **Raster-headed substage fusion.** `IsSubStageVkLimitsSatisfied` allows
+   FRAG functions behind a top RASTER function in ONE substage ("Dressi-AD
+   can pack shader codes throughout HardSoftRas"); my packer isolates
+   every RASTER function (still unfixed -- stage 2).
+
+Stage-1 changes: `F::ScreenCoord` / `F::LookupFaces` (exact adjacency
+backward) / `F::FaceFetch` (stochastic edge-band sampling backward,
+Wang-hash jitter keyed by the in-graph iteration counter; bit-identical
+GLSL/C++). The example's SignedDist() is now an elementwise-op chain --
+the whole backward is AD-generated. `BuildBackward` materializes
+broadcast gy to full shape before invoking backwards.
+
+| metric (RTX PRO 6000) | exact gather | paper-faithful |
+|---|---|---|
+| 256^2 x 1 view, ms/iter | 4.0 | **0.22-0.34** (paper on RTX 2080: 0.304-0.364) |
+| 128^2 x 8 views, ms/iter | 23.5 | **~0.9** |
+| IoU @300 iters | 0.981 | 0.94 |
+| IoU @2000 iters, 4/8/16 samples | - | 0.946 / 0.961 / 0.968 |
+
+The quality/speed trade is now iteration- and sample-count-driven exactly
+as in the paper (their geometry experiments run 2500 iterations). The
+exact-gather ops (`RasterizeSoft` backward, `AntiAliasBwdVtx`) remain
+available for comparison. Open: stage-2 raster-headed fusion, applying
+the FaceFetch pattern to the AA technique, K>1 depth peeling.
