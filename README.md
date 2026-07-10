@@ -11,6 +11,30 @@ framework specialized for differentiable rendering: computational graphs of
 number of Vulkan render passes (Reactive Shader Packing), and executed on
 any Vulkan-capable GPU. The public C++ API follows Appendix A of the paper.
 
+Vertex-position gradients are provided by two techniques: **HardSoftRas**
+from the Dressi paper and the differentiable **screen-space anti-aliasing**
+from *"Dr.Hair: Reconstructing Scalp-Connected Hair Strands without
+Pre-training via Differentiable Rendering of Line Segments"* (Takimoto et
+al., CVPR 2024, [arXiv:2403.17496](https://arxiv.org/abs/2403.17496)); see
+[References](#references) for how to cite.
+
+## Milestone 3: vertex-position gradients (HardSoftRas + screen-space AA)
+
+- `F::RasterizeSoft(...)`: HardSoftRas (Dressi Alg. 2, K=1) — hardware
+  rasterization of CPU-enlarged triangles; outputs the signed screen-space
+  distance to the original triangle (plus face id / hard depth / coverage)
+  with the paper's Eq. 3 depth shift, differentiable w.r.t. the clip-space
+  vertex positions through a per-vertex gradient gather.
+- `F::AntiAlias(img, tri_id, vtx_clip, faces)` + `F::RasterizeFaceId(...)`:
+  the Dr.Hair screen-space AA (Eq. 3-5) — blends across triangle-ID
+  boundaries by the pixel-to-silhouette-edge distance; differentiable
+  w.r.t. the image and the vertex positions (dense boundary gradients).
+  Works on general triangle meshes.
+- `examples/silhouette_optimization`: deforms an icosphere into the bunny
+  from multi-view silhouettes with either `--technique=hardsoftras` or
+  `--technique=aa` (CPU Adam + uniform-Laplacian and normal-consistency
+  regularizers; mask IoU ~0.98 for both techniques).
+
 ## Milestone 2: deferred rasterization + texture optimization
 
 - `F::Rasterize(clip_pos, attrib, faces, screen_size)`: depth-tested indexed
@@ -56,9 +80,9 @@ any Vulkan-capable GPU. The public C++ API follows Appendix A of the paper.
 - `DressiAD` driver: `setLossVar` / `setOptimizer` / `sendImg` / `recvImg` /
   `execStep` (InitStatus ladder per the paper)
 
-Not yet implemented (later milestones): rasterization (`F::Rasterize` /
-HardSoftRas), texture sampling with inverse-UV backward, compute-shader
-substages, int-image execution, matrix images on GPU.
+Not yet implemented (later milestones): depth-peeling execution (K > 1),
+texture backward w.r.t. UV, compute-shader substages, int-image execution,
+matrix images on GPU.
 
 ## Building
 
@@ -100,6 +124,43 @@ for (int i = 0; i < 300; i++) {
 CpuImage optimized = ad.recvImg(param);
 ```
 
+## References
+
+This repository re-implements techniques from the following papers. **If
+you use this code in academic work, please cite them** — the Dressi paper
+for the renderer as a whole (Dressi-AD, Reactive Shader Packing,
+HardSoftRas), and additionally the Dr.Hair paper when you use the
+screen-space anti-aliasing vertex gradients (`F::AntiAlias`).
+
+```bibtex
+@article{takimoto2022dressi,
+  title   = {Dressi: A Hardware-Agnostic Differentiable Renderer with
+             Reactive Shader Packing and Soft Rasterization},
+  author  = {Takimoto, Yusuke and Sato, Hiroyuki and Takehara, Hikari and
+             Uragaki, Keishiro and Tawara, Takehiro and Liang, Xiao and
+             Oku, Kentaro and Kishimoto, Wataru and Zheng, Bo},
+  journal = {Computer Graphics Forum},
+  volume  = {41},
+  number  = {2},
+  pages   = {13--27},
+  year    = {2022},
+  doi     = {10.1111/cgf.14455}
+}
+
+@inproceedings{takimoto2024drhair,
+  title     = {{Dr.Hair}: Reconstructing Scalp-Connected Hair Strands
+               without Pre-training via Differentiable Rendering of Line
+               Segments},
+  author    = {Takimoto, Yusuke and Takehara, Hikari and Sato, Hiroyuki and
+               Zhu, Zihao and Zheng, Bo},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision
+               and Pattern Recognition (CVPR)},
+  pages     = {20601--20611},
+  year      = {2024},
+  doi       = {10.1109/CVPR52733.2024.01947}
+}
+```
+
 ## License
 
 MIT (see [LICENSE](LICENSE)). Third-party dependencies keep their own
@@ -116,5 +177,6 @@ src/codegen/      substage -> GLSL fragment shader generation
 src/pack/         trivial & greedy (RSP) packers, reactive pruning
 src/vk/           headless Vulkan context, executor, CPU<->GPU transfer
 tests/            GoogleTest suites (ctest labels: cpu / gpu)
-examples/         image_fitting end-to-end optimization demo
+examples/         image_fitting / texture_optimization /
+                  silhouette_optimization demos
 ```
