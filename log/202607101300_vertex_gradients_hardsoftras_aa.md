@@ -414,3 +414,34 @@ at EVERY resolution, 2048^2 included (1.54 vs 1.62); against the modern
 CUDA backend it wins up to 1024^2 and ties-to-loses at 2048^2. All
 nvdiffrast profiles are flat (host-launch-bound at this mesh size);
 GL carries an extra ~0.2 ms of CUDA-GL interop per iteration.
+
+## Follow-up: paper-era nvdiffrast v0.2.6 (late 2021, GL-only)
+
+The paper predates the CUDA rasterizer (added in nvdiffrast v0.3.0,
+2022-03), so its comparison target is the v0.2.x OpenGL backend. Pinned
+v0.2.6 and ran it on the same GPU (extra workarounds: VS2022 cl.exe on
+PATH -- the old _find_cl_path() only globs pre-2022 VS locations -- and
+removing the shaders' manual `in int gl_PrimitiveID;` declaration, which
+current NVIDIA drivers reject as a reserved name).
+
+Avocado, 1 view, ms/iter (RTX PRO 6000):
+
+| resolution | v0.2.6 GL (paper-era) | v0.3.3 GL | v0.4.0 CUDA | ours K=1 |
+|---|---|---|---|---|
+| 256^2  | 1.78 | 1.58 | 1.29 | 0.20 |
+| 512^2  | 1.76 | 1.54 | 1.44 | 0.28 |
+| 1024^2 | 1.82 | 1.53 | 1.27 | 0.58 |
+| 2048^2 | 1.70 | 1.62 | 1.30 | 1.54 |
+| 4096^2 | 3.47 | -    | -    | ~5.5 |
+
+Why the paper's "gap grows with resolution" does not reproduce here: on
+the RTX 2080 nvdiffrast's 2048^2 iteration was GPU-work-bound
+(5.4-8.0 ms in Table 4); on this GPU the same pixel work costs < 1 ms
+and hides under a ~1.8 ms host-launch floor, so every nvdiffrast
+version/backend measures flat until 4096^2. Our advantage at <= 2048^2
+(up to 9x vs the paper-era backend) comes from having no per-iteration
+host involvement at all -- the same property that produced the paper's
+result. At 4096^2, where both are pixel-bound, nvdiffrast's hand-tuned
+kernels are leaner per pixel than our fused fragment passes (3.47 vs
+~5.5 ms) -- reducing full-screen RGBA32F traffic in the loss/AA chains
+is the known lever if that regime matters.

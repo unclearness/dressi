@@ -108,7 +108,7 @@ def main():
         mask = (rast[..., 3:] > 0).float()
         return dr.antialias(mask, rast, clip, tri), mask
 
-    for res in (256, 512, 1024, 2048):
+    for res in (256, 512, 1024, 2048, 4096):
         with torch.no_grad():
             target = render_mask(pos_ref, res)[1].detach()  # hard GT mask
         pos = (pos_ref * 0.8).clone().requires_grad_(True)
