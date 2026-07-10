@@ -11,7 +11,7 @@ FetchContent_MakeAvailable(nanobind)
 
 nanobind_add_module(dressi_py NB_STATIC csrc/module.cpp)
 set_target_properties(dressi_py PROPERTIES OUTPUT_NAME "_C")
-target_link_libraries(dressi_py PRIVATE dressi)
+target_link_libraries(dressi_py PRIVATE dressi spdlog::spdlog)
 if(MSVC)
     target_compile_options(dressi_py PRIVATE /bigobj /utf-8)
 endif()

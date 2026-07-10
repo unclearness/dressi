@@ -32,6 +32,7 @@ class Engine:
         self._grad_vars: dict[str, object] | None = None
         self._grad_leaf_names: list[str] = []
         self._uploaded: dict[str, tuple] = {}
+        self._queued: list = []  # (Variable, array) flushed at run()
         self._executed = False
 
     # ------------------------------- build ---------------------------------
@@ -53,7 +54,16 @@ class Engine:
                 seed = self.leaf(self.seed_name(i), out.vtype, out.width,
                                  out.height)
                 prods.append(out * seed)
-            loss = prods[0] if len(prods) == 1 else _C.f.sum_pixel_wise(prods)
+            # <=4-ary SumPixelWise tree (Vulkan only guarantees 4 input
+            # attachments per stage; mirrors BuildBackward's SumContribs)
+            while len(prods) > 1:
+                nxt = []
+                for j in range(0, len(prods), 4):
+                    chunk = prods[j:j + 4]
+                    nxt.append(chunk[0] if len(chunk) == 1
+                               else _C.f.sum_pixel_wise(chunk))
+                prods = nxt
+            loss = prods[0]
             for name in grad_leaves:
                 self.leaves[name].set_requires_grad_recursively(True)
             self.ad.set_loss_var(loss)
@@ -69,29 +79,51 @@ class Engine:
 
     # ------------------------------ transfer -------------------------------
     def upload(self, name: str, array: np.ndarray, token=None, ref=None):
-        """sendImg with dirty-skip: identical (token) uploads are elided so
-        static data crosses PCIe exactly once. Tokens contain data_ptr, so
-        the skip is only sound while the pointed-at memory cannot be reused
-        by a new tensor: `ref` (the source tensor the token was derived
-        from) is retained alongside the token to pin it."""
+        """Queue a leaf upload with dirty-skip: identical (token) uploads
+        are elided so static data crosses PCIe exactly once. All queued
+        uploads flush as ONE staging buffer + submit at run() (a per-image
+        sendImg costs a synchronous fence wait each). Tokens contain
+        data_ptr, so the skip is only sound while the pointed-at memory
+        cannot be reused by a new tensor: `ref` (the source tensor the
+        token was derived from) is retained alongside the token to pin
+        it."""
         if token is not None:
             prev = self._uploaded.get(name)
             if prev is not None and prev[0] == token:
                 return
         array = np.ascontiguousarray(array)
-        self.ad.send_img(self.leaves[name], array)
+        self._queued.append((self.leaves[name], array))
         if token is not None:
             self._uploaded[name] = (token, ref)
 
     def run(self):
+        if self._queued:
+            for var, arr in self._queued:
+                if (arr.shape[1] != var.width or arr.shape[0] != var.height):
+                    names = {v.id: k for k, v in self.leaves.items()}
+                    raise RuntimeError(
+                        f"upload shape mismatch for leaf "
+                        f"'{names.get(var.id, '?')}': array (h,w)="
+                        f"{arr.shape[:2]} vs leaf (h,w)="
+                        f"({var.height},{var.width})")
+            self.ad.send_imgs(self._queued)
+            self._queued.clear()
         self.ad.exec_step()
         self._executed = True
 
     def read_output(self, i: int = 0) -> np.ndarray:
         return self.ad.recv_img(self.outputs[i])
 
+    def read_outputs(self) -> list[np.ndarray]:
+        """All outputs in one staging submit."""
+        return self.ad.recv_imgs(self.outputs)
+
     def read_grad(self, name: str) -> np.ndarray:
         return self.ad.recv_img(self._grad_var(name))
+
+    def read_grads(self, names: list[str]) -> list[np.ndarray]:
+        """Named gradients in one staging submit."""
+        return self.ad.recv_imgs([self._grad_var(n) for n in names])
 
     # ------------------------------ internal -------------------------------
     def _grad_var(self, name: str):

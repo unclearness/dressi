@@ -174,6 +174,54 @@ Result: 35.7 → **4.0 ms/iter @512²** (9x).
 - `.venv` (Python 3.13) created at the repo root for the binding tests;
   not committed.
 
+## Addendum 2: eager-path performance round (user goal: beat nvdiffrast)
+
+Target workload: silhouette example, 8 views, 128², CUDA tensors.
+Start 39.2 ms/iter (dressi) vs 13.1 (nvdiffrast, per-view loop).
+
+Implemented (all engine-cache-transparent to the API):
+- **Batched engines**: an N-item call builds ONE engine with N unrolled
+  per-item subgraphs (leaves "<base>#<i>", static topology shared;
+  Engine.finalize handles multi-output surrogate losses via a <=4-ary
+  SumPixelWise tree). 24 execSteps/iter -> 3. interpolate keeps a single
+  shared `attr` leaf when attr is [V,C] (per-item gradient contributions
+  accumulate in-graph).
+- **Batched transfers**: `DressiAD::sendImgs`/`recvImgs` — one staging
+  buffer, one submit, offset BufferImageCopy regions (own record;
+  vkw::SetImageLayout for transitions). Engine queues uploads and flushes
+  at run(); all outputs/gradients download in one submit. Upload flush
+  measured 0.09 ms for 27 images.
+- **Forward/backward engine split**: forward runs the gradient-free
+  engine; backward gets the train engine (its exec recomputes the forward
+  internally). Keeps the AA vertex-gradient stage (2.9 ms) out of forward
+  entirely.
+- **CPU-copy cache** (convert.py): id+_version-keyed cache of device
+  tensors' CPU copies; ops register their outputs, so rast produced on
+  CUDA doesn't re-cross for interpolate/antialias.
+- Per-item AA jitter seeds (a shared seed correlates the stochastic
+  backward across views and measurably hurts convergence).
+
+Two real bugs found by the batching work:
+- MeshData cache keyed by tri's (data_ptr, _version, shape) must PIN the
+  source tensor — a freed tri's address reused by a different topology
+  produced order-dependent "image size mismatch" failures in the suite.
+- An in-graph unweld (SoftClip radius=0, kept as a relaxed >=0 check) was
+  tried to eliminate the CPU corner-gather + {3F,4} uploads; it PASSED
+  all unit tests but degraded AA silhouette IoU 0.97 -> 0.94
+  reproducibly, and was reverted (cause not yet isolated — the fp
+  screen-space round trip only perturbs positions ~1e-6; suspicious).
+
+Results: silhouette aa 39 -> **15.7 ms/iter** (IoU 0.971 preserved),
+hardsoftras 97 -> 61.7, Avocado 1-view eager 3.3/4.0/9.0 ->
+2.8/3.6/9.0. nvdiffrast batched: 6.2 ms — still 2.5x ahead. Measured
+remaining gap: (1) AntiAliasBwdVtx GPU 2.9 ms — {V,1} layout = 642
+threads with the 8-view batch serialized inside each thread
+(latency-bound; fix = batch-aware {V,N} gather stage, a C++ op/codegen
+change); (2) ~6 ms host glue (CUDA<->CPU staging copies, ~6 submit
+fences, numpy conversions) — the decisive fix is Vulkan-export -> CUDA
+-import interop. `_C.set_log_level("debug")` now exposes the per-stage
+GPU timestamp breakdown from Python (how the BwdVtx wall was found).
+
 ## Addendum: Python examples + uv packaging (same session)
 
 - `pyproject.toml` (uv-managed, `package = false`): CUDA torch from the

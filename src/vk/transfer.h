@@ -24,9 +24,25 @@ inline void SendImageToDevice(const VkContext& ctx,
                       image_initialized);
 }
 
+// Batched CPU -> GPU upload: every image rides one staging buffer and one
+// command-buffer submit (a per-image submit costs a fence wait each)
+struct ImageSendItem {
+    vkw::ImagePackPtr img;
+    CpuImageView cpu;
+    VType vtype = FLOAT;
+    bool initialized = true;
+};
+void SendImagesToDevice(const VkContext& ctx,
+                        const std::vector<ImageSendItem>& items);
+
 // GPU -> CPU counterpart (expects ShaderReadOnlyOptimal layout)
 CpuImage ReceiveImageFromDevice(const VkContext& ctx,
                                 const vkw::ImagePackPtr& img, VType vtype);
+
+// Batched GPU -> CPU download: one staging buffer, one submit, one map
+std::vector<CpuImage> ReceiveImagesFromDevice(
+        const VkContext& ctx,
+        const std::vector<std::pair<vkw::ImagePackPtr, VType>>& items);
 
 // Fills a host-visible vertex/index buffer from CPU data. Int VTypes
 // (face indices) are converted from the CpuImage's float storage to uint32.

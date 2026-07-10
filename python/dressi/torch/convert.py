@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+import weakref
 
 import numpy as np
 import torch
@@ -10,11 +11,39 @@ import torch
 _warned_device = False
 _warned_dtype = False
 
+# CPU-copy cache for device tensors: id(gpu tensor) -> (weakref, _version,
+# cpu copy). Ops both look up incoming tensors here and register their own
+# outputs, so a value produced by one op and consumed by the next does not
+# cross the device boundary twice.
+_cpu_cache: dict[int, tuple] = {}
+
+
+def _cache_put(gpu_t: torch.Tensor, cpu_t: torch.Tensor):
+    key = id(gpu_t)
+
+    def _drop(_ref, _key=key):
+        _cpu_cache.pop(_key, None)
+
+    _cpu_cache[key] = (weakref.ref(gpu_t, _drop), gpu_t._version, cpu_t)
+
+
+def register_cpu_copy(gpu_t: torch.Tensor, cpu_t: torch.Tensor):
+    """Ops call this when returning a device tensor whose CPU contents
+    they already hold."""
+    if gpu_t.device.type != "cpu":
+        _cache_put(gpu_t, cpu_t)
+
 
 def to_cpu_f32(t: torch.Tensor, name: str) -> torch.Tensor:
-    """Device/dtype policy: CPU float32 contiguous, warning once on coercion."""
+    """Device/dtype policy: detached CPU float32 contiguous, warning once
+    on coercion. Pass the ORIGINAL tensor (not .detach()) so the CPU-copy
+    cache can key on its identity."""
     global _warned_device, _warned_dtype
     if t.device.type != "cpu":
+        entry = _cpu_cache.get(id(t))
+        if (entry is not None and entry[0]() is t
+                and entry[1] == t._version):
+            return entry[2]
         if not _warned_device:
             warnings.warn(
                 f"dressi.torch: '{name}' is on {t.device}; v1 transfers "
@@ -23,17 +52,23 @@ def to_cpu_f32(t: torch.Tensor, name: str) -> torch.Tensor:
                 stacklevel=3,
             )
             _warned_device = True
-        t = t.cpu()
-    if t.dtype != torch.float32:
-        if t.dtype == torch.float64 and not _warned_dtype:
+        cpu = t.detach().cpu()
+        if cpu.dtype != torch.float32:
+            cpu = cpu.float()
+        cpu = cpu.contiguous()
+        _cache_put(t, cpu)
+        return cpu
+    out = t.detach()
+    if out.dtype != torch.float32:
+        if out.dtype == torch.float64 and not _warned_dtype:
             warnings.warn(
                 f"dressi.torch: '{name}' is float64; downcasting to "
                 "float32 (the engine is fp32).",
                 stacklevel=3,
             )
             _warned_dtype = True
-        t = t.float()
-    return t.contiguous()
+        out = out.float()
+    return out.contiguous()
 
 
 def as_hwc(t: torch.Tensor) -> np.ndarray:

@@ -98,7 +98,12 @@ public:
     // Zero-copy variant for borrowed buffers (language bindings): the view
     // is only read during the call (copied internally if still pending).
     void sendImg(const Variable& var, const CpuImageView& cpu_img);
+    // Batched upload: all image transfers share one staging buffer and one
+    // submit (each individual sendImg costs a synchronous fence wait).
+    void sendImgs(const std::vector<std::pair<Variable, CpuImageView>>& items);
     CpuImage recvImg(const Variable& var);
+    // Batched download: all images share one staging buffer and one submit
+    std::vector<CpuImage> recvImgs(const Variables& vars);
 
 private:
     struct Impl;

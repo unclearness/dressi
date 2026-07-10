@@ -168,13 +168,24 @@ Same Avocado silhouette benchmark (ms/iter; fixed view, Adam on positions):
 
 | resolution | dressi.torch (eager) | dressi native fused (Python) | C++ example (AA) | nvdiffrast CUDA | DRTK |
 |---|---|---|---|---|---|
-| 256²  | 3.3 | **0.55** | 0.49 | 1.11 | 2.12 |
-| 512²  | 4.0 | **0.57** | 0.49 | 1.18 | 6.15 |
+| 256²  | 2.8 | **0.55** | 0.49 | 1.11 | 2.12 |
+| 512²  | 3.6 | **0.57** | 0.49 | 1.18 | 6.15 |
 | 1024² | 9.0 | **0.55** | 0.51 | 1.21 | 19.6 |
 
+The eager layer batches aggressively: N-item calls unroll into ONE engine
+(one execStep per forward and one per backward for a whole minibatch),
+uploads/downloads ride single staging submits (`sendImgs`/`recvImgs`),
+forward runs a gradient-free engine (backward stages never execute in
+forward), and CPU copies of device tensors are cached across op
+boundaries. Multi-view silhouette example (8 views, 128², 300 iters,
+CUDA tensors): 39 → **15.7 ms/iter** (nvdiffrast: 6.2). The remaining gap
+is measured, not mysterious: the AntiAlias vertex-gradient stage runs at
+{V,1} = one thread per vertex with the batch serialized inside each
+thread (2.9 ms GPU), and ~6 ms of host glue (CUDA↔CPU staging copies +
+submit fences) that only GPU interop can remove.
+
 - The eager drop-in path pays per-op CPU round trips (v1 transfers via CPU
-  tensors) plus a full fwd+bwd graph execution in both `forward` and
-  `backward`; it still beats DRTK everywhere.
+  tensors); it beats DRTK everywhere.
 - The **native fused path** (`dressi._C`, see
   `scripts/dressi_native_bench.py`) builds the whole training step —
   transform, raster, AA, MSE, in-graph Adam — as one Dressi graph and

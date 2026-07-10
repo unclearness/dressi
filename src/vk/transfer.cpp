@@ -1,5 +1,7 @@
 #include "vk/transfer.h"
 
+#include <cstring>
+
 #include "codegen/glsl_codegen.h"
 
 namespace dressi {
@@ -83,6 +85,86 @@ void SendImageToDevice(const VkContext& ctx, const vkw::ImagePackPtr& img,
     });
 }
 
+void SendImagesToDevice(const VkContext& ctx,
+                        const std::vector<ImageSendItem>& items) {
+    if (items.empty()) {
+        return;
+    }
+    if (items.size() == 1) {
+        SendImageToDevice(ctx, items[0].img, items[0].cpu, items[0].vtype,
+                          items[0].initialized);
+        return;
+    }
+
+    // Layout: each image's physical pixels at a 16-byte-aligned offset
+    std::vector<size_t> offsets(items.size());
+    size_t total = 0;
+    for (size_t i = 0; i < items.size(); i++) {
+        const auto& it = items[i];
+        const uint32_t n_phys = PhysChannels(it.vtype);
+        DRESSI_CHECK(it.cpu.channels == NumComponents(it.vtype),
+                     "sendImgs: channel count mismatch");
+        DRESSI_CHECK(it.cpu.width == it.img->view_size.width &&
+                             it.cpu.height == it.img->view_size.height,
+                     "sendImgs: image size mismatch");
+        offsets[i] = total;
+        total += size_t(it.cpu.width) * it.cpu.height * n_phys *
+                 sizeof(float);
+        total = (total + 15) & ~size_t(15);
+    }
+    const auto& staging =
+            EnsureStaging(ctx, ctx.send_staging, total,
+                          vk::BufferUsageFlagBits::eTransferSrc,
+                          /*cached=*/false);
+
+    // Fill every region through one map
+    auto* base = static_cast<uint8_t*>(ctx.device->mapMemory(
+            staging->dev_mem_pack->dev_mem.get(), 0,
+            staging->dev_mem_pack->dev_mem_size));
+    for (size_t i = 0; i < items.size(); i++) {
+        const auto& it = items[i];
+        const uint32_t n_logical = NumComponents(it.vtype);
+        const uint32_t n_phys = PhysChannels(it.vtype);
+        const size_t n_pixels = size_t(it.cpu.width) * it.cpu.height;
+        float* dst = reinterpret_cast<float*>(base + offsets[i]);
+        if (n_logical == n_phys) {
+            std::memcpy(dst, it.cpu.data,
+                        n_pixels * n_phys * sizeof(float));
+        } else {
+            std::memset(dst, 0, n_pixels * n_phys * sizeof(float));
+            for (size_t p = 0; p < n_pixels; p++) {
+                for (uint32_t c = 0; c < n_logical; c++) {
+                    dst[p * n_phys + c] = it.cpu.data[p * n_logical + c];
+                }
+            }
+        }
+    }
+    ctx.device->unmapMemory(staging->dev_mem_pack->dev_mem.get());
+
+    // One submit: transition, copy at offset, transition back -- per image
+    RunOneShot(ctx, [&](const vk::UniqueCommandBuffer& cmd) {
+        constexpr auto kDst = vk::ImageLayout::eTransferDstOptimal;
+        constexpr auto kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
+        for (size_t i = 0; i < items.size(); i++) {
+            const auto& it = items[i];
+            const auto init_layout = it.initialized
+                                             ? kRead
+                                             : vk::ImageLayout::eUndefined;
+            vkw::SetImageLayout(cmd, it.img, init_layout, kDst);
+            const vk::BufferImageCopy region(
+                    offsets[i], it.cpu.width, it.cpu.height,
+                    vk::ImageSubresourceLayers(
+                            vk::ImageAspectFlagBits::eColor, 0, 0, 1),
+                    vk::Offset3D(0, 0, 0),
+                    vk::Extent3D(it.cpu.width, it.cpu.height, 1));
+            cmd->copyBufferToImage(staging->buf.get(),
+                                   it.img->img_res_pack->img.get(), kDst,
+                                   region);
+            vkw::SetImageLayout(cmd, it.img, kDst, kRead);
+        }
+    });
+}
+
 void SendGeometryToBuffer(const VkContext& ctx,
                           const vkw::BufferPackPtr& buf,
                           const CpuImageView& cpu_img, VType vtype) {
@@ -132,6 +214,81 @@ CpuImage ReceiveImageFromDevice(const VkContext& ctx,
             }
         }
     }
+    return out;
+}
+
+std::vector<CpuImage> ReceiveImagesFromDevice(
+        const VkContext& ctx,
+        const std::vector<std::pair<vkw::ImagePackPtr, VType>>& items) {
+    std::vector<CpuImage> out;
+    out.reserve(items.size());
+    if (items.empty()) {
+        return out;
+    }
+    if (items.size() == 1) {
+        out.push_back(ReceiveImageFromDevice(ctx, items[0].first,
+                                             items[0].second));
+        return out;
+    }
+
+    std::vector<size_t> offsets(items.size());
+    size_t total = 0;
+    for (size_t i = 0; i < items.size(); i++) {
+        const auto& [img, vtype] = items[i];
+        offsets[i] = total;
+        total += size_t(img->view_size.width) * img->view_size.height *
+                 PhysChannels(vtype) * sizeof(float);
+        total = (total + 15) & ~size_t(15);
+    }
+    const auto& staging =
+            EnsureStaging(ctx, ctx.recv_staging, total,
+                          vk::BufferUsageFlagBits::eTransferDst,
+                          /*cached=*/true);
+
+    RunOneShot(ctx, [&](const vk::UniqueCommandBuffer& cmd) {
+        constexpr auto kSrc = vk::ImageLayout::eTransferSrcOptimal;
+        constexpr auto kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
+        for (size_t i = 0; i < items.size(); i++) {
+            const auto& img = items[i].first;
+            vkw::SetImageLayout(cmd, img, kRead, kSrc);
+            const vk::BufferImageCopy region(
+                    offsets[i], img->view_size.width, img->view_size.height,
+                    vk::ImageSubresourceLayers(
+                            vk::ImageAspectFlagBits::eColor, 0, 0, 1),
+                    vk::Offset3D(0, 0, 0),
+                    vk::Extent3D(img->view_size.width,
+                                 img->view_size.height, 1));
+            cmd->copyImageToBuffer(img->img_res_pack->img.get(), kSrc,
+                                   staging->buf.get(), region);
+            vkw::SetImageLayout(cmd, img, kSrc, kRead);
+        }
+    });
+
+    const auto* base = static_cast<const uint8_t*>(ctx.device->mapMemory(
+            staging->dev_mem_pack->dev_mem.get(), 0,
+            staging->dev_mem_pack->dev_mem_size));
+    for (size_t i = 0; i < items.size(); i++) {
+        const auto& [img, vtype] = items[i];
+        const uint32_t n_logical = NumComponents(vtype);
+        const uint32_t n_phys = PhysChannels(vtype);
+        const uint32_t w = img->view_size.width;
+        const uint32_t h = img->view_size.height;
+        const size_t n_pixels = size_t(w) * h;
+        const float* src = reinterpret_cast<const float*>(base + offsets[i]);
+        CpuImage cpu(w, h, n_logical);
+        if (n_logical == n_phys) {
+            std::memcpy(cpu.data.data(), src,
+                        n_pixels * n_phys * sizeof(float));
+        } else {
+            for (size_t p = 0; p < n_pixels; p++) {
+                for (uint32_t c = 0; c < n_logical; c++) {
+                    cpu.data[p * n_logical + c] = src[p * n_phys + c];
+                }
+            }
+        }
+        out.push_back(std::move(cpu));
+    }
+    ctx.device->unmapMemory(staging->dev_mem_pack->dev_mem.get());
     return out;
 }
 

@@ -18,6 +18,10 @@ class MeshData:
     """
 
     def __init__(self, tri: torch.Tensor):
+        # Pin the source tensor: the cache key contains its data_ptr, and
+        # holding it prevents a freed tri's address from being reused by a
+        # different topology (a real, allocation-order-dependent bug)
+        self.src = tri
         tri = tri_int32(tri)
         self.n_faces = int(tri.shape[0])
         self.n_verts = int(tri.max().item()) + 1 if self.n_faces else 0

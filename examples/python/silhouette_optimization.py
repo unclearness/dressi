@@ -96,27 +96,31 @@ def main():
     edges = build_edges(sphere_tri).to(device)
     pairs = build_face_pairs(sphere_tri).to(device)
 
-    def hard_mask(pos3, tri, mvp):
-        clip = transform_clip(pos3, mvp)[None]
-        rast, _ = dr.rasterize(ctx, clip, tri, resolution=[res, res])
-        return (rast[..., 3:] > 0).float()[0]
+    # All views ride ONE batched call ([N,V,4] clip positions): both
+    # backends process the minibatch in a single launch/execStep
+    def clips_of(pos3):
+        return torch.stack([transform_clip(pos3, m) for m in mvps])
 
-    def render_aa(pos3, tri, mvp):
-        clip = transform_clip(pos3, mvp)[None]
-        rast, _ = dr.rasterize(ctx, clip, tri, resolution=[res, res])
+    def hard_masks(pos3, tri):
+        rast, _ = dr.rasterize(ctx, clips_of(pos3), tri,
+                               resolution=[res, res])
+        return (rast[..., 3:] > 0).float()  # [N,H,W,1]
+
+    def render_aa(pos3, tri):
+        clips = clips_of(pos3)
+        rast, _ = dr.rasterize(ctx, clips, tri, resolution=[res, res])
         mask = (rast[..., 3:] > 0).float()
-        return dr.antialias(mask, rast, clip, tri)[0]
+        return dr.antialias(mask, rast, clips, tri)
 
-    def render_hsr(pos3, tri, mvp):
-        clip = transform_clip(pos3, mvp)
-        rs = dr.rasterize_soft(ctx, clip, tri, [res, res],
-                               radius_px=args.radius, peels=args.peels)[0]
-        dist, cov = rs[..., 0], rs[..., 3]
-        d_soft = cov * torch.sigmoid(dist / args.sigma)  # [K,H,W]
-        soft = 1.0 - torch.prod(1.0 - d_soft, dim=0)  # Eq.6 over peels
+    def render_hsr(pos3, tri):
+        rs = dr.rasterize_soft(ctx, clips_of(pos3), tri, [res, res],
+                               radius_px=args.radius, peels=args.peels)
+        dist, cov = rs[..., 0], rs[..., 3]  # [N,K,H,W]
+        d_soft = cov * torch.sigmoid(dist / args.sigma)
+        soft = 1.0 - torch.prod(1.0 - d_soft, dim=1)  # Eq.6 over peels
         # Eq.5 split: hard coverage carries the value, the sigmoid band
         # carries the gradients (pure sigmoid leaves interior seams at K=1)
-        hard = (cov[0] * (dist[0] >= 0).float()).detach()
+        hard = (cov[:, 0] * (dist[:, 0] >= 0).float()).detach()
         return torch.maximum(hard, soft)[..., None]
 
     render = render_hsr if hardsoft else render_aa
@@ -125,18 +129,18 @@ def main():
     # pred can match exactly); hardsoftras against hard masks
     with torch.no_grad():
         if hardsoft:
-            targets = [hard_mask(bunny_pos, bunny_tri, m) for m in mvps]
+            targets = hard_masks(bunny_pos, bunny_tri)
         else:
-            targets = [render_aa(bunny_pos, bunny_tri, m) for m in mvps]
-    save_image(out_dir / "targets.png", tile_images(targets, 4))
+            targets = render_aa(bunny_pos, bunny_tri)
+    save_image(out_dir / "targets.png", tile_images(list(targets), 4))
 
     # C++ example: unit icosphere scaled to radius 0.55
     pos = (sphere_pos * 0.55).to(device).requires_grad_(True)
     opt = torch.optim.Adam([pos], lr=args.lr)
 
     def data_loss():
-        return sum(((render(pos, sphere_tri, m) - t) ** 2).mean()
-                   for m, t in zip(mvps, targets))
+        pred = render(pos, sphere_tri)
+        return ((pred - targets) ** 2).mean(dim=(1, 2, 3)).sum()
 
     def rms(g):
         return g.pow(2).mean().sqrt() + 1e-12
@@ -157,8 +161,8 @@ def main():
         return (1.0 - (n[pairs[:, 0]] * n[pairs[:, 1]]).sum(dim=1)).sum()
 
     with torch.no_grad():
-        save_image(out_dir / "initial.png", tile_images(
-            [hard_mask(pos, sphere_tri, m) for m in mvps], 4))
+        save_image(out_dir / "initial.png",
+                   tile_images(list(hard_masks(pos, sphere_tri)), 4))
 
     t0 = time.perf_counter()
     for it in range(args.iters):
@@ -182,14 +186,12 @@ def main():
 
     # Final silhouette IoU against hard target masks (all views)
     with torch.no_grad():
-        hard_targets = [hard_mask(bunny_pos, bunny_tri, m) for m in mvps]
-        finals = [hard_mask(pos, sphere_tri, m) for m in mvps]
-        inter = sum(((f > 0.5) & (t > 0.5)).sum() for f, t in
-                    zip(finals, hard_targets))
-        union = sum(((f > 0.5) | (t > 0.5)).sum() for f, t in
-                    zip(finals, hard_targets))
+        hard_targets = hard_masks(bunny_pos, bunny_tri)
+        finals = hard_masks(pos, sphere_tri)
+        inter = ((finals > 0.5) & (hard_targets > 0.5)).sum()
+        union = ((finals > 0.5) | (hard_targets > 0.5)).sum()
         print(f"silhouette IoU: {inter.item() / union.item():.4f}")
-        save_image(out_dir / "final.png", tile_images(finals, 4))
+        save_image(out_dir / "final.png", tile_images(list(finals), 4))
         save_obj(out_dir / "final_mesh.obj", pos, sphere_tri)
     print(f"outputs in {out_dir}/ (targets/initial/final + final_mesh.obj)")
 

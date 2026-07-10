@@ -1801,7 +1801,10 @@ Variable SoftClip(const Variable& vtx_clip_hard_tex, const Variable& faces_tex,
     DRESSI_CHECK(faces_tex.getVType() == VEC3 &&
                          faces_tex.getImgSize().h == 1,
                  "SoftClip: faces_tex must be VEC3 {F,1}");
-    DRESSI_CHECK(radius_px > 0.f, "SoftClip: radius_px must be > 0");
+    DRESSI_CHECK(radius_px >= 0.f, "SoftClip: radius_px must be >= 0");
+    // radius_px == 0 degenerates to the identity enlargement: a pure
+    // per-corner unweld ({V,1} clip -> {3F,1}), used by the bindings'
+    // rasterize to avoid CPU-side unwelding
     const uint32_t n_faces = faces_tex.getImgSize().w;
 
     OpDesc desc;

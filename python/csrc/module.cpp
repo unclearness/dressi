@@ -14,6 +14,8 @@
 
 #include <cstring>
 
+#include <spdlog/spdlog.h>
+
 #include "dressi/dressi.h"
 #include "dressi/mesh_utils.h"
 
@@ -58,6 +60,12 @@ NB_MODULE(_C, m) {
     nb::set_leak_warnings(false);
 
     nb::exception<DressiError>(m, "DressiError");
+
+    // "debug" prints per-phase execStep timings and the per-stage GPU
+    // timestamp breakdown every 100 frames
+    m.def("set_log_level", [](const std::string& level) {
+        spdlog::set_level(spdlog::level::from_str(level));
+    });
 
     nb::enum_<VType>(m, "VType")
             .value("FLOAT", VType::FLOAT)
@@ -148,6 +156,21 @@ NB_MODULE(_C, m) {
                      nb::gil_scoped_release rel;
                      self.sendImg(var, view);
                  })
+            .def("send_imgs",
+                 [](DressiAD& self,
+                    const std::vector<std::pair<Variable, NdArrayIn>>& items) {
+                     std::vector<std::pair<Variable, CpuImageView>> views;
+                     views.reserve(items.size());
+                     for (const auto& [var, arr] : items) {
+                         views.emplace_back(
+                                 var, CpuImageView(arr.data(),
+                                                   uint32_t(arr.shape(1)),
+                                                   uint32_t(arr.shape(0)),
+                                                   uint32_t(arr.shape(2))));
+                     }
+                     nb::gil_scoped_release rel;
+                     self.sendImgs(views);
+                 })
             .def("recv_img", [](DressiAD& self, const Variable& var) {
                 CpuImage img;
                 {
@@ -155,6 +178,19 @@ NB_MODULE(_C, m) {
                     img = self.recvImg(var);
                 }
                 return ToNdArray(std::move(img));
+            })
+            .def("recv_imgs", [](DressiAD& self, const Variables& vars) {
+                std::vector<CpuImage> imgs;
+                {
+                    nb::gil_scoped_release rel;
+                    imgs = self.recvImgs(vars);
+                }
+                std::vector<nb::ndarray<nb::numpy, float>> arrs;
+                arrs.reserve(imgs.size());
+                for (auto& img : imgs) {
+                    arrs.push_back(ToNdArray(std::move(img)));
+                }
+                return arrs;
             });
 
     // ------------------------------ namespace F ------------------------------
@@ -169,6 +205,10 @@ NB_MODULE(_C, m) {
     f.def("vec4v",
           nb::overload_cast<const Variable&, const Variable&, const Variable&,
                             const Variable&>(&F::Vec4));
+    f.def("vec3_xy_z",
+          nb::overload_cast<const Variable&, const Variable&>(&F::Vec3));
+    f.def("vec4_xyz_w",
+          nb::overload_cast<const Variable&, const Variable&>(&F::Vec4));
     f.def("get_x", &F::GetX);
     f.def("get_y", &F::GetY);
     f.def("get_z", &F::GetZ);
