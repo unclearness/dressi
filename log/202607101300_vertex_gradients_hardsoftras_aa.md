@@ -108,6 +108,30 @@ bunny from multi-view silhouettes:
   with no ID boundary left the gradient is zero forever (noted in the test:
   keep steps below ~1 px).
 
+## Follow-up: flipped faces / normal consistency (`e6ac1ac`)
+
+With only the positional Laplacian, silhouette-unconstrained regions kept
+flipped/creased faces (user report confirmed by counting adjacent face
+pairs with `n_f . n_g < 0`). Added `NormalConsistencyGrad` — the analytic
+gradient of `sum over adjacent face pairs of (1 - n_f . n_g)` through the
+normalized cross products — as `--normal=` (default 0.5, same relative
+data-gradient-RMS scaling as `--laplacian`), plus the flipped-pair count in
+the final report. Results (300 iters, defaults otherwise):
+
+| technique   | --normal | loss reduction | IoU    | flipped pairs /1920 |
+|-------------|----------|----------------|--------|---------------------|
+| hardsoftras | 0        | 41.6x          | 0.9713 | 62                  |
+| hardsoftras | 0.5      | 37.4x          | 0.9706 | 8                   |
+| hardsoftras | 1.0      | 16.3x          | 0.9425 | 2 (over-smoothed)   |
+| aa          | 0        | 174x           | 0.9813 | 105                 |
+| aa          | 0.5      | 163x           | 0.9810 | 11                  |
+| aa          | 1.0      | 143x           | 0.9805 | 10                  |
+
+0.5 keeps the fit while removing ~90% of the flips; 1.0 over-smooths
+hardsoftras. Remaining flips cluster where no view's silhouette constrains
+the surface (more/better-placed views or a remeshing step would address
+them).
+
 ## Measurements (RTX PRO 6000, bunny 16k v / 30k f targets, icosphere level 3 = 642 v / 1280 f, 8 views, 128x128, 300 iters, Adam lr 0.01, laplacian 0.5)
 
 | technique   | loss                  | mean IoU | opt ms/iter |
