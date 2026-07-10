@@ -27,12 +27,12 @@ struct GpuPlan {
     vkw::FencePtr fence;
 };
 
-// Creates images (reusing `prev_imgs` entries; aliasing updated->input pairs
-// through `upd_inp_map`), builds render passes/pipelines/descriptor sets from
-// the stages, and records the full command buffer.
+// Creates images and geometry buffers (reusing the previous plan's entries
+// so GPU-resident data survives rebuilds), builds render passes/pipelines/
+// descriptor sets from the stages, and records the full command buffer.
 GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
                      const std::map<Variable, Variable>& upd_inp_map,
-                     std::map<Variable, vkw::ImagePackPtr> prev_imgs);
+                     GpuPlan prev_plan);
 
 // Submits the recorded command buffer and waits for completion.
 void ExecuteGpuPlan(const VkContext& ctx, GpuPlan& plan);

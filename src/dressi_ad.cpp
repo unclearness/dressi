@@ -318,10 +318,9 @@ void DressiAD::execStep() {
         timer.mark("stage-pack");
     }
     if (im.init_status <= VULKAN) {
-        // 6) Parse stages into Vulkan objects (images persist across builds)
-        auto prev_imgs = std::move(im.plan.imgs);
+        // 6) Parse stages into Vulkan objects (GPU-resident data persists)
         im.plan = BuildGpuPlan(*im.ctx, im.stages, im.upd_inp_map,
-                               std::move(prev_imgs));
+                               std::move(im.plan));
         im.plan_valid = true;
         timer.mark("vulkan-build");
     }

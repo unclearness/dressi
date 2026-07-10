@@ -25,9 +25,13 @@ vkw::ImagePackPtr CreateVarImage(const VkContext& ctx, const Variable& var) {
 
 GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
                      const std::map<Variable, Variable>& upd_inp_map,
-                     std::map<Variable, vkw::ImagePackPtr> prev_imgs) {
+                     GpuPlan prev_plan) {
     GpuPlan plan;
-    plan.imgs = std::move(prev_imgs);
+    // GPU-resident data survives rebuilds: cached images, geometry buffers,
+    // and their sampler wrappers
+    plan.imgs = std::move(prev_plan.imgs);
+    plan.vtx_bufs = std::move(prev_plan.vtx_bufs);
+    plan.textures = std::move(prev_plan.textures);
 
     // 1) Create (or reuse) an image per substage I/O variable.
     // Optimizer outputs get their own image; an explicit copy-back into the

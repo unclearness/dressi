@@ -49,7 +49,6 @@ int main(int argc, char* argv[]) try {
     const ImgSize screen = {256, 256};
     const uint32_t n_views = 6;
     const int n_iters = 4000;
-    const float jitter_texels = 8.f;  // Sobol jitter amplitude (texels)
 
     std::filesystem::create_directories(out_dir);
 
@@ -67,7 +66,6 @@ int main(int argc, char* argv[]) try {
     Variable ones(FLOAT, {mesh.numVertices(), 1});
     Variable gt_tex(VEC3, tex_size);  // GT atlas (no gradient)
     Variable tex(VEC3, tex_size);     // optimized texture
-    Variable jitter(VEC2, {1, 1});    // per-iteration Sobol offset (UV units)
 
     const CpuImage uv_clip_img = UvAsClip(mesh.uv);
     const CpuImage ones_img(mesh.numVertices(), 1, 1, 1.f);
@@ -97,9 +95,8 @@ int main(int argc, char* argv[]) try {
         Variable g_mask = F::Rasterize(view.clip, ones, faces, screen);
         Variable inv_uv =
                 F::Rasterize(uv_clip, view.inv_uv_attr, faces, tex_size);
-        Variable uv_j = g_uv + jitter;
-        view.target = g_mask * F::Texture(gt_tex, uv_j, inv_uv);
-        view.pred = g_mask * F::Texture(tex, uv_j, inv_uv);
+        view.target = g_mask * F::Texture(gt_tex, g_uv, inv_uv);
+        view.pred = g_mask * F::Texture(tex, g_uv, inv_uv);
         Variable diff = F::StopGradient(view.target) - view.pred;
         view_losses.push_back(F::Mean(diff * diff));
     }
@@ -139,12 +136,24 @@ int main(int argc, char* argv[]) try {
     ad.sendImg(tex, CpuImage(tex_size.w, tex_size.h, 3, 0.f));  // black
 
     // --------------------------- Optimization ----------------------------
+    // Sub-pixel camera jitter (TAA style): offsets the projection by less
+    // than half a pixel so each pixel center sweeps its surface footprint
+    // across iterations. Colors stay attached to the geometry (a surface
+    // point always samples the texture at its own UV), so the pattern does
+    // not wobble; texels are covered densely over time.
     const auto send_jitter = [&](int iter) {
         const auto s = Sobol2D(uint32_t(iter));
-        CpuImage j(1, 1, 2);
-        j.data[0] = (s[0] - 0.5f) * jitter_texels / float(tex_size.w);
-        j.data[1] = (s[1] - 0.5f) * jitter_texels / float(tex_size.h);
-        ad.sendImg(jitter, j);
+        const float jx = (s[0] - 0.5f) * 2.f / float(screen.w);
+        const float jy = (s[1] - 0.5f) * 2.f / float(screen.h);
+        for (auto& view : views) {
+            CpuImage jittered = view.clip_img;
+            for (uint32_t i = 0; i < jittered.width; i++) {
+                const float w = jittered.at(i, 0, 3);
+                jittered.at(i, 0, 0) += jx * w;
+                jittered.at(i, 0, 1) += jy * w;
+            }
+            ad.sendImg(view.clip, jittered);
+        }
     };
 
     // Live view (glad + GLFW): all views tiled at fixed viewpoints, GT
@@ -212,8 +221,9 @@ int main(int argc, char* argv[]) try {
     // ------------------------------ Outputs -------------------------------
     // Final evaluation and renders at zero jitter (clean pixel centers)
     {
-        CpuImage j0(1, 1, 2, 0.f);
-        ad.sendImg(jitter, j0);
+        for (auto& view : views) {
+            ad.sendImg(view.clip, view.clip_img);
+        }
         ad.execStep();
     }
     const float final_loss = ad.recvImg(loss).data[0];
