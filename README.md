@@ -52,18 +52,23 @@ the paper used an RTX 2080 (roughly 10x less raw throughput).
 
 | resolution | paper (RTX 2080) | ours HardSoftRas K=1 | ours K=3 | ours AA |
 |---|---|---|---|---|
-| 256²  | 0.304 | 0.20 | 0.39 | 0.49 |
-| 512²  | 0.442 | 0.28 | 0.65 | 0.52 |
-| 1024² | 1.034 | 0.58 | 1.38 | 0.54 |
-| 2048² | 3.301 | 1.54 | 4.49 | 0.60 |
-| 4096² | —     | ~5.5 | —    | 0.81 |
+| 256²  | 0.304 | 0.16 | 0.27 | 0.48 |
+| 512²  | 0.442 | 0.21 | 0.43 | 0.49 |
+| 1024² | 1.034 | 0.41 | 1.03 | 0.51 |
+| 2048² | 3.301 | 1.22 | 3.47 | 0.57 |
+| 4096² | —     | 4.37 | —    | 0.78 |
 
 The scaling shape matches the paper (fixed per-pass overhead dominates at
 low resolutions; pixel work takes over above 1024²). K=1 beats the
-paper's absolute numbers at every resolution; accounting for the GPU
-generation an effective ~3-5x remains, which maps onto the known
-unimplemented items (`{1,1}` values as real uniforms, zero-copy optimizer
-aliasing).
+paper's absolute numbers at every resolution. The paper's remaining
+machinery is implemented: `{1,1}` leaf values ride in real uniforms
+(uif_vars; GPU-generated scalars measured faster as texelFetch), the
+optimizer writes updated values directly into the input images
+(zero-copy aliasing via input+color attachments in eGeneral with a
+subpass self-dependency), long same-pixel chains fuse into single
+render passes of chained subpasses, and whole-image sums reduce in two
+levels. What still separates us from a same-GPU paper run is per-pass
+fixed cost (COMP substages and rematerialization are not implemented).
 
 ### vs nvdiffrast and DRTK (same GPU, same task; `scripts/nvdiffrast_bench.py`, `scripts/drtk_bench.py`)
 
@@ -78,11 +83,11 @@ for the boundary gradients.
 
 | resolution | nvdiffrast GL v0.2.6 | nvdiffrast CUDA v0.4.0 | DRTK 0.1.0 | ours HSR K=1 | ours AA |
 |---|---|---|---|---|---|
-| 256²  | 1.78 | 1.11 | 2.12 | **0.20** | 0.49 |
-| 512²  | 1.76 | 1.18 | 6.15 | **0.28** | 0.52 |
-| 1024² | 1.82 | 1.21 | 19.6 | **0.58** | 0.54 |
-| 2048² | 1.70 | 1.28 | 67-108 | 1.54 | **0.60** |
-| 4096² | 3.47 | 3.28 | ~220 | ~5.5 | **0.81** |
+| 256²  | 1.78 | 1.11 | 2.12 | **0.16** | 0.48 |
+| 512²  | 1.76 | 1.18 | 6.15 | **0.21** | 0.49 |
+| 1024² | 1.82 | 1.21 | 19.6 | **0.41** | 0.51 |
+| 2048² | 1.70 | 1.28 | 67-108 | 1.22 | **0.57** |
+| 4096² | 3.47 | 3.28 | ~220 | 4.37 | **0.78** |
 
 ### Discussion
 
@@ -91,19 +96,19 @@ for the boundary gradients.
   iteration is bound by host-side kernel launches, not GPU work. Dressi
   bakes the whole forward + backward + optimizer into pre-recorded Vulkan
   command buffers with zero per-iteration host involvement, so it runs at
-  the cost of the actual GPU work (0.2 ms).
+  the cost of the actual GPU work (0.16 ms).
 - **Why the paper's "gap grows with resolution" does not reproduce
   as-is:** on the RTX 2080, nvdiffrast's 2048² iteration was
   GPU-work-bound (5.4-8.0 ms in Table 4). On a Blackwell-class GPU the
   same pixel work costs well under 1 ms and hides beneath the host-launch
   floor until 4096². The advantage source is the same as in the paper —
   it just saturates earlier on modern hardware.
-- **The AA technique is nearly resolution-independent** (0.49 → 0.81 ms
+- **The AA technique is nearly resolution-independent** (0.48 → 0.78 ms
   for a 256x pixel increase): its 8-neighbor forward early-outs on equal
   triangle IDs, making the cost silhouette-perimeter-bound rather than
   area-bound, and its stochastic vertex backward is O(faces). It beats
   both nvdiffrast backends and DRTK at every resolution, including 4x
-  vs nvdiffrast (270x vs DRTK) at 4096².
+  vs nvdiffrast (280x vs DRTK) at 4096².
 - **DRTK is pixel-bound from 512² up** — its brute-force CUDA rasterizer
   (no hardware rasterization, no coarse binning) scales ~4x per
   resolution step (static-geometry step: 1.2 / 1.5 / 4.6 / 17 / 67 ms).
@@ -115,8 +120,10 @@ for the boundary gradients.
   a bare silhouette task exercises exactly its weakest component.
 - **Honest limitation:** in the pixel-bound regime (HardSoftRas at
   4096²) nvdiffrast's hand-tuned CUDA kernels are leaner per pixel than
-  our generated full-screen RGBA32F passes (3.3-3.5 vs ~5.5 ms); reducing
-  the loss/AA chains' image traffic is the known lever there.
+  our generated full-screen RGBA32F passes (3.3-3.5 vs 4.37 ms); the
+  backward chain materializes many fp32 intermediates as attachments,
+  and cutting that traffic (rematerialization, fewer crossings) is the
+  known lever there.
 - Quality on this benchmark: self-reconstruction reaches silhouette IoU
   0.986 (HardSoftRas, K=3) / 0.977 (AA); the stochastic backwards trade
   a little per-iteration accuracy for the O(faces) cost and recover it

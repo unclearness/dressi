@@ -67,10 +67,10 @@ bool PushFrontFuncIntoSubStage(const Function& func, SubStage& ss,
         }
     }
 
-    // A texelFetch consumer in this substage reads y from another pass;
-    // generating y here as well would require sampling a mid-pass attachment
+    // A texelFetch/uniform consumer in this substage reads y from another
+    // pass; generating y here as well would require reading a mid-pass value
     if (Contains(ss.slt_vars, y) || Contains(ss.tex_vars, y) ||
-        Contains(ss.vtx_vars, y)) {
+        Contains(ss.vtx_vars, y) || Contains(ss.uif_vars, y)) {
         return false;
     }
 
@@ -100,15 +100,24 @@ bool PushFrontFuncIntoSubStage(const Function& func, SubStage& ss,
         } else if (x.getImgSize() == ss.img_size) {
             PushUnique(ss.inp_vars, x);  // same-pixel read
         } else if (x.getImgSize().isUniform()) {
-            PushUnique(ss.slt_vars, x);  // uniform read via texelFetch(0,0)
+            // {1,1} broadcast value. Leaves become real uniforms (vec4 UBO);
+            // GPU-generated scalars stay texelFetch(0,0) reads -- refreshing
+            // a UBO mid-frame costs more (copy + layout transitions) than
+            // the broadcast fetch it would save.
+            if (!x.getCreator()) {
+                PushUnique(ss.uif_vars, x);
+            } else {
+                PushUnique(ss.slt_vars, x);
+            }
         } else {
             return false;  // size-mismatched same-pixel read is impossible
         }
     }
 
-    // texelFetch/sampled inputs must come from another substage
+    // texelFetch/sampled/uniform inputs must come from another substage
     for (const auto& gv : ss.gen_vars) {
-        if (Contains(ss.slt_vars, gv) || Contains(ss.tex_vars, gv)) {
+        if (Contains(ss.slt_vars, gv) || Contains(ss.tex_vars, gv) ||
+            Contains(ss.uif_vars, gv)) {
             return false;
         }
     }
@@ -150,7 +159,8 @@ uint32_t CountEdges(const Function& func, const SubStage& ss) {
         }
     }
     for (const auto& x : func.getInputVars()) {
-        if (Contains(ss.inp_vars, x) || Contains(ss.slt_vars, x)) {
+        if (Contains(ss.inp_vars, x) || Contains(ss.slt_vars, x) ||
+            Contains(ss.uif_vars, x)) {
             edges++;
         }
     }
@@ -195,6 +205,9 @@ SubStages PackFunctionsIntoSubStages(const Functions& dirty_funcs,
             used_vars.insert(v);
         }
         for (const auto& v : active.tex_vars) {
+            used_vars.insert(v);
+        }
+        for (const auto& v : active.uif_vars) {
             used_vars.insert(v);
         }
         // GPU-generated raster geometry: the executor copies the vertex
@@ -283,6 +296,9 @@ Stages PackSubStagesIntoStages(SubStages substages,
             for (const auto& v : ss.slt_vars) {
                 PushUnique(current.slt_vars, v);
             }
+            for (const auto& v : ss.uif_vars) {
+                PushUnique(current.uif_vars, v);
+            }
             for (const auto& v : ss.out_vars) {
                 PushUnique(current.out_vars, v);
             }
@@ -306,11 +322,14 @@ Stages PackSubStagesIntoStages(SubStages substages,
         }
         if (compatible) {
             // texelFetch cannot read an attachment written by this render
-            // pass; such substages must start a new stage
-            for (const auto& slt : ss.slt_vars) {
-                for (const auto& prev : current.substages) {
-                    if (Contains(prev.out_vars, slt)) {
-                        compatible = false;
+            // pass, and a uniform's image->buffer copy cannot be recorded
+            // mid-pass; such substages must start a new stage
+            for (const Variables* deps : {&ss.slt_vars, &ss.uif_vars}) {
+                for (const auto& v : *deps) {
+                    for (const auto& prev : current.substages) {
+                        if (Contains(prev.out_vars, v)) {
+                            compatible = false;
+                        }
                     }
                 }
             }

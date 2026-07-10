@@ -56,6 +56,7 @@ struct Options {
     uint32_t samples = 8;  // stochastic backward samples per face
     uint32_t peels = 1;    // hardsoftras depth-peeling layers (K)
     bool single_view = false;  // one (cycled) camera per iteration
+    bool no_view = false;      // skip the live viewer (clean benchmarking)
     // Regularizer weights relative to the data-gradient RMS; negative =
     // per-technique default (hardsoftras: 0.15/0.4; aa: 0.5/0.5)
     float laplacian = -1.f;
@@ -93,6 +94,8 @@ Options ParseArgs(int argc, char* argv[]) {
             opt.peels = std::max(1u, uint32_t(std::stoul(value)));
         } else if (key == "--single-view") {
             opt.single_view = value == "1" || value == "true";
+        } else if (key == "--no-view") {
+            opt.no_view = value == "1" || value == "true";
         } else if (key == "--lr") {
             opt.lr = std::stof(value);
         } else if (key == "--laplacian") {
@@ -513,14 +516,18 @@ int main(int argc, char* argv[]) try {
     const uint32_t n_tiles = uint32_t(preds.size());
     const uint32_t tile_rows = (n_tiles + tile_cols - 1) / tile_cols;
     const uint32_t win_w = screen.w * tile_cols;
-    VkViewer viewer_target(win_w, screen.h * tile_rows,
-                           "bunny silhouette targets");
-    VkViewer viewer_pred(win_w, screen.h * tile_rows,
-                         "optimized silhouette");
-    viewer_target.setPosition(80, 80);
-    viewer_pred.setPosition(80 + int(win_w) + 16, 80);
-    bool viewer_open = viewer_target.valid() && viewer_pred.valid();
-    if (!viewer_open) {
+    std::unique_ptr<VkViewer> viewer_target, viewer_pred;
+    if (!opt.no_view) {
+        viewer_target = std::make_unique<VkViewer>(
+                win_w, screen.h * tile_rows, "bunny silhouette targets");
+        viewer_pred = std::make_unique<VkViewer>(win_w, screen.h * tile_rows,
+                                                 "optimized silhouette");
+        viewer_target->setPosition(80, 80);
+        viewer_pred->setPosition(80 + int(win_w) + 16, 80);
+    }
+    bool viewer_open = viewer_target && viewer_target->valid() &&
+                       viewer_pred->valid();
+    if (!viewer_open && !opt.no_view) {
         spdlog::warn("live viewer unavailable; continuing headless");
     }
     const int view_interval = 5;
@@ -569,10 +576,10 @@ int main(int argc, char* argv[]) try {
             if (opt.single_view) {
                 target_tile = ad.recvImg(targets[0]);
             }
-            viewer_pred.setTitle(fmt::format("optimized silhouette  iter {}",
-                                             iter));
-            viewer_open = viewer_pred.update(TileImages(prds, tile_cols)) &&
-                          viewer_target.update(target_tile);
+            viewer_pred->setTitle(fmt::format("optimized silhouette  iter {}",
+                                              iter));
+            viewer_open = viewer_pred->update(TileImages(prds, tile_cols)) &&
+                          viewer_target->update(target_tile);
             view_ms += std::chrono::duration<double, std::milli>(
                                Clock::now() - tv0)
                                .count();

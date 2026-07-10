@@ -94,6 +94,40 @@ TEST(ExecutorRsp, VectorOpsParityWithCpu) {
                      1e-5f);
 }
 
+// A mutable {1,1} leaf is delivered as a real uniform (uif_vars/UBO) under
+// RSP; a sendImg update must reach the shader on the next execStep
+TEST(ExecutorRsp, UniformLeafUpdatePropagates) {
+    const uint32_t W = 6, H = 4;
+    Variable img(VEC3, {W, H});
+    Variable scale(FLOAT, {1, 1});
+    Variable loss = img * scale + F::Float(1.f);
+
+    auto img_v = MakeImage(W, H, 3, [](size_t i) { return 0.5f + float(i); });
+    CpuImage img_s(1, 1, 1);
+    img_s.data[0] = 2.f;
+
+    DressiAD ad;
+    ad.setPackingMode(DressiAD::PackingMode::RSP);
+    ad.setLossVar(loss);
+    ad.sendImg(img, img_v);
+    ad.sendImg(scale, img_s);
+    ad.execStep();
+    CpuEvaluator ev;
+    ev.bindImage(img, img_v);
+    ev.bindImage(scale, img_s);
+    ExpectImagesNear(ad.recvImg(loss), CpuImageFromTensor(ev.eval(loss)),
+                     1e-5f);
+
+    img_s.data[0] = -3.f;  // updated uniform must be re-copied into the UBO
+    ad.sendImg(scale, img_s);
+    ad.execStep();
+    CpuEvaluator ev2;  // fresh oracle (CpuEvaluator caches evaluations)
+    ev2.bindImage(img, img_v);
+    ev2.bindImage(scale, img_s);
+    ExpectImagesNear(ad.recvImg(loss), CpuImageFromTensor(ev2.eval(loss)),
+                     1e-5f);
+}
+
 TEST(ExecutorRsp, ImageFittingConvergesRsp) {
     const uint32_t W = 16, H = 16;
     Variable param(VEC3, {W, H});

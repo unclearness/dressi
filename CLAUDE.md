@@ -28,7 +28,9 @@ ctest --preset release -LE gpu       # CPU-only (no Vulkan device needed)
   `unclearness/VulkanWrapper`, branch `dressi2-sdk-compat` (SDK 1.4.x compat
   patches). Never `add_subdirectory` it — its bundled third_party breaks under
   CMake 4.x; the `dressi_vkw` target compiles `vkw.cpp` against SDK libs.
-- `SPDLOG_LEVEL=debug` prints per-phase execStep timings.
+- `SPDLOG_LEVEL=debug` prints per-phase execStep timings plus a per-stage
+  GPU timestamp breakdown every 100 frames; `DRESSI_VK_DEBUG=1` enables
+  the Vulkan validation layers.
 
 ## Architecture (src/)
 
@@ -54,7 +56,7 @@ inputs changed (reactive cache).
   `__gather_inv_uv__`, `__rasterize__`, `__upsample_nearest_2x__`,
   `__rasterize_soft__ r=<px>`, `__rasterize_face_id__`,
   `__gather_dist_grad__`, `__antialias__`, `__antialias_bwd_img__`,
-  `__antialias_bwd_vtx__`).
+  `__antialias_bwd_vtx__`, `__sum_all__`, `__sum_partial__`).
 - `vk/` — headless context, executor (`ParseStagesAsVulkanObjects`
   equivalent), CPU↔GPU transfer with VEC3→RGBA32F padding.
 
@@ -71,9 +73,10 @@ inputs changed (reactive cache).
   against the CPU evaluator and backward against central finite differences.
   New F:: ops need all three (snippet, bwd, cpu) plus a `test_backward.cpp`
   gradient check.
-- GPU-resident state (`plan.imgs`, `plan.vtx_bufs`, `plan.textures`) MUST
-  persist across `BuildGpuPlan` rebuilds — dropping it silently breaks
-  reactive-cache runs (see commit 36d7a6e for the failure mode).
+- GPU-resident state (`plan.imgs`, `plan.vtx_bufs`, `plan.textures`,
+  `plan.uif_bufs`) MUST persist across `BuildGpuPlan` rebuilds — dropping
+  it silently breaks reactive-cache runs (see commit 36d7a6e for the
+  failure mode).
 - Raster vertex data: leaves are uploaded into vertex/index buffers by
   `sendImg` (`CpuImage` stores face indices as floats; converted to uint32
   at upload); COMPUTED clip positions are also legal raster inputs — the
@@ -89,10 +92,14 @@ inputs changed (reactive cache).
   (`VertexFacesTex` / `VertexNeighborsTex` / `FaceNeighborsTex` in the
   example utils).
 - Transfer model (the paper's): upload leaves once, download results at
-  the end; nothing crosses PCIe per iteration. Optimizer outputs are
-  copied back into their input images at end of frame (no aliasing; a
-  render pass must not read an image it writes); GPU-resident optimizer
-  STATE uses `DressiAD::addUpdate(state_leaf, new_state)` (in-graph Adam:
+  the end; nothing crosses PCIe per iteration. Optimizer outputs write
+  DIRECTLY into their input leaf's image (zero-copy aliasing: the update
+  substage binds the shared image as input+color attachment in eGeneral
+  with a subpass self-dependency — legal because a fullscreen pass has
+  one fragment per pixel). Pairs whose writer substage does not consume
+  the input same-pixel fall back to an end-of-frame CopyImage.
+  GPU-resident optimizer STATE uses
+  `DressiAD::addUpdate(state_leaf, new_state)` (in-graph Adam:
   see `examples/silhouette_optimization`). Regularizers enter the
   optimizer's update graph via forward-only mesh ops (`F::SoftClip`,
   `F::VertexNeighborMean`, `F::NormalConsistencyFaceTerm/VertexGrad`).
@@ -105,14 +112,15 @@ inputs changed (reactive cache).
 ## Known deviations from the paper (documented, intentional)
 
 - Appendix typos fixed: `Sin` backward, `BuildBackward` null check.
-- `{1,1}` GPU-generated values are read via `texelFetch(0,0)` instead of
-  UBOs; uniforms-as-UBO is not implemented yet.
-- COMP shader substages, int/matrix images on GPU, and zero-copy optimizer
-  aliasing are not implemented yet.
-- HardSoftRas is implemented with K=1 only (no depth-peeling execution, so
-  Eq.6 multi-layer silhouette blending is a single sigmoid); triangle
-  enlargement is centroid scaling (`F::SoftClip` on the GPU; no geometry
-  shader, no obtuse bbox split).
+- Uniforms (`uif_vars`): `{1,1}` LEAF values ride in vec4 UBOs;
+  GPU-generated `{1,1}` scalars stay `texelFetch(0,0)` slt reads — the
+  mid-frame UBO refresh copies measured slower than the broadcast fetch
+  they replace (documented in log/202607102000).
+- COMP shader substages and int/matrix images on GPU are not implemented
+  yet.
+- HardSoftRas depth peeling: `--peels=K` blends Eq.6 layers (K=3 matches
+  the exact-backward reference); triangle enlargement is centroid scaling
+  (`F::SoftClip` on the GPU; no geometry shader, no obtuse bbox split).
 - The AA technique picks the boundary edge by owner preference
   {tri(neighbor), tri(self)} instead of an exact closest-depth test, and
   its forward keeps the scheme's inherent residual discontinuity when a

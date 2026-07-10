@@ -50,7 +50,9 @@ struct DressiAD::Impl {
 
     void ensureCtx() {
         if (!ctx) {
-            ctx = CreateVkContext();
+            // DRESSI_VK_DEBUG=1 turns on the validation layers
+            const char* dbg = std::getenv("DRESSI_VK_DEBUG");
+            ctx = CreateVkContext(dbg != nullptr && dbg[0] == '1');
         }
     }
 
@@ -107,10 +109,14 @@ struct DressiAD::Impl {
         PackingLimits limits;
         const auto& dl = ctx->limits;
         limits.max_input_attachments =
-                std::min(8u, dl.maxPerStageDescriptorInputAttachments);
+                std::min(16u, dl.maxPerStageDescriptorInputAttachments);
         limits.max_output_attachments = std::min(8u, dl.maxColorAttachments);
         limits.max_sampled_images =
                 std::min(32u, dl.maxPerStageDescriptorSampledImages);
+        // A render pass has no hard Vulkan cap on total attachments; a big
+        // budget lets long same-pixel chains stay in one render pass as
+        // chained subpasses (ByRegion deps) instead of separate passes
+        limits.max_stage_attachments = 64;
         return limits;
     }
 };

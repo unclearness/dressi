@@ -95,7 +95,8 @@ SubStages FilterExecutableSubStages(const SubStages& substages,
         }
         kept.push_back(&ss);
         for (const Variables* inputs :
-             {&ss.inp_vars, &ss.slt_vars, &ss.tex_vars, &ss.vtx_vars}) {
+             {&ss.inp_vars, &ss.slt_vars, &ss.tex_vars, &ss.vtx_vars,
+              &ss.uif_vars}) {
             for (const auto& v : *inputs) {
                 needed_vars.insert(v.id());
             }

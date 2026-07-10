@@ -80,10 +80,9 @@ std::string GenerateFragShader(const SubStage& ss) {
     const bool raster_headed = ss.shader_type == RASTER;
     DRESSI_CHECK(ss.shader_type == FRAG || raster_headed,
                  "GenerateFragShader: FRAG or raster-headed only");
-    DRESSI_CHECK(ss.uif_vars.empty(), "Uniform inputs are not supported");
     if (raster_headed) {
         DRESSI_CHECK(ss.inp_vars.empty() && ss.tex_vars.empty(),
-                     "Raster-headed substages support slt inputs only");
+                     "Raster-headed substages support slt/uif inputs only");
     } else {
         DRESSI_CHECK(ss.vtx_vars.empty(),
                      "Codegen supports inp/tex/slt inputs only");
@@ -131,6 +130,17 @@ std::string GenerateFragShader(const SubStage& ss) {
                      "Int images are not supported on GPU yet (M1)");
         head << "layout(set=0, binding=" << (slt_binding_ofs + i)
              << ") uniform sampler2D u_slt" << i << ";\n";
+    }
+
+    // uif inputs: {1,1} values as real uniforms (one vec4 UBO per value,
+    // filled by a tiny image->buffer copy after the producing stage)
+    const size_t uif_binding_ofs = slt_binding_ofs + ss.slt_vars.size();
+    for (size_t i = 0; i < ss.uif_vars.size(); i++) {
+        const Variable& v = ss.uif_vars[i];
+        DRESSI_CHECK(!IsIntVType(v.getVType()),
+                     "Int images are not supported on GPU yet (M1)");
+        head << "layout(set=0, binding=" << (uif_binding_ofs + i)
+             << ") uniform UifB" << i << " { vec4 u_uif" << i << "; };\n";
     }
 
     // Raster-headed: the interpolated vertex attribute arrives as v_attr
@@ -267,6 +277,7 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
                code == "__nc_vertex_grad__" ||
                code == "__screen_coord__" ||
                code == "__sum_all__" ||
+               code == "__sum_partial__" ||
                code.rfind("__pixel_fetch__", 0) == 0 ||
                code.rfind("__tile_fetch__", 0) == 0 ||
                code.rfind("__lookup_faces__", 0) == 0 ||
@@ -323,6 +334,18 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
         body << "    " << GlslTypeName(v.getVType()) << " " << local_name(v)
              << " = texelFetch(u_slt" << i << ", " << coord << ", 0)"
              << SwizzleOf(n) << ";\n";
+    }
+
+    // Loads for uniform inputs (always generic: special ops take their
+    // dynamic scalars through TexelFetch access, i.e. slt)
+    for (size_t i = 0; i < ss.uif_vars.size(); i++) {
+        const Variable& v = ss.uif_vars[i];
+        if (names.count(v)) {
+            continue;
+        }
+        const uint32_t n = NumComponents(v.getVType());
+        body << "    " << GlslTypeName(v.getVType()) << " " << local_name(v)
+             << " = u_uif" << i << SwizzleOf(n) << ";\n";
     }
 
     // Expression for a function input: local name, or inline constant
@@ -454,6 +477,29 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
                     " + int(texelFetch(u_slt"
                  << id_bind << ", ivec2(0, 0), 0).x + 0.5) * " << tile_h
                  << "), 0)" << SwizzleOf(n) << ";\n";
+            continue;
+        }
+        if (node->fwd_code == "__sum_partial__") {
+            // Strided partial sums over the flattened image: fragment p of
+            // the {parts,1} output sums linear pixels p, p+parts, ...
+            const size_t in_bind = slt_binding.at(xs[0]);
+            const ImgSize src = xs[0].getImgSize();
+            const uint32_t parts = y.getImgSize().w;
+            const uint32_t n = NumComponents(xs[0].getVType());
+            body << "    float " << y_name << " = 0.0;\n";
+            body << "    for (int li = dressi_coord.x; li < "
+                 << (size_t(src.w) * src.h) << "; li += " << parts << ") {\n";
+            body << "        " << (n == 1 ? "float" : GlslTypeName(xs[0].getVType()))
+                 << " v = texelFetch(u_slt" << in_bind << ", ivec2(li % "
+                 << src.w << ", li / " << src.w << "), 0)" << SwizzleOf(n)
+                 << ";\n";
+            body << "        " << y_name << " += "
+                 << (n == 1 ? "v"
+                     : n == 2 ? "v.x + v.y"
+                     : n == 3 ? "v.x + v.y + v.z"
+                              : "v.x + v.y + v.z + v.w")
+                 << ";\n";
+            body << "    }\n";
             continue;
         }
         if (node->fwd_code == "__sum_all__") {

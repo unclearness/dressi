@@ -1047,9 +1047,52 @@ Variable Broadcast(const Variable& x, ImgSize size) {
     return MakeOp(std::move(desc), {x});
 }
 
+namespace {
+
+// First level of the SumAll reduction: {parts,1} strided partial sums so
+// the final single-thread loop only visits `parts` texels
+Variable SumPartial(const Variable& x, uint32_t parts) {
+    OpDesc desc;
+    desc.name = "SumPartial";
+    desc.fwd_code = "__sum_partial__";
+    desc.input_access = {InputAccess::TexelFetch};
+    desc.infer = [parts](const Variables&) -> std::pair<VType, ImgSize> {
+        return {FLOAT, {parts, 1}};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [parts](const std::vector<CpuTensor>& xs) {
+        CpuTensor y;
+        y.vtype = FLOAT;
+        y.size = {parts, 1};
+        y.data.assign(parts, 0.f);
+        const uint32_t n = NumComponents(xs[0].vtype);
+        const size_t n_px = xs[0].data.size() / n;
+        for (uint32_t p = 0; p < parts; p++) {
+            double s = 0.0;
+            for (size_t i = p; i < n_px; i += parts) {
+                for (uint32_t c = 0; c < n; c++) {
+                    s += xs[0].data[i * n + c];
+                }
+            }
+            y.data[p] = float(s);
+        }
+        return y;
+    };
+    return MakeOp(std::move(desc), {x});
+}
+
+}  // namespace
+
 Variable SumAll(const Variable& x) {
     DRESSI_CHECK(!IsIntVType(x.getVType()) && !IsMatrixVType(x.getVType()),
                  "SumAll: input must be a float image");
+    // Two-level reduction for anything beyond a trivial pixel count: the
+    // single-fragment loop of __sum_all__ is serial
+    Variable src = x;
+    const ImgSize sz = x.getImgSize();
+    if (size_t(sz.w) * sz.h > 256) {
+        src = SumPartial(x, 64);
+    }
     OpDesc desc;
     desc.name = "SumAll";
     desc.fwd_code = "__sum_all__";
@@ -1069,7 +1112,7 @@ Variable SumAll(const Variable& x) {
         y.data = {float(s)};
         return y;
     };
-    return MakeOp(std::move(desc), {x});
+    return MakeOp(std::move(desc), {src});
 }
 
 // ------------------------------- DR functions --------------------------------

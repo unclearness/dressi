@@ -18,6 +18,9 @@ struct GpuPlan {
     std::map<Variable, vkw::TexturePackPtr> textures;  // nearest samplers
     // Vertex/index buffers for RASTER inputs (leaf geometry data)
     std::map<Variable, vkw::BufferPackPtr> vtx_bufs;
+    // One vec4 UBO per {1,1} uniform input (uif_vars), refreshed on the GPU
+    // by an image->buffer copy after the producing stage
+    std::map<Variable, vkw::BufferPackPtr> uif_bufs;
     std::vector<vkw::ImagePackPtr> depth_imgs;  // one per RASTER stage
     std::vector<vkw::RenderPassPackPtr> render_passes;
     std::vector<vkw::FrameBufferPackPtr> frame_buffers;
@@ -25,6 +28,13 @@ struct GpuPlan {
     std::vector<vkw::DescSetPackPtr> desc_sets;
     vkw::CommandBuffersPackPtr cmd_pack;
     vkw::FencePtr fence;
+    // Per-stage GPU timing (created only when debug logging is enabled):
+    // timestamps around every stage; averaged and reported periodically
+    vk::UniqueQueryPool ts_pool;
+    std::vector<std::string> ts_labels;   // one per stage + tail sections
+    std::vector<double> ts_accum_us;      // running sums per interval
+    uint32_t ts_frames = 0;
+    float ts_period_ns = 0.f;
 };
 
 // Creates images and geometry buffers (reusing the previous plan's entries
