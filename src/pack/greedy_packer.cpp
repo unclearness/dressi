@@ -41,13 +41,29 @@ bool PushFrontFuncIntoSubStage(const Function& func, SubStage& ss,
         ss.shader_type = func.getShaderType();
     } else {
         // All functions of a substage evaluate on the same pixel grid
-        if (y_size != ss.img_size ||
-            func.getShaderType() != ss.shader_type) {
+        if (y_size != ss.img_size) {
             return false;
         }
-        // One draw per RASTER substage
-        if (func.getShaderType() == RASTER) {
-            return false;
+        if (func.getShaderType() != ss.shader_type) {
+            // Raster-headed fusion (the paper's "same shader types except
+            // for top rasterization"): a RASTER function may join a FRAG
+            // substage as its top; packing is back-to-front, so nothing
+            // can be pushed before it (the type mismatch rejects it).
+            // The executor's raster pass binds slt textures only, so the
+            // fused body must not need input attachments or samplers.
+            if (!(func.getShaderType() == RASTER &&
+                  ss.shader_type == FRAG)) {
+                return false;
+            }
+            // The raster output must be consumed same-pixel here (it
+            // arrives as the interpolated v_attr, not as an attachment)
+            if (!Contains(ss.inp_vars, y) || ss.inp_vars.size() != 1 ||
+                !ss.tex_vars.empty()) {
+                return false;
+            }
+            ss.shader_type = RASTER;
+        } else if (func.getShaderType() == RASTER) {
+            return false;  // one draw per RASTER substage
         }
     }
 

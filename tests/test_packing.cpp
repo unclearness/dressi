@@ -144,9 +144,10 @@ TEST(Packing, RootsAreAlwaysExported) {
     EXPECT_TRUE(out_exported);
 }
 
-TEST(Packing, RasterSubstagesStayIsolated) {
-    // A RASTER function gets its own substage and render pass: vertex
-    // inputs are classified as vtx_vars and never fused with FRAG functions.
+TEST(Packing, RasterHeadedFusion) {
+    // The paper's "same shader types except for top rasterization": FRAG
+    // functions reading the raster output same-pixel fuse INTO the raster
+    // substage (one render pass); vertex inputs stay ordered vtx_vars.
     Variable pos(VEC4, {16, 1});
     Variable uv(VEC2, {16, 1});
     Variable faces(IVEC3, {8, 1});
@@ -166,11 +167,12 @@ TEST(Packing, RasterSubstagesStayIsolated) {
             for (const auto& f : ss.funcs) {
                 (f.getShaderType() == RASTER ? has_raster : has_frag) = true;
             }
-            EXPECT_FALSE(has_raster && has_frag)
-                    << "RASTER fused with FRAG functions";
             if (has_raster) {
                 found_raster = true;
-                EXPECT_EQ(ss.funcs.size(), 1u);
+                EXPECT_TRUE(has_frag) << "FRAG chain did not fuse into the "
+                                         "raster substage";
+                EXPECT_EQ(ss.shader_type, RASTER);
+                EXPECT_TRUE(ss.inp_vars.empty());
                 ASSERT_EQ(ss.vtx_vars.size(), 3u);
                 EXPECT_EQ(ss.vtx_vars[0], pos);
                 EXPECT_EQ(ss.vtx_vars[1], uv);

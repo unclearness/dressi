@@ -149,17 +149,23 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
     // attribute attachment (deferred-shading G-buffer channel)
     const auto record_raster_stage = [&](const Stage& stage) {
         const SubStage& ss = stage.substages[0];
-        const Variable& out = ss.out_vars[0];
         const Variable& pos_var = ss.vtx_vars[0];
         const Variable& attr_var = ss.vtx_vars[1];
         const Variable& faces_var = ss.vtx_vars[2];
+        const uint32_t n_outs = uint32_t(ss.out_vars.size());
+        DRESSI_CHECK(n_outs >= 1, "Raster substage must have outputs");
 
         auto rp = vkw::CreateRenderPassPack();
-        vkw::AddAttachientDesc(rp, FormatOf(out.getVType()),
-                               vk::ImageLayout::eUndefined,
-                               vk::ImageLayout::eShaderReadOnlyOptimal,
-                               vk::AttachmentLoadOp::eClear,
-                               vk::AttachmentStoreOp::eStore);
+        std::vector<vkw::AttachmentRefInfo> col_refs;
+        for (uint32_t i = 0; i < n_outs; i++) {
+            vkw::AddAttachientDesc(
+                    rp, FormatOf(ss.out_vars[i].getVType()),
+                    vk::ImageLayout::eUndefined,
+                    vk::ImageLayout::eShaderReadOnlyOptimal,
+                    vk::AttachmentLoadOp::eClear,
+                    vk::AttachmentStoreOp::eStore);
+            col_refs.emplace_back(i, vk::ImageLayout::eColorAttachmentOptimal);
+        }
         const auto depth_format = vk::Format::eD32Sfloat;
         vkw::AddAttachientDesc(
                 rp, depth_format, vk::ImageLayout::eUndefined,
@@ -167,8 +173,8 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
                 vk::AttachmentLoadOp::eClear,
                 vk::AttachmentStoreOp::eDontCare);
         vkw::AddSubpassDesc(
-                rp, {}, {{0, vk::ImageLayout::eColorAttachmentOptimal}},
-                {1, vk::ImageLayout::eDepthStencilAttachmentOptimal});
+                rp, {}, col_refs,
+                {n_outs, vk::ImageLayout::eDepthStencilAttachmentOptimal});
         vkw::UpdateRenderPass(ctx.device, rp);
         plan.render_passes.push_back(rp);
 
@@ -180,8 +186,12 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
                 vk::ImageAspectFlagBits::eDepth);
         plan.depth_imgs.push_back(depth_img);
 
-        auto fb = vkw::CreateFrameBuffer(ctx.device, rp,
-                                         {plan.imgs.at(out), depth_img});
+        std::vector<vkw::ImagePackPtr> fb_imgs;
+        for (const auto& v : ss.out_vars) {
+            fb_imgs.push_back(plan.imgs.at(v));
+        }
+        fb_imgs.push_back(depth_img);
+        auto fb = vkw::CreateFrameBuffer(ctx.device, rp, fb_imgs);
         plan.frame_buffers.push_back(fb);
 
         const RasterShaders shaders = GenerateRasterShaders(ss);
@@ -222,7 +232,7 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
         pipeline_info.depth_test_enable = true;
         pipeline_info.depth_write_enable = true;
         pipeline_info.depth_comp_op = vk::CompareOp::eLessOrEqual;
-        pipeline_info.color_blend_infos.resize(1);
+        pipeline_info.color_blend_infos.resize(n_outs);
         std::vector<vkw::DescSetPackPtr> desc_packs;
         if (desc_set) {
             desc_packs.push_back(desc_set);
@@ -245,10 +255,10 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
             copy_img_to_vtx_buf(attr_var);
         }
 
-        const std::vector<vk::ClearValue> clear_vals = {
-                vk::ClearValue(vk::ClearColorValue(
-                        std::array<float, 4>{0.f, 0.f, 0.f, 0.f})),
-                vk::ClearValue(vk::ClearDepthStencilValue(1.f, 0))};
+        std::vector<vk::ClearValue> clear_vals(
+                n_outs, vk::ClearValue(vk::ClearColorValue(
+                                std::array<float, 4>{0.f, 0.f, 0.f, 0.f})));
+        clear_vals.emplace_back(vk::ClearDepthStencilValue(1.f, 0));
         vkw::CmdBeginRenderPass(cmd, rp, fb, clear_vals);
         vkw::CmdBindPipeline(cmd, pipeline);
         if (desc_set) {
@@ -267,13 +277,16 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
         vkw::CmdDrawIndexed(cmd, n_indices);
         vkw::CmdEndRenderPass(cmd);
 
-        vkw::BarrierImage(cmd, plan.imgs.at(out),
-                          vk::ImageLayout::eShaderReadOnlyOptimal,
-                          vk::PipelineStageFlagBits::eColorAttachmentOutput,
-                          vk::AccessFlagBits::eColorAttachmentWrite,
-                          vk::PipelineStageFlagBits::eFragmentShader,
-                          vk::AccessFlagBits::eShaderRead |
-                                  vk::AccessFlagBits::eInputAttachmentRead);
+        for (const auto& v : ss.out_vars) {
+            vkw::BarrierImage(
+                    cmd, plan.imgs.at(v),
+                    vk::ImageLayout::eShaderReadOnlyOptimal,
+                    vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                    vk::AccessFlagBits::eColorAttachmentWrite,
+                    vk::PipelineStageFlagBits::eFragmentShader,
+                    vk::AccessFlagBits::eShaderRead |
+                            vk::AccessFlagBits::eInputAttachmentRead);
+        }
     };
 
     for (const auto& stage : stages) {
