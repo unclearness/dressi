@@ -132,6 +132,69 @@ std::string GenerateFragShader(const SubStage& ss) {
              << " o_" << i << ";\n";
     }
 
+    // Shared helper for the screen-space AA ops (Dr.Hair Eq.4-5): the
+    // silhouette edge separating a pixel pair and the blend weight
+    // r = min(|edge_fn(p_s)| / edge_len, 1). Owner preference
+    // {tri(n), tri(s)} approximates closest-depth selection.
+    bool needs_aa_helper = false;
+    for (const auto& f : ss.funcs) {
+        const std::string& c = NodeAccess::Node(f)->fwd_code;
+        if (c == "__antialias__" || c == "__antialias_bwd_img__" ||
+            c == "__antialias_bwd_vtx__") {
+            needs_aa_helper = true;
+        }
+    }
+    if (needs_aa_helper) {
+        head << R"(const ivec2 dressi_aa_offs[8] = ivec2[8](
+    ivec2(-1,-1), ivec2(0,-1), ivec2(1,-1), ivec2(-1,0),
+    ivec2(1,0), ivec2(-1,1), ivec2(0,1), ivec2(1,1));
+struct DressiAaPair {
+    float r; int ia; int ib; vec2 qa; vec2 qb; float es; float len;
+};
+bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
+                    ivec2 sc, ivec2 nc, vec2 wh, out DressiAaPair pr) {
+    int its = int(texelFetch(tri, sc, 0).x + 0.5);
+    int itn = int(texelFetch(tri, nc, 0).x + 0.5);
+    if (its == itn) return false;
+    vec2 ps = vec2(sc) + 0.5;
+    vec2 pn = vec2(nc) + 0.5;
+    for (int o = 0; o < 2; o++) {
+        int owner = o == 0 ? itn : its;
+        if (owner == 0) continue;
+        vec3 fidx = texelFetch(faces, ivec2(owner - 1, 0), 0).xyz;
+        ivec3 vi = ivec3(fidx + 0.5);
+        vec2 q[3];
+        bool ok = true;
+        for (int k = 0; k < 3; k++) {
+            vec4 c = texelFetch(vclip, ivec2(vi[k], 0), 0);
+            if (abs(c.w) < 1e-6) { ok = false; break; }
+            q[k] = (c.xy / c.w * 0.5 + 0.5) * wh;
+        }
+        if (!ok) continue;
+        int bj = -1; float bt = 0.0;
+        for (int j = 0; j < 3; j++) {
+            vec2 a = q[j]; vec2 b = q[(j + 1) % 3];
+            float es = (b.x - a.x) * (ps.y - a.y) - (b.y - a.y) * (ps.x - a.x);
+            float en = (b.x - a.x) * (pn.y - a.y) - (b.y - a.y) * (pn.x - a.x);
+            if (es * en >= 0.0) continue;
+            float t = es / (es - en);
+            if (bj < 0 || (o == 0 ? t > bt : t < bt)) { bt = t; bj = j; }
+        }
+        if (bj < 0) continue;
+        vec2 a = q[bj]; vec2 b = q[(bj + 1) % 3];
+        float len = length(b - a);
+        if (len < 1e-6) continue;
+        float es = (b.x - a.x) * (ps.y - a.y) - (b.y - a.y) * (ps.x - a.x);
+        pr.r = min(abs(es) / len, 1.0);
+        pr.ia = vi[bj]; pr.ib = vi[(bj + 1) % 3];
+        pr.qa = a; pr.qb = b; pr.es = es; pr.len = len;
+        return true;
+    }
+    return false;
+}
+)";
+    }
+
     body << "void main() {\n";
     body << "    ivec2 dressi_coord = ivec2(gl_FragCoord.xy);\n";
 
@@ -142,7 +205,10 @@ std::string GenerateFragShader(const SubStage& ss) {
         return code == "__reduce_2x2_sum__" ||
                code == "__upsample_nearest_2x__" ||
                code == "__gather_inv_uv__" ||
-               code == "__gather_dist_grad__";
+               code == "__gather_dist_grad__" ||
+               code == "__antialias__" ||
+               code == "__antialias_bwd_img__" ||
+               code == "__antialias_bwd_vtx__";
     };
     std::map<Variable, size_t> slt_binding;
     for (size_t i = 0; i < ss.slt_vars.size(); i++) {
@@ -291,6 +357,169 @@ std::string GenerateFragShader(const SubStage& ss) {
             continue;
         }
 
+        if (node->fwd_code == "__antialias__") {
+            // xs = {img, tri_id, vtx_clip, faces}: Eq.3-5 forward blend
+            const size_t img_b = slt_binding.at(xs[0]);
+            const size_t tri_b = slt_binding.at(xs[1]);
+            const size_t cl_b = slt_binding.at(xs[2]);
+            const size_t fc_b = slt_binding.at(xs[3]);
+            const ImgSize scr = xs[0].getImgSize();
+            const uint32_t n = NumComponents(y.getVType());
+            const char* swz = SwizzleOf(n);
+            const std::string wh = "vec2(" + std::to_string(scr.w) + ".0, " +
+                                   std::to_string(scr.h) + ".0)";
+            body << "    " << y_type << " " << y_name << ";\n";
+            body << "    {\n";
+            body << "        " << y_type << " cs = texelFetch(u_slt" << img_b
+                 << ", dressi_coord, 0)" << swz << ";\n";
+            body << "        " << y_type << " acc = cs;\n";
+            body << "        for (int k = 0; k < 8; k++) {\n";
+            body << "            ivec2 nc = dressi_coord"
+                    " + dressi_aa_offs[k];\n";
+            body << "            " << y_type << " cb = cs;\n";
+            body << "            if (nc.x >= 0 && nc.y >= 0 && nc.x < "
+                 << scr.w << " && nc.y < " << scr.h << ") {\n";
+            body << "                DressiAaPair pr;\n";
+            body << "                if (dressi_aa_pair(u_slt" << tri_b
+                 << ", u_slt" << cl_b << ", u_slt" << fc_b
+                 << ", dressi_coord, nc, " << wh << ", pr))\n";
+            body << "                    cb = pr.r * cs + (1.0 - pr.r)"
+                    " * texelFetch(u_slt"
+                 << img_b << ", nc, 0)" << swz << ";\n";
+            body << "            }\n";
+            body << "            acc += cb;\n";
+            body << "        }\n";
+            body << "        " << y_name << " = acc * (1.0 / 9.0);\n";
+            body << "    }\n";
+            continue;
+        }
+        if (node->fwd_code == "__antialias_bwd_img__") {
+            // xs = {gy, tri_id, vtx_clip, faces}: c_aa is linear in the
+            // image; alpha from (s,n) pairs, beta from swapped (n,s) pairs
+            const size_t gy_b = slt_binding.at(xs[0]);
+            const size_t tri_b = slt_binding.at(xs[1]);
+            const size_t cl_b = slt_binding.at(xs[2]);
+            const size_t fc_b = slt_binding.at(xs[3]);
+            const ImgSize scr = xs[0].getImgSize();
+            const uint32_t n = NumComponents(y.getVType());
+            const char* swz = SwizzleOf(n);
+            const std::string wh = "vec2(" + std::to_string(scr.w) + ".0, " +
+                                   std::to_string(scr.h) + ".0)";
+            const std::string pair_args = "u_slt" + std::to_string(tri_b) +
+                                          ", u_slt" + std::to_string(cl_b) +
+                                          ", u_slt" + std::to_string(fc_b);
+            body << "    " << y_type << " " << y_name << ";\n";
+            body << "    {\n";
+            body << "        " << y_type << " g = texelFetch(u_slt" << gy_b
+                 << ", dressi_coord, 0)" << swz << ";\n";
+            body << "        " << y_type << " acc = g;\n";
+            body << "        float asum = 0.0;\n";
+            body << "        for (int k = 0; k < 8; k++) {\n";
+            body << "            ivec2 nc = dressi_coord"
+                    " + dressi_aa_offs[k];\n";
+            body << "            if (nc.x < 0 || nc.y < 0 || nc.x >= "
+                 << scr.w << " || nc.y >= " << scr.h
+                 << ") { asum += 1.0; continue; }\n";
+            body << "            DressiAaPair pr;\n";
+            body << "            asum += dressi_aa_pair(" << pair_args
+                 << ", dressi_coord, nc, " << wh << ", pr) ? pr.r : 1.0;\n";
+            body << "            DressiAaPair pr2;\n";
+            body << "            if (dressi_aa_pair(" << pair_args
+                 << ", nc, dressi_coord, " << wh << ", pr2))\n";
+            body << "                acc += (1.0 - pr2.r)"
+                    " * texelFetch(u_slt"
+                 << gy_b << ", nc, 0)" << swz << ";\n";
+            body << "        }\n";
+            body << "        " << y_name
+                 << " = (acc + asum * g) * (1.0 / 9.0);\n";
+            body << "    }\n";
+            continue;
+        }
+        if (node->fwd_code == "__antialias_bwd_vtx__") {
+            // xs = {gy, img, tri_id, vtx_clip, faces}; output texel =
+            // vertex. Accumulates (1/9) dot(gy, cs - cn) * d r / d clip
+            // over every active boundary pair whose edge touches vid.
+            const size_t gy_b = slt_binding.at(xs[0]);
+            const size_t img_b = slt_binding.at(xs[1]);
+            const size_t tri_b = slt_binding.at(xs[2]);
+            const size_t cl_b = slt_binding.at(xs[3]);
+            const size_t fc_b = slt_binding.at(xs[4]);
+            const ImgSize scr = xs[0].getImgSize();
+            const uint32_t n = NumComponents(xs[0].getVType());
+            const char* swz = SwizzleOf(n);
+            const char* img_type = GlslTypeName(xs[0].getVType());
+            const std::string wh = "vec2(" + std::to_string(scr.w) + ".0, " +
+                                   std::to_string(scr.h) + ".0)";
+            const std::string pair_args = "u_slt" + std::to_string(tri_b) +
+                                          ", u_slt" + std::to_string(cl_b) +
+                                          ", u_slt" + std::to_string(fc_b);
+            body << "    vec4 " << y_name << " = vec4(0.0);\n";
+            body << "    {\n";
+            body << "        int vid = dressi_coord.x;\n";
+            body << "        vec4 vc = texelFetch(u_slt" << cl_b
+                 << ", ivec2(vid, 0), 0);\n";
+            body << "        for (int py = 0; py < " << scr.h
+                 << "; py++)\n";
+            body << "        for (int px = 0; px < " << scr.w
+                 << "; px++) {\n";
+            body << "            ivec2 sc = ivec2(px, py);\n";
+            body << "            for (int k = 0; k < 8; k++) {\n";
+            body << "                ivec2 nc = sc + dressi_aa_offs[k];\n";
+            body << "                if (nc.x < 0 || nc.y < 0 || nc.x >= "
+                 << scr.w << " || nc.y >= " << scr.h << ") continue;\n";
+            body << "                DressiAaPair pr;\n";
+            body << "                if (!dressi_aa_pair(" << pair_args
+                 << ", sc, nc, " << wh << ", pr)) continue;\n";
+            body << "                if (pr.ia != vid && pr.ib != vid)"
+                    " continue;\n";
+            body << "                if (pr.r >= 1.0) continue;\n";
+            body << "                " << img_type
+                 << " cs = texelFetch(u_slt" << img_b << ", sc, 0)" << swz
+                 << ";\n";
+            body << "                " << img_type
+                 << " cn = texelFetch(u_slt" << img_b << ", nc, 0)" << swz
+                 << ";\n";
+            body << "                " << img_type
+                 << " g = texelFetch(u_slt" << gy_b << ", sc, 0)" << swz
+                 << ";\n";
+            if (n == 1) {
+                body << "                float gr = g * (cs - cn) / 9.0;\n";
+            } else {
+                body << "                float gr = dot(g, cs - cn)"
+                        " / 9.0;\n";
+            }
+            body << "                if (gr == 0.0) continue;\n";
+            body << "                vec2 ps = vec2(sc) + 0.5;\n";
+            body << "                float sgn ="
+                    " pr.es >= 0.0 ? 1.0 : -1.0;\n";
+            body << "                float invl = 1.0 / pr.len;\n";
+            body << "                float l3 = abs(pr.es)"
+                    " * invl * invl * invl;\n";
+            body << "                vec2 e = pr.qb - pr.qa;\n";
+            body << "                vec2 dqa = sgn * invl"
+                    " * vec2(pr.qb.y - ps.y, ps.x - pr.qb.x) + l3 * e;\n";
+            body << "                vec2 dqb = sgn * invl"
+                    " * vec2(ps.y - pr.qa.y, pr.qa.x - ps.x) - l3 * e;\n";
+            body << "                for (int e2 = 0; e2 < 2; e2++) {\n";
+            body << "                    int id2 = e2 == 0 ? pr.ia"
+                    " : pr.ib;\n";
+            body << "                    if (id2 != vid) continue;\n";
+            body << "                    vec2 gq = gr"
+                    " * (e2 == 0 ? dqa : dqb);\n";
+            body << "                    " << y_name << ".x += gq.x * 0.5 * "
+                 << scr.w << ".0 / vc.w;\n";
+            body << "                    " << y_name << ".y += gq.y * 0.5 * "
+                 << scr.h << ".0 / vc.w;\n";
+            body << "                    " << y_name
+                 << ".w += -(gq.x * 0.5 * " << scr.w
+                 << ".0 * vc.x + gq.y * 0.5 * " << scr.h
+                 << ".0 * vc.y) / (vc.w * vc.w);\n";
+            body << "                }\n";
+            body << "            }\n";
+            body << "        }\n";
+            body << "    }\n";
+            continue;
+        }
         if (node->fwd_code == "__gather_dist_grad__") {
             // xs = {gy_screen, raster_out, vtx_clip_tex, faces_tex}; output
             // texel = hard vertex. Gathers gy.x * d dist / d clip over every
@@ -515,6 +744,20 @@ RasterShaders GenerateRasterShaders(const SubStage& ss) {
               " : 0.5 + 0.5 * clamp(-dist / "
            << FloatLit(radius_px) << ", 0.0, 1.0);\n";
         fs << "    o_0 = vec4(dist, v_attr, hard_z, 1.0);\n";
+        fs << "}\n";
+        shaders.frag = fs.str();
+        return shaders;
+    }
+
+    if (code == "__rasterize_face_id__") {
+        // Triangle-ID buffer: float(face) + 1, background = clear color 0.
+        // The dummy attribute is consumed by the VS but ignored here.
+        std::ostringstream fs;
+        fs << "#version 450\n";
+        fs << "layout(location=0) in " << attr_type << " v_attr;\n";
+        fs << "layout(location=0) out float o_0;\n";
+        fs << "void main() {\n";
+        fs << "    o_0 = float(gl_PrimitiveID) + 1.0;\n";
         fs << "}\n";
         shaders.frag = fs.str();
         return shaders;

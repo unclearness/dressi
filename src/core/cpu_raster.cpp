@@ -361,4 +361,89 @@ CpuTensor RasterizeFaceIdCpu(const CpuTensor& clip, const CpuTensor& faces,
     return out;
 }
 
+bool EvalAaPair(const CpuTensor& tri, const CpuTensor& clip,
+                const CpuTensor& faces, ImgSize screen, int sx, int sy,
+                int nx, int ny, AaPair* out) {
+    const int its = int(tri.data[size_t(sy) * screen.w + sx] + 0.5f);
+    const int itn = int(tri.data[size_t(ny) * screen.w + nx] + 0.5f);
+    if (its == itn) {
+        return false;
+    }
+    const float ps[2] = {float(sx) + 0.5f, float(sy) + 0.5f};
+    const float pn[2] = {float(nx) + 0.5f, float(ny) + 0.5f};
+
+    // Owner preference: the triangle spanning the neighbor first (its
+    // silhouette edge is the one crossed when walking s -> n), falling
+    // back to s's own triangle for the background-neighbor case
+    for (int o = 0; o < 2; o++) {
+        const int owner = o == 0 ? itn : its;
+        if (owner == 0) {
+            continue;
+        }
+        const uint32_t f = uint32_t(owner - 1);
+        if (f >= faces.size.w) {
+            continue;
+        }
+        uint32_t vi[3];
+        float q[3][2];
+        bool ok = true;
+        for (int k = 0; k < 3; k++) {
+            vi[k] = uint32_t(int64_t(faces.data[size_t(f) * 3 + k] + 0.5f));
+            if (vi[k] >= clip.size.w ||
+                !ProjectClipToScreen(&clip.data[size_t(vi[k]) * 4], screen,
+                                     q[k], nullptr)) {
+                ok = false;
+                break;
+            }
+        }
+        if (!ok) {
+            continue;
+        }
+        // The separating edge first crossed walking out of the owner's
+        // interior: max crossing parameter when the owner covers n,
+        // min when it covers s
+        int best_j = -1;
+        float best_t = 0.f;
+        for (int j = 0; j < 3; j++) {
+            const float* a = q[j];
+            const float* b = q[(j + 1) % 3];
+            const float es = (b[0] - a[0]) * (ps[1] - a[1]) -
+                             (b[1] - a[1]) * (ps[0] - a[0]);
+            const float en = (b[0] - a[0]) * (pn[1] - a[1]) -
+                             (b[1] - a[1]) * (pn[0] - a[0]);
+            if (es * en >= 0.f) {
+                continue;
+            }
+            const float t = es / (es - en);
+            if (best_j < 0 || (o == 0 ? t > best_t : t < best_t)) {
+                best_t = t;
+                best_j = j;
+            }
+        }
+        if (best_j < 0) {
+            continue;
+        }
+        const float* a = q[best_j];
+        const float* b = q[(best_j + 1) % 3];
+        const float ex = b[0] - a[0];
+        const float ey = b[1] - a[1];
+        const float len = std::sqrt(ex * ex + ey * ey);
+        if (len < 1e-6f) {
+            continue;
+        }
+        const float es = ex * (ps[1] - a[1]) - ey * (ps[0] - a[0]);
+        out->r = std::min(std::abs(es) / len, 1.f);
+        out->ia = vi[best_j];
+        out->ib = vi[(best_j + 1) % 3];
+        out->qa[0] = a[0];
+        out->qa[1] = a[1];
+        out->qb[0] = b[0];
+        out->qb[1] = b[1];
+        out->es = es;
+        out->len = len;
+        return true;
+    }
+    return false;
+}
+
 }  // namespace dressi

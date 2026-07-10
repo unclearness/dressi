@@ -1213,6 +1213,278 @@ Variable RasterizeSoft(const Variable& vtx_clip_soft, const Variable& face_id,
                    faces_tex});
 }
 
+Variable RasterizeFaceId(const Variable& vtx_clip_pos,
+                         const Variable& vtx_attrib_dummy,
+                         const Variable& faces, ImgSize screen_size) {
+    DRESSI_CHECK(vtx_clip_pos.getVType() == VEC4 &&
+                         vtx_clip_pos.getImgSize().h == 1,
+                 "RasterizeFaceId: vtx_clip_pos must be VEC4 {V,1}");
+    const VType attr_type = vtx_attrib_dummy.getVType();
+    DRESSI_CHECK(!IsIntVType(attr_type) && !IsMatrixVType(attr_type),
+                 "RasterizeFaceId: attribute must be a float scalar/vector");
+    DRESSI_CHECK(vtx_attrib_dummy.getImgSize() == vtx_clip_pos.getImgSize(),
+                 "RasterizeFaceId: attribute count must match vertex count");
+    DRESSI_CHECK(faces.getVType() == IVEC3 && faces.getImgSize().h == 1,
+                 "RasterizeFaceId: faces must be IVEC3 {F,1}");
+
+    OpDesc desc;
+    desc.name = "RasterizeFaceId";
+    // Special-cased by the shader codegen (writes gl_PrimitiveID + 1)
+    desc.fwd_code = "__rasterize_face_id__";
+    desc.shader_type = RASTER;
+    desc.infer = [screen_size](const Variables&)
+            -> std::pair<VType, ImgSize> { return {FLOAT, screen_size}; };
+    desc.bwd = NullBwd;
+    desc.cpu = [screen_size](const std::vector<CpuTensor>& xs) {
+        return RasterizeFaceIdCpu(xs[0], xs[2], screen_size);
+    };
+    return MakeOp(std::move(desc), {vtx_clip_pos, vtx_attrib_dummy, faces});
+}
+
+namespace {
+
+constexpr int kAaOffs[8][2] = {{-1, -1}, {0, -1}, {1, -1}, {-1, 0},
+                               {1, 0},   {-1, 1}, {0, 1},  {1, 1}};
+
+// d c_aa / d img: c_aa is linear in the image given fixed geometry.
+// g(x) = (1/9) [ gy(x) (1 + sum_k alpha_k) + sum_k beta_k gy(n_k) ] with
+// alpha_k = r(x, n_k) for active pairs else 1, beta_k = 1 - r(n_k, x) for
+// active swapped pairs else 0 (r is asymmetric).
+Variable AntiAliasBwdImg(const Variable& gy, const Variable& tri_id,
+                         const Variable& vtx_clip, const Variable& faces) {
+    OpDesc desc;
+    desc.name = "AntiAliasBwdImg";
+    desc.fwd_code = "__antialias_bwd_img__";
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch, InputAccess::TexelFetch};
+    desc.infer = [](const Variables& xs) -> std::pair<VType, ImgSize> {
+        return {xs[0].getVType(), xs[0].getImgSize()};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [](const std::vector<CpuTensor>& xs) {
+        const CpuTensor& gy = xs[0];
+        const CpuTensor& tri = xs[1];
+        const CpuTensor& clip = xs[2];
+        const CpuTensor& faces_t = xs[3];
+        const ImgSize screen = gy.size;
+        const uint32_t n = gy.numComp();
+        CpuTensor out;
+        out.vtype = gy.vtype;
+        out.size = screen;
+        out.data.assign(gy.data.size(), 0.f);
+        for (int y = 0; y < int(screen.h); y++) {
+            for (int x = 0; x < int(screen.w); x++) {
+                const size_t so = (size_t(y) * screen.w + x) * n;
+                float alpha_sum = 0.f;
+                float* dst = &out.data[so];
+                for (int k = 0; k < 8; k++) {
+                    const int nx = x + kAaOffs[k][0];
+                    const int ny = y + kAaOffs[k][1];
+                    if (nx < 0 || ny < 0 || nx >= int(screen.w) ||
+                        ny >= int(screen.h)) {
+                        alpha_sum += 1.f;
+                        continue;
+                    }
+                    AaPair pr;
+                    alpha_sum += EvalAaPair(tri, clip, faces_t, screen, x, y,
+                                            nx, ny, &pr)
+                                         ? pr.r
+                                         : 1.f;
+                    AaPair pr2;
+                    if (EvalAaPair(tri, clip, faces_t, screen, nx, ny, x, y,
+                                   &pr2)) {
+                        const size_t no = (size_t(ny) * screen.w + nx) * n;
+                        for (uint32_t c = 0; c < n; c++) {
+                            dst[c] += (1.f - pr2.r) * gy.data[no + c];
+                        }
+                    }
+                }
+                for (uint32_t c = 0; c < n; c++) {
+                    dst[c] += gy.data[so + c] * (1.f + alpha_sum);
+                    dst[c] /= 9.f;
+                }
+            }
+        }
+        return out;
+    };
+    return MakeOp(std::move(desc), {gy, tri_id, vtx_clip, faces});
+}
+
+// d c_aa / d vtx_clip, gathered per vertex: for every active boundary pair
+// whose chosen edge touches this vertex, accumulate
+// (1/9) dot(gy(s), c(s) - c(n)) * d r / d clip (perpendicular-distance
+// derivative + screen->clip Jacobian; zero when r clamps at 1).
+Variable AntiAliasBwdVtx(const Variable& gy, const Variable& img,
+                         const Variable& tri_id, const Variable& vtx_clip,
+                         const Variable& faces) {
+    OpDesc desc;
+    desc.name = "AntiAliasBwdVtx";
+    desc.fwd_code = "__antialias_bwd_vtx__";
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch};
+    desc.infer = [](const Variables& xs) -> std::pair<VType, ImgSize> {
+        return {VEC4, xs[3].getImgSize()};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [](const std::vector<CpuTensor>& xs) {
+        const CpuTensor& gy = xs[0];
+        const CpuTensor& img = xs[1];
+        const CpuTensor& tri = xs[2];
+        const CpuTensor& clip = xs[3];
+        const CpuTensor& faces_t = xs[4];
+        const ImgSize screen = gy.size;
+        const uint32_t n = gy.numComp();
+        const float w_scr = float(screen.w);
+        const float h_scr = float(screen.h);
+        CpuTensor out;
+        out.vtype = VEC4;
+        out.size = clip.size;
+        out.data.assign(size_t(clip.size.w) * 4, 0.f);
+        for (int y = 0; y < int(screen.h); y++) {
+            for (int x = 0; x < int(screen.w); x++) {
+                for (int k = 0; k < 8; k++) {
+                    const int nx = x + kAaOffs[k][0];
+                    const int ny = y + kAaOffs[k][1];
+                    if (nx < 0 || ny < 0 || nx >= int(screen.w) ||
+                        ny >= int(screen.h)) {
+                        continue;
+                    }
+                    AaPair pr;
+                    if (!EvalAaPair(tri, clip, faces_t, screen, x, y, nx, ny,
+                                    &pr) ||
+                        pr.r >= 1.f) {
+                        continue;  // inactive, or clamped (zero gradient)
+                    }
+                    const size_t so = (size_t(y) * screen.w + x) * n;
+                    const size_t no = (size_t(ny) * screen.w + nx) * n;
+                    float gr = 0.f;
+                    for (uint32_t c = 0; c < n; c++) {
+                        gr += gy.data[so + c] *
+                              (img.data[so + c] - img.data[no + c]);
+                    }
+                    gr /= 9.f;
+                    if (gr == 0.f) {
+                        continue;
+                    }
+                    const float ps[2] = {float(x) + 0.5f, float(y) + 0.5f};
+                    const float sgn = pr.es >= 0.f ? 1.f : -1.f;
+                    const float inv_l = 1.f / pr.len;
+                    const float l3 = std::abs(pr.es) * inv_l * inv_l * inv_l;
+                    const float ex = pr.qb[0] - pr.qa[0];
+                    const float ey = pr.qb[1] - pr.qa[1];
+                    const float dqa[2] = {
+                            sgn * inv_l * (pr.qb[1] - ps[1]) + l3 * ex,
+                            sgn * inv_l * (ps[0] - pr.qb[0]) + l3 * ey};
+                    const float dqb[2] = {
+                            sgn * inv_l * (ps[1] - pr.qa[1]) - l3 * ex,
+                            sgn * inv_l * (pr.qa[0] - ps[0]) - l3 * ey};
+                    const uint32_t ids[2] = {pr.ia, pr.ib};
+                    const float* dqs[2] = {dqa, dqb};
+                    for (int e = 0; e < 2; e++) {
+                        const float gqx = gr * dqs[e][0];
+                        const float gqy = gr * dqs[e][1];
+                        const float* c = &clip.data[size_t(ids[e]) * 4];
+                        float* dst = &out.data[size_t(ids[e]) * 4];
+                        dst[0] += gqx * 0.5f * w_scr / c[3];
+                        dst[1] += gqy * 0.5f * h_scr / c[3];
+                        dst[3] += -(gqx * 0.5f * w_scr * c[0] +
+                                    gqy * 0.5f * h_scr * c[1]) /
+                                  (c[3] * c[3]);
+                    }
+                }
+            }
+        }
+        return out;
+    };
+    return MakeOp(std::move(desc), {gy, img, tri_id, vtx_clip, faces});
+}
+
+}  // namespace
+
+Variable AntiAlias(const Variable& img, const Variable& tri_id,
+                   const Variable& vtx_clip, const Variable& faces) {
+    const VType img_type = img.getVType();
+    DRESSI_CHECK(!IsIntVType(img_type) && !IsMatrixVType(img_type),
+                 "AntiAlias: img must be a float image");
+    DRESSI_CHECK(!img.getImgSize().isUniform(),
+                 "AntiAlias: img must be a non-uniform image");
+    DRESSI_CHECK(tri_id.getVType() == FLOAT &&
+                         tri_id.getImgSize() == img.getImgSize(),
+                 "AntiAlias: tri_id must be a FLOAT image of img's size");
+    DRESSI_CHECK(vtx_clip.getVType() == VEC4 &&
+                         vtx_clip.getImgSize().h == 1,
+                 "AntiAlias: vtx_clip must be VEC4 {V,1}");
+    DRESSI_CHECK(faces.getVType() == VEC3 && faces.getImgSize().h == 1,
+                 "AntiAlias: faces must be VEC3 {F,1}");
+
+    OpDesc desc;
+    desc.name = "AntiAlias";
+    desc.fwd_code = "__antialias__";
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch,
+                         InputAccess::TexelFetch, InputAccess::TexelFetch};
+    desc.infer = [img_type](const Variables& xs)
+            -> std::pair<VType, ImgSize> {
+        return {img_type, xs[0].getImgSize()};
+    };
+    desc.bwd = [](const Variables& xs, const Variable&, const Variable& gy,
+                  uint32_t bwd_idx) -> Variable {
+        if (bwd_idx == 0) {
+            return AntiAliasBwdImg(gy, xs[1], xs[2], xs[3]);
+        }
+        if (bwd_idx == 2) {
+            return AntiAliasBwdVtx(gy, xs[0], xs[1], xs[2], xs[3]);
+        }
+        return nullptr;  // tri_id / faces are not differentiable
+    };
+    desc.cpu = [](const std::vector<CpuTensor>& xs) {
+        const CpuTensor& img_t = xs[0];
+        const CpuTensor& tri = xs[1];
+        const CpuTensor& clip = xs[2];
+        const CpuTensor& faces_t = xs[3];
+        const ImgSize screen = img_t.size;
+        const uint32_t n = img_t.numComp();
+        CpuTensor out;
+        out.vtype = img_t.vtype;
+        out.size = screen;
+        out.data.assign(img_t.data.size(), 0.f);
+        for (int y = 0; y < int(screen.h); y++) {
+            for (int x = 0; x < int(screen.w); x++) {
+                const size_t so = (size_t(y) * screen.w + x) * n;
+                const float* cs = &img_t.data[so];
+                float* dst = &out.data[so];
+                for (uint32_t c = 0; c < n; c++) {
+                    dst[c] = cs[c];
+                }
+                for (int k = 0; k < 8; k++) {
+                    const int nx = x + kAaOffs[k][0];
+                    const int ny = y + kAaOffs[k][1];
+                    AaPair pr;
+                    if (nx < 0 || ny < 0 || nx >= int(screen.w) ||
+                        ny >= int(screen.h) ||
+                        !EvalAaPair(tri, clip, faces_t, screen, x, y, nx, ny,
+                                    &pr)) {
+                        for (uint32_t c = 0; c < n; c++) {
+                            dst[c] += cs[c];
+                        }
+                        continue;
+                    }
+                    const float* cn =
+                            &img_t.data[(size_t(ny) * screen.w + nx) * n];
+                    for (uint32_t c = 0; c < n; c++) {
+                        dst[c] += pr.r * cs[c] + (1.f - pr.r) * cn[c];
+                    }
+                }
+                for (uint32_t c = 0; c < n; c++) {
+                    dst[c] /= 9.f;
+                }
+            }
+        }
+        return out;
+    };
+    return MakeOp(std::move(desc), {img, tri_id, vtx_clip, faces});
+}
+
 namespace {
 
 // Gathers the screen-space gradient into texture space through the

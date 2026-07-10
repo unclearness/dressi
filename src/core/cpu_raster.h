@@ -57,6 +57,25 @@ CpuTensor RasterizeSoftCpu(const CpuTensor& soft_clip,
 bool ProjectClipToScreen(const float clip[4], ImgSize screen, float s_xy[2],
                          float* z_ndc);
 
+// Screen-space AA pixel pair (Dr.Hair Eq.4-5): the silhouette edge chosen
+// for the (s, n) neighbor pair and the blend weight r = min(|es|/len, 1)
+// (perpendicular distance from s's pixel center to the edge line, pixels).
+// Owner preference {tri(n), tri(s)} approximates closest-depth selection.
+// NOTE: r is asymmetric -- EvalAaPair(s, n) != EvalAaPair(n, s).
+struct AaPair {
+    float r = 1.f;
+    uint32_t ia = 0, ib = 0;  // global vertex ids of the chosen edge
+    float qa[2] = {0.f, 0.f}, qb[2] = {0.f, 0.f};  // screen endpoints
+    float es = 0.f;   // signed edge function at s's pixel center
+    float len = 0.f;  // edge length
+};
+// tri: FLOAT screen image of float(face)+1 (0 = background); clip: VEC4
+// {V,1}; faces: float VEC3 {F,1}. Returns false when the pair is inactive
+// (same tri id, out of range, or no separating silhouette edge).
+bool EvalAaPair(const CpuTensor& tri, const CpuTensor& clip,
+                const CpuTensor& faces, ImgSize screen, int sx, int sy,
+                int nx, int ny, AaPair* out);
+
 }  // namespace dressi
 
 #endif  // DRESSI_CORE_CPU_RASTER_H

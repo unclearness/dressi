@@ -120,6 +120,29 @@ Variable RasterizeSoft(const Variable& vtx_clip_soft, const Variable& face_id,
                        const Variable& faces_tex, ImgSize screen_size,
                        float radius_px);
 
+// Rasterizes the triangle-ID buffer: float(face_index) + 1 per covered
+// pixel (depth-tested), 0 for background. `vtx_attrib_dummy` is rasterized
+// vertex-format-wise but ignored (keeps the {pos, attrib, faces} executor
+// contract); pass any per-vertex float attribute. Not differentiable.
+Variable RasterizeFaceId(const Variable& vtx_clip_pos,
+                         const Variable& vtx_attrib_dummy,
+                         const Variable& faces, ImgSize screen_size);
+
+// Screen-space anti-aliasing (arXiv:2403.17496 Eq.3-5): blends each pixel
+// with its 8 neighbors across triangle-ID boundaries using the distance
+// from the pixel center to the silhouette edge of the triangle covering
+// the neighbor (owner preference {tri(n), tri(s)} approximates
+// closest-depth selection without a depth buffer). Differentiable w.r.t.
+// `img` and w.r.t. `vtx_clip` (dense boundary gradients through the edge
+// distance). Pass the SAME clip-position leaf used for rasterization so
+// the gradient reaches it.
+//   img:      float image to anti-alias (the rasterized mask/color)
+//   tri_id:   FLOAT image from RasterizeFaceId (same size as img)
+//   vtx_clip: VEC4 {V,1} clip positions as an image leaf
+//   faces:    VEC3 {F,1} float-valued vertex indices as an image leaf
+Variable AntiAlias(const Variable& img, const Variable& tri_id,
+                   const Variable& vtx_clip, const Variable& faces);
+
 // Samples `tex` (nearest) at per-pixel `uv`. Differentiable with respect to
 // the texture through the inverse-UV lookup table `inv_uv`: a VEC4
 // {tex_size} image of (screen_x, screen_y, valid, 0) built by rasterizing
