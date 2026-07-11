@@ -153,6 +153,20 @@ inline float G1Ibl(float n_dot_x, float k) {
     return n_dot_x / (n_dot_x * (1.f - k) + k);
 }
 
+// GGX weight of the deterministic prefilter convolution (V=N=R):
+// c = dot(R, L); the half vector's squared cosine is (1+c)/2. The 1/pi
+// cancels in the normalized ratio but is kept so CPU/GLSL stay literal
+// twins of the NDF.
+inline float GgxConvWeight(float c, float alpha) {
+    if (c <= 0.f) {
+        return 0.f;
+    }
+    const float ch2 = (1.f + c) * 0.5f;
+    const float a2 = alpha * alpha;
+    const float d = ch2 * (a2 - 1.f) + 1.f;
+    return a2 / (kPi * d * d) * c;
+}
+
 }  // namespace ibl
 }  // namespace dressi
 

@@ -32,6 +32,15 @@ std::vector<Variable> BuildPrefEnvironmentSample(const Variable& env_img,
                                                  ImgSize top = {128, 64},
                                                  uint32_t n_samples = 256);
 
+// Differentiable variant built on F::PrefilterConv (deterministic
+// GGX-NDF convolution with an exact transpose): use when the environment
+// itself is being optimized. Costs out*src per level per iteration for
+// forward AND backward, so it pools the source harder than the sampled
+// version.
+std::vector<Variable> BuildPrefEnvironmentSampleConv(const Variable& env_img,
+                                                     uint32_t levels = 5,
+                                                     ImgSize top = {128, 64});
+
 // Split-sum BRDF integration LUT: VEC2 (scale A, bias B) over
 // (NdotV, roughness). No inputs.
 Variable BuildBrdfIntegrationMap(ImgSize size = {256, 256},

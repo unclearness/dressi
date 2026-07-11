@@ -19,11 +19,14 @@ Variable SafeNormalize(const Variable& v) {
 
 }  // namespace
 
-PbrIblMaps BuildPbrIblMaps(const Variable& env) {
+PbrIblMaps BuildPbrIblMaps(const Variable& env,
+                           bool differentiable_prefilter) {
     PbrIblMaps maps;
     maps.env = env;
     maps.irr = BuildIrradianceSample(env);
-    maps.pref = BuildPrefEnvironmentSample(env);
+    maps.pref = differentiable_prefilter
+                        ? BuildPrefEnvironmentSampleConv(env)
+                        : BuildPrefEnvironmentSample(env);
     maps.lut = BuildBrdfIntegrationMap();
     return maps;
 }

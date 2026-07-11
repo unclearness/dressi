@@ -3124,6 +3124,197 @@ Variable PrefilterEnv(const Variable& env, ImgSize out_size, float roughness,
     return MakeOp(std::move(desc), {env});
 }
 
+namespace {
+
+// Normalizer of the deterministic prefilter convolution: W(t) =
+// sum_s GgxConvWeight(dot(R_t, d_s)) * sin(theta_s). Depends only on the
+// sizes and roughness (never on the env values), so it is a zero-input op
+// — always static, computed once and pruned even while the env is being
+// optimized.
+Variable PrefilterConvNorm(ImgSize out_size, ImgSize src_size, float alpha) {
+    OpDesc desc;
+    desc.name = "PrefilterConvNorm";
+    desc.fwd_code = "__prefilter_conv_norm__ sw=" +
+                    std::to_string(src_size.w) +
+                    " sh=" + std::to_string(src_size.h) +
+                    " a=" + FloatLiteral(alpha);
+    desc.infer = [out_size](const Variables&) -> std::pair<VType, ImgSize> {
+        return {FLOAT, out_size};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [out_size, src_size,
+                alpha](const std::vector<CpuTensor>&) -> CpuTensor {
+        CpuTensor y;
+        y.vtype = FLOAT;
+        y.size = out_size;
+        y.data.assign(size_t(out_size.w) * out_size.h, 0.f);
+        for (uint32_t oy = 0; oy < out_size.h; oy++) {
+            for (uint32_t ox = 0; ox < out_size.w; ox++) {
+                const ibl::Vec3 r = ibl::DirFromEquirectUv(
+                        (float(ox) + 0.5f) / float(out_size.w),
+                        (float(oy) + 0.5f) / float(out_size.h));
+                float acc = 0.f;
+                for (uint32_t sy = 0; sy < src_size.h; sy++) {
+                    const float sv = (float(sy) + 0.5f) / float(src_size.h);
+                    const float sin_th = std::sin(sv * ibl::kPi);
+                    for (uint32_t sx = 0; sx < src_size.w; sx++) {
+                        const ibl::Vec3 d = ibl::DirFromEquirectUv(
+                                (float(sx) + 0.5f) / float(src_size.w), sv);
+                        acc += ibl::GgxConvWeight(ibl::Dot(r, d), alpha) *
+                               sin_th;
+                    }
+                }
+                y.data[size_t(oy) * out_size.w + ox] = acc;
+            }
+        }
+        return y;
+    };
+    return MakeOp(std::move(desc), {});
+}
+
+// Exact transpose of PrefilterConv w.r.t. the env (the normalized conv is
+// a fixed linear map): g_env(s) = sin(theta_s) * sum_t gy(t) * w(t,s) /
+// W(t)
+Variable PrefilterConvBwd(const Variable& gy, const Variable& norm,
+                          ImgSize env_size, float alpha) {
+    OpDesc desc;
+    desc.name = "PrefilterConvBwd";
+    desc.fwd_code = "__prefilter_conv_bwd__ a=" + FloatLiteral(alpha);
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch};
+    desc.infer = [env_size](const Variables& xs)
+            -> std::pair<VType, ImgSize> {
+        return {xs[0].getVType(), env_size};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [env_size, alpha](const std::vector<CpuTensor>& xs)
+            -> CpuTensor {
+        const CpuTensor& gy_t = xs[0];
+        const CpuTensor& norm_t = xs[1];
+        const uint32_t ow = gy_t.size.w, oh = gy_t.size.h;
+        const uint32_t sw = env_size.w, sh = env_size.h;
+        const uint32_t n = gy_t.numComp();
+        CpuTensor out;
+        out.vtype = gy_t.vtype;
+        out.size = env_size;
+        out.data.assign(size_t(sw) * sh * n, 0.f);
+        for (uint32_t sy = 0; sy < sh; sy++) {
+            const float sv = (float(sy) + 0.5f) / float(sh);
+            const float sin_th = std::sin(sv * ibl::kPi);
+            for (uint32_t sx = 0; sx < sw; sx++) {
+                const ibl::Vec3 d = ibl::DirFromEquirectUv(
+                        (float(sx) + 0.5f) / float(sw), sv);
+                float* o = &out.data[(size_t(sy) * sw + sx) * n];
+                for (uint32_t ty = 0; ty < oh; ty++) {
+                    for (uint32_t tx = 0; tx < ow; tx++) {
+                        const ibl::Vec3 r = ibl::DirFromEquirectUv(
+                                (float(tx) + 0.5f) / float(ow),
+                                (float(ty) + 0.5f) / float(oh));
+                        const float w = ibl::GgxConvWeight(ibl::Dot(r, d),
+                                                           alpha);
+                        if (w <= 0.f) {
+                            continue;
+                        }
+                        const float wn =
+                                w / std::max(norm_t.data[size_t(ty) * ow +
+                                                         tx],
+                                             1e-12f);
+                        const float* g =
+                                &gy_t.data[(size_t(ty) * ow + tx) * n];
+                        for (uint32_t c = 0; c < n; c++) {
+                            o[c] += g[c] * wn;
+                        }
+                    }
+                }
+                for (uint32_t c = 0; c < n; c++) {
+                    o[c] *= sin_th;
+                }
+            }
+        }
+        return out;
+    };
+    return MakeOp(std::move(desc), {gy, norm});
+}
+
+}  // namespace
+
+Variable PrefilterConv(const Variable& env, ImgSize out_size,
+                       float roughness) {
+    const VType env_type = env.getVType();
+    DRESSI_CHECK(!IsIntVType(env_type) && !IsMatrixVType(env_type),
+                 "PrefilterConv: env must be a float image");
+    DRESSI_CHECK(!env.getImgSize().isUniform() && !out_size.isUniform(),
+                 "PrefilterConv: env and output must be non-uniform");
+    // alpha = roughness^2, floored like the shading clamp so the rough=0
+    // level keeps a finite (near-delta) kernel
+    const float alpha = std::max(roughness, 0.045f) *
+                        std::max(roughness, 0.045f);
+    const ImgSize env_size = env.getImgSize();
+    Variable norm = PrefilterConvNorm(out_size, env_size, alpha);
+
+    OpDesc desc;
+    desc.name = "PrefilterConv";
+    // Deterministic GGX-NDF-weighted convolution (split-sum first term,
+    // V=N=R): pref(t) = sum_s w L / W(t). A fixed linear map of the env,
+    // so — unlike the importance-sampled F::PrefilterEnv — it has an
+    // EXACT transpose backward (the envmap-optimization path).
+    desc.fwd_code = "__prefilter_conv__ a=" + FloatLiteral(alpha);
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch};
+    desc.infer = [env_type, out_size](const Variables&)
+            -> std::pair<VType, ImgSize> {
+        return {env_type, out_size};
+    };
+    desc.bwd = [env_size, alpha](const Variables& xs, const Variable&,
+                                 const Variable& gy,
+                                 uint32_t bwd_idx) -> Variable {
+        if (bwd_idx != 0) {
+            return nullptr;  // the normalizer is a constant
+        }
+        return PrefilterConvBwd(gy, xs[1], env_size, alpha);
+    };
+    desc.cpu = [out_size, alpha](const std::vector<CpuTensor>& xs)
+            -> CpuTensor {
+        const CpuTensor& env_t = xs[0];
+        const CpuTensor& norm_t = xs[1];
+        const uint32_t sw = env_t.size.w, sh = env_t.size.h;
+        const uint32_t n = env_t.numComp();
+        CpuTensor y;
+        y.vtype = env_t.vtype;
+        y.size = out_size;
+        y.data.assign(size_t(out_size.w) * out_size.h * n, 0.f);
+        for (uint32_t oy = 0; oy < out_size.h; oy++) {
+            for (uint32_t ox = 0; ox < out_size.w; ox++) {
+                const ibl::Vec3 r = ibl::DirFromEquirectUv(
+                        (float(ox) + 0.5f) / float(out_size.w),
+                        (float(oy) + 0.5f) / float(out_size.h));
+                float* o = &y.data[(size_t(oy) * out_size.w + ox) * n];
+                for (uint32_t sy = 0; sy < sh; sy++) {
+                    const float sv = (float(sy) + 0.5f) / float(sh);
+                    const float sin_th = std::sin(sv * ibl::kPi);
+                    for (uint32_t sx = 0; sx < sw; sx++) {
+                        const ibl::Vec3 d = ibl::DirFromEquirectUv(
+                                (float(sx) + 0.5f) / float(sw), sv);
+                        const float w = ibl::GgxConvWeight(ibl::Dot(r, d),
+                                                           alpha) *
+                                        sin_th;
+                        const float* e =
+                                &env_t.data[(size_t(sy) * sw + sx) * n];
+                        for (uint32_t c = 0; c < n; c++) {
+                            o[c] += e[c] * w;
+                        }
+                    }
+                }
+                const float wn = std::max(
+                        norm_t.data[size_t(oy) * out_size.w + ox], 1e-12f);
+                for (uint32_t c = 0; c < n; c++) {
+                    o[c] /= wn;
+                }
+            }
+        }
+        return y;
+    };
+    return MakeOp(std::move(desc), {env, norm});
+}
+
 Variable BrdfIntegrationLut(ImgSize size, uint32_t n_samples) {
     DRESSI_CHECK(!size.isUniform(),
                  "BrdfIntegrationLut: size must be non-uniform");

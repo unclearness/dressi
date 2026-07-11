@@ -104,7 +104,9 @@ inputs changed (reactive cache).
   `__equirect_sample_bwd__ k=` (+ `__tile_sum__ th= n=`),
   `__sample_bilinear__`, `__gather_inv_uv_bilinear__`,
   `__irradiance_conv__`, `__irradiance_conv_bwd__`,
-  `__prefilter_env__ r= n=`, `__brdf_lut__ n=`
+  `__prefilter_env__ r= n=`, `__prefilter_conv__ a=` (+
+  `__prefilter_conv_norm__ sw= sh= a=`, `__prefilter_conv_bwd__ a=`),
+  `__brdf_lut__ n=`
   with `dressi_*` GLSL helpers mirrored bit-for-bit(-ish) in
   `core/ibl_math.h` for the CPU oracle). The per-vertex gather backwards (GatherDistGrad,
   AntiAliasBwdVtx) default to WIDE (`wide=1` marker): {V,max_deg}
@@ -227,13 +229,21 @@ inputs changed (reactive cache).
   {map_w, map_h*K} horizontal-band partials + `__tile_sum__` — the
   unsplit {map} target ran only map_texels threads and took 45 ms where
   the WIDE version takes ~1 ms (same trap as the {V,1} vertex gathers).
-  Keep OPTIMIZED env leaves small (64x32 default). PrefilterEnv /
-  BrdfIntegrationLut stay forward-only: specular IBL re-renders forward
-  from the current env each iteration but contributes NO env gradient
-  (an importance-sampled prefilter has no cheap transpose; a
-  deterministic direct-sum prefilter variant is the documented future
-  path). AvgPool2x2 chains are differentiable, so pooled sources
-  propagate.
+  Keep OPTIMIZED env leaves small (64x32 default). For specular,
+  `F::PrefilterConv` (deterministic GGX-NDF convolution, normalizer = a
+  ZERO-INPUT static op so it is pruned even while env is dirty) replaces
+  the importance-sampled `F::PrefilterEnv` on optimization paths — being
+  a fixed linear map it has an exact transpose, and the metal helmet's
+  reflections then constrain sphere regions the background rays never
+  see (env PSNR 11.8 -> 17.7 dB). BOTH branches (GT target and pred) of
+  an optimization must use the same prefilter variant or the
+  formulation mismatch is pushed into the recovered env
+  (BuildPbrIblMaps(env, /*differentiable_prefilter=*/true)).
+  BuildPrefEnvironmentSampleConv clamps the top level to the source
+  size — a 128x64 prefilter of a 64x32 env holds no information but
+  quadruples the screen-gradient gather. PrefilterEnv/BrdfIntegrationLut
+  remain forward-only. AvgPool2x2 chains are differentiable, so pooled
+  sources propagate.
 - glTF UV convention: `LoadGltfScene` does NOT flip V (glTF is top-left
   origin, matching image row 0); the older `LoadGltfMesh` keeps its 1-v
   flip (OBJ-ism) for compatibility with existing examples.

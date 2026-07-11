@@ -262,7 +262,9 @@ TEST_P(IblGpu, EnvGradientParity) {
     Variable env(VEC3, env_size);
     Variable dir(VEC3, dir_size);
     Variable irr = F::IrradianceConv(F::AvgPool2x2(env), {8, 4});
+    Variable pref = F::PrefilterConv(env, {8, 4}, 0.5f);
     Variable shade = F::EquirectSample(irr, dir) +
+                     F::EquirectSample(pref, dir) * 0.5f +
                      F::EquirectSample(env, dir) * 0.3f;
     Variable loss = F::Mean(shade * shade);
     Variable env_mut = env;

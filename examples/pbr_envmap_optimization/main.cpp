@@ -12,9 +12,10 @@
 //   - diffuse IBL: EquirectSample(irr, n) -> transpose -> IrradianceConv
 //     transpose (exact: the conv is a deterministic linear map) -> AvgPool
 //     backward -> env
-//   - specular IBL (PrefilterEnv) recomputes its FORWARD from the current
-//     env every iteration but contributes no gradient (importance-sampled
-//     prefilter has no transpose yet — documented deviation)
+//   - specular IBL: the deterministic F::PrefilterConv chain (GGX-NDF
+//     convolution, exact transpose) — the helmet is mostly metal, so the
+//     glossy reflections constrain large parts of the sphere that the
+//     background rays never see
 // Because the env leaf is dirty every iteration, the IBL precompute of the
 // optimized branch is NOT pruned (it re-runs per iter); the GT branch stays
 // static and is pruned as usual.
@@ -160,10 +161,13 @@ int main(int argc, char* argv[]) try {
     // No texture gradients here -> never-uploaded dummy inverse-UV table
     Variable dummy_inv_uv(VEC4, m_albedo.getImgSize());
 
+    // Both branches use the deterministic (differentiable) prefilter so
+    // no formulation mismatch is pushed into the recovered env; the GT
+    // branch is static and pruned after warmup regardless
     Variable env_gt(VEC3, env_size);
     Variable env_opt(VEC3, env_size);
-    const PbrIblMaps ibl_gt = BuildPbrIblMaps(env_gt);
-    const PbrIblMaps ibl_opt = BuildPbrIblMaps(env_opt);
+    const PbrIblMaps ibl_gt = BuildPbrIblMaps(env_gt, true);
+    const PbrIblMaps ibl_opt = BuildPbrIblMaps(env_opt, true);
 
     const float fov = 45.f * 3.14159265f / 180.f;
     const float tan_half = std::tan(fov * 0.5f);

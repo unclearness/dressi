@@ -296,6 +296,15 @@ Variable IrradianceConv(const Variable& env, ImgSize out_size);
 Variable PrefilterEnv(const Variable& env, ImgSize out_size, float roughness,
                       uint32_t n_samples = 256);
 
+// Deterministic counterpart of PrefilterEnv: a GGX-NDF-weighted
+// convolution over EVERY source texel (normalized per output texel by a
+// static zero-input weight image). Being a fixed linear map it is
+// differentiable w.r.t. env via its exact transpose — use this variant
+// when the environment itself is optimized. Cost per level =
+// out_texels * src_texels for forward AND backward.
+Variable PrefilterConv(const Variable& env, ImgSize out_size,
+                       float roughness);
+
 // Split-sum BRDF integration LUT: VEC2 (scale A, bias B) indexed by
 // (NdotV, roughness) texel centers; Smith-G with k = roughness^2/2.
 // No inputs — always static. Forward-only.

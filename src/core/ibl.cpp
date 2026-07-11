@@ -1,5 +1,6 @@
 #include "dressi/ibl.h"
 
+#include <algorithm>
 #include <string>
 
 #include "dressi/f.h"
@@ -35,6 +36,28 @@ std::vector<Variable> BuildPrefEnvironmentSample(const Variable& env_img,
     for (uint32_t i = 0; i < levels; i++) {
         const float rough = float(i) / float(levels - 1);
         out.push_back(F::PrefilterEnv(src, size, rough, n_samples));
+        size = {size.w > 1 ? size.w / 2 : 1, size.h > 1 ? size.h / 2 : 1};
+    }
+    return out;
+}
+
+std::vector<Variable> BuildPrefEnvironmentSampleConv(const Variable& env_img,
+                                                     uint32_t levels,
+                                                     ImgSize top) {
+    DRESSI_CHECK(levels >= 2,
+                 "BuildPrefEnvironmentSampleConv: need >= 2 levels");
+    // The conv runs out*src taps forward AND transposed every iteration
+    // when the env is dynamic: bound the source at the top level size,
+    // and never make a level larger than the source (a 128x64 prefilter
+    // of a 64x32 env holds no extra information but quadruples the
+    // screen-gradient gather)
+    const Variable src = PoolTo(env_img, top.w, top.h);
+    std::vector<Variable> out;
+    ImgSize size = {std::min(top.w, src.getImgSize().w),
+                    std::min(top.h, src.getImgSize().h)};
+    for (uint32_t i = 0; i < levels; i++) {
+        const float rough = float(i) / float(levels - 1);
+        out.push_back(F::PrefilterConv(src, size, rough));
         size = {size.w > 1 ? size.w / 2 : 1, size.h > 1 ? size.h / 2 : 1};
     }
     return out;

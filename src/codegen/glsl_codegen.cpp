@@ -205,6 +205,7 @@ std::string GenerateShaderImpl(const SubStage& ss, bool comp) {
     bool needs_hammersley = false;
     bool needs_ggx_sample = false;
     bool needs_g1_ibl = false;
+    bool needs_ggx_conv_w = false;
     for (const auto& f : ss.funcs) {
         const std::string& c = NodeAccess::Node(f)->fwd_code;
         if (c == "__antialias__" || c == "__antialias_bwd_img__" ||
@@ -229,6 +230,9 @@ std::string GenerateShaderImpl(const SubStage& ss, bool comp) {
         }
         if (c == "__irradiance_conv__" || c == "__irradiance_conv_bwd__") {
             needs_dir_from_equirect = true;
+        }
+        if (c.rfind("__prefilter_conv", 0) == 0) {
+            needs_dir_from_equirect = needs_ggx_conv_w = true;
         }
         if (c.rfind("__prefilter_env__", 0) == 0) {
             needs_dir_from_equirect = needs_equirect_uv = needs_bilerp_wrap =
@@ -401,6 +405,16 @@ vec2 dressi_hammersley(uint i, uint n) {
 }
 )";
     }
+    if (needs_ggx_conv_w) {
+        head << R"(float dressi_ggx_conv_w(float c, float alpha) {
+    if (c <= 0.0) return 0.0;
+    float ch2 = (1.0 + c) * 0.5;
+    float a2 = alpha * alpha;
+    float d = ch2 * (a2 - 1.0) + 1.0;
+    return a2 / (3.14159265358979324 * d * d) * c;
+}
+)";
+    }
 
     body << "void main() {\n";
     if (comp) {
@@ -447,6 +461,9 @@ vec2 dressi_hammersley(uint i, uint n) {
                code == "__irradiance_conv__" ||
                code == "__irradiance_conv_bwd__" ||
                code.rfind("__prefilter_env__", 0) == 0 ||
+               code.rfind("__prefilter_conv_norm__", 0) == 0 ||
+               code.rfind("__prefilter_conv_bwd__", 0) == 0 ||
+               code.rfind("__prefilter_conv__", 0) == 0 ||
                code.rfind("__brdf_lut__", 0) == 0;
     };
     std::map<Variable, size_t> slt_binding;
@@ -960,6 +977,115 @@ vec2 dressi_hammersley(uint i, uint n) {
             body << "            }\n";
             body << "        }\n";
             body << "        " << y_name << " /= max(wsum, 1e-4);\n";
+            body << "    }\n";
+            continue;
+        }
+        if (node->fwd_code.rfind("__prefilter_conv_norm__", 0) == 0) {
+            // Zero-input normalizer W(t) of the deterministic prefilter
+            // (CPU twin in PrefilterConvNorm); static, pruned after warmup
+            const int sw = std::stoi(node->fwd_code.substr(
+                    node->fwd_code.find("sw=") + 3));
+            const int sh = std::stoi(node->fwd_code.substr(
+                    node->fwd_code.find("sh=") + 3));
+            const float alpha = std::stof(node->fwd_code.substr(
+                    node->fwd_code.find(" a=") + 3));
+            const ImgSize out = y.getImgSize();
+            body << "    float " << y_name << " = 0.0;\n";
+            body << "    {\n";
+            body << "        vec3 r = dressi_dir_from_equirect("
+                 << "(vec2(dressi_coord) + 0.5) / vec2(" << out.w << ".0, "
+                 << out.h << ".0));\n";
+            body << "        for (int sy = 0; sy < " << sh << "; sy++) {\n";
+            body << "            float sv = (float(sy) + 0.5) / " << sh
+                 << ".0;\n";
+            body << "            float sin_th = sin(sv * "
+                    "3.14159265358979324);\n";
+            body << "            for (int sx = 0; sx < " << sw
+                 << "; sx++) {\n";
+            body << "                vec3 d = dressi_dir_from_equirect("
+                 << "vec2((float(sx) + 0.5) / " << sw << ".0, sv));\n";
+            body << "                " << y_name
+                 << " += dressi_ggx_conv_w(dot(r, d), " << FloatLit(alpha)
+                 << ") * sin_th;\n";
+            body << "            }\n";
+            body << "        }\n";
+            body << "    }\n";
+            continue;
+        }
+        if (node->fwd_code.rfind("__prefilter_conv_bwd__", 0) == 0) {
+            // xs = {gy (prefiltered level), norm}; output at env size.
+            // Exact transpose of __prefilter_conv__
+            const float alpha = std::stof(node->fwd_code.substr(
+                    node->fwd_code.find("a=") + 2));
+            const size_t gy_bind = slt_binding.at(xs[0]);
+            const size_t nm_bind = slt_binding.at(xs[1]);
+            const ImgSize out = xs[0].getImgSize();
+            const ImgSize src = y.getImgSize();
+            const uint32_t n = NumComponents(y.getVType());
+            body << "    " << y_type << " " << y_name << " = " << y_type
+                 << "(0.0);\n";
+            body << "    {\n";
+            body << "        float sv = (float(dressi_coord.y) + 0.5) / "
+                 << src.h << ".0;\n";
+            body << "        float sin_th = sin(sv * "
+                    "3.14159265358979324);\n";
+            body << "        vec3 d = dressi_dir_from_equirect(vec2("
+                 << "(float(dressi_coord.x) + 0.5) / " << src.w
+                 << ".0, sv));\n";
+            body << "        for (int ty = 0; ty < " << out.h
+                 << "; ty++)\n";
+            body << "        for (int tx = 0; tx < " << out.w
+                 << "; tx++) {\n";
+            body << "            vec3 r = dressi_dir_from_equirect(vec2("
+                 << "(float(tx) + 0.5) / " << out.w
+                 << ".0, (float(ty) + 0.5) / " << out.h << ".0));\n";
+            body << "            float w = dressi_ggx_conv_w(dot(r, d), "
+                 << FloatLit(alpha) << ");\n";
+            body << "            if (w <= 0.0) continue;\n";
+            body << "            " << y_name << " += texelFetch(u_slt"
+                 << gy_bind << ", ivec2(tx, ty), 0)" << SwizzleOf(n)
+                 << " * (w / max(texelFetch(u_slt" << nm_bind
+                 << ", ivec2(tx, ty), 0).x, 1e-12));\n";
+            body << "        }\n";
+            body << "        " << y_name << " *= sin_th;\n";
+            body << "    }\n";
+            continue;
+        }
+        if (node->fwd_code.rfind("__prefilter_conv__", 0) == 0) {
+            // xs = {env, norm}; deterministic GGX-NDF conv (CPU twin in
+            // F::PrefilterConv)
+            const float alpha = std::stof(node->fwd_code.substr(
+                    node->fwd_code.find("a=") + 2));
+            const size_t env_bind = slt_binding.at(xs[0]);
+            const size_t nm_bind = slt_binding.at(xs[1]);
+            const ImgSize src = xs[0].getImgSize();
+            const ImgSize out = y.getImgSize();
+            const uint32_t n = NumComponents(y.getVType());
+            body << "    " << y_type << " " << y_name << " = " << y_type
+                 << "(0.0);\n";
+            body << "    {\n";
+            body << "        vec3 r = dressi_dir_from_equirect("
+                 << "(vec2(dressi_coord) + 0.5) / vec2(" << out.w << ".0, "
+                 << out.h << ".0));\n";
+            body << "        for (int sy = 0; sy < " << src.h
+                 << "; sy++) {\n";
+            body << "            float sv = (float(sy) + 0.5) / " << src.h
+                 << ".0;\n";
+            body << "            float sin_th = sin(sv * "
+                    "3.14159265358979324);\n";
+            body << "            for (int sx = 0; sx < " << src.w
+                 << "; sx++) {\n";
+            body << "                vec3 d = dressi_dir_from_equirect("
+                 << "vec2((float(sx) + 0.5) / " << src.w << ".0, sv));\n";
+            body << "                " << y_name << " += texelFetch(u_slt"
+                 << env_bind << ", ivec2(sx, sy), 0)" << SwizzleOf(n)
+                 << " * (dressi_ggx_conv_w(dot(r, d), " << FloatLit(alpha)
+                 << ") * sin_th);\n";
+            body << "            }\n";
+            body << "        }\n";
+            body << "        " << y_name
+                 << " /= max(texelFetch(u_slt" << nm_bind
+                 << ", dressi_coord, 0).x, 1e-12);\n";
             body << "    }\n";
             continue;
         }

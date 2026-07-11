@@ -685,3 +685,23 @@ TEST(CpuEval, IblBuildersConstantEnv) {
         EXPECT_TRUE(std::isfinite(v));
     }
 }
+
+TEST(CpuEval, PrefilterConvConstantEnv) {
+    const ImgSize env_size = {16, 8};
+    Variable env(VEC3, env_size);
+    CpuTensor env_t = FillTensor(VEC3, env_size, [](size_t i) {
+        return i % 3 == 2 ? 0.6f : 0.25f;
+    });
+    for (float rough : {0.f, 0.5f, 1.f}) {
+        Variable pref = F::PrefilterConv(env, {8, 4}, rough);
+        CpuEvaluator ev;
+        ev.bind(env, env_t);
+        const CpuTensor y = ev.eval(pref);
+        // The normalized ratio maps a constant env to exactly the constant
+        for (size_t p = 0; p < y.numPixels(); p++) {
+            EXPECT_NEAR(y.data[p * 3 + 0], 0.25f, 1e-4f) << rough << " " << p;
+            EXPECT_NEAR(y.data[p * 3 + 1], 0.25f, 1e-4f) << rough << " " << p;
+            EXPECT_NEAR(y.data[p * 3 + 2], 0.6f, 1e-4f) << rough << " " << p;
+        }
+    }
+}

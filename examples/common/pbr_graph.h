@@ -52,7 +52,13 @@ struct PbrIblMaps {
     dressi::Variable lut{nullptr};
 };
 
-PbrIblMaps BuildPbrIblMaps(const dressi::Variable& env);
+// `differentiable_prefilter` swaps the importance-sampled prefilter for
+// the deterministic F::PrefilterConv chain (exact transpose backward) —
+// required when the env itself is optimized; both branches of an
+// optimization must use the SAME variant or the formulation mismatch is
+// pushed into the recovered env.
+PbrIblMaps BuildPbrIblMaps(const dressi::Variable& env,
+                           bool differentiable_prefilter = false);
 
 // Screen-space G-buffer (4 raster passes over one view's clip positions)
 struct PbrGBuffer {

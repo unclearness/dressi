@@ -517,3 +517,24 @@ TEST(Backward, EnvThroughIrradianceChain) {
                  -0.6f, 0.5f, 0.6f, 0.2f, -0.9f, 0.4f};
     CheckGrad(loss, {{env, env_t}, {n_dir, dirs}}, env);
 }
+
+TEST(Backward, EnvThroughPrefilterConvChain) {
+    // env -> PrefilterConv -> EquirectSample(by reflection dirs): the
+    // envmap-optimization specular path end to end
+    const ImgSize env_size = {8, 4};
+    Variable env(VEC3, env_size);
+    Variable r_dir(VEC3, {2, 2});
+    Variable pref = F::PrefilterConv(env, {4, 2}, 0.5f);
+    Variable shaded = F::EquirectSample(pref, r_dir);
+    Variable loss = F::Mean(shaded * shaded + shaded);
+
+    auto env_t = MakeTensor(VEC3, env_size, [](size_t i) {
+        return 0.2f + 0.08f * float((i * 3) % 7);
+    });
+    CpuTensor dirs;
+    dirs.vtype = VEC3;
+    dirs.size = {2, 2};
+    dirs.data = {0.2f, 0.9f, -0.3f, -0.8f, 0.1f, 0.5f,
+                 0.5f, -0.7f, 0.5f, -0.2f, 0.3f, 0.9f};
+    CheckGrad(loss, {{env, env_t}, {r_dir, dirs}}, env);
+}
