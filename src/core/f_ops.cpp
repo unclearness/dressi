@@ -885,11 +885,12 @@ Variable OuterProduct(const Variable& col, const Variable& row) {
 }
 
 // --------------------------------- Reduction ---------------------------------
-Variable SumPixelWise(const Variables& xs) {
-    DRESSI_CHECK(!xs.empty(), "SumPixelWise requires inputs");
-    if (xs.size() == 1) {
-        return xs[0];
-    }
+namespace {
+
+// One n-ary pixel-wise sum node. `xs.size()` becomes the fan-in: a same-pixel
+// sum reads each input as an input attachment, so keep callers within
+// maxPerStageDescriptorInputAttachments (see SumPixelWise below).
+Variable SumPixelWiseFlat(const Variables& xs) {
     std::string code = "{y}=";
     for (size_t i = 0; i < xs.size(); i++) {
         code += (i ? "+" : "");
@@ -913,6 +914,37 @@ Variable SumPixelWise(const Variables& xs) {
         }
     });
     return MakeOp(std::move(desc), xs);
+}
+
+}  // namespace
+
+Variable SumPixelWise(const Variables& xs) {
+    DRESSI_CHECK(!xs.empty(), "SumPixelWise requires inputs");
+    if (xs.size() == 1) {
+        return xs[0];
+    }
+    // A single n-ary node needs n same-pixel input attachments, but Vulkan
+    // only guarantees maxPerStageDescriptorInputAttachments >= 4 (Intel iGPUs
+    // report 7, NVIDIA >= 8). Fold into a tree of bounded fan-in so the packer
+    // can always place each node on any conformant device. Same tree shape as
+    // build_backward's SumContribs, kept here so every caller is portable.
+    constexpr size_t kMaxArity = 4;
+    Variables level = xs;
+    while (level.size() > 1) {
+        Variables next;
+        for (size_t i = 0; i < level.size(); i += kMaxArity) {
+            const size_t n = std::min(kMaxArity, level.size() - i);
+            if (n == 1) {
+                next.push_back(level[i]);
+            } else {
+                next.push_back(SumPixelWiseFlat(Variables(
+                        level.begin() + int64_t(i),
+                        level.begin() + int64_t(i + n))));
+            }
+        }
+        level = std::move(next);
+    }
+    return level[0];
 }
 
 namespace {

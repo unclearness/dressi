@@ -372,15 +372,19 @@ void DressiAD::execStep() {
             im.substages = TrivialPackSubStages(exec_funcs);
         }
         timer.mark("substage-pack");
+        // Oversized 1-D leaf tables are stored 2-D-tiled (see PhysImgSize);
+        // codegen folds their linear index reads to match.
+        const uint32_t max_dim =
+                im.ctx ? im.ctx->limits.maxImageDimension2D : 0u;
         for (auto& ss : im.substages) {
             if (ss.shader_type == RASTER) {
-                const RasterShaders shaders = GenerateRasterShaders(ss);
+                const RasterShaders shaders = GenerateRasterShaders(ss, max_dim);
                 ss.vert_shader_code = shaders.vert;
                 ss.shader_code = shaders.frag;
             } else if (ss.shader_type == COMP) {
-                ss.shader_code = GenerateCompShader(ss);
+                ss.shader_code = GenerateCompShader(ss, max_dim);
             } else {
-                ss.shader_code = GenerateFragShader(ss);
+                ss.shader_code = GenerateFragShader(ss, max_dim);
             }
         }
         timer.mark("codegen");

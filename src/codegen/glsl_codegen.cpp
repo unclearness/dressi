@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -56,6 +57,25 @@ std::string ReplaceAll(std::string s, const std::string& from,
     return s;
 }
 
+// texelFetch coordinate for a linear index `idx` into `src`. When `src` is
+// stored 2-D-tiled (its {N,1} logical width exceeds `max_dim`, see
+// PhysImgSize) the index is folded to (i & (W-1), i >> log2 W), matching the
+// row-major tile; otherwise it degrades to the historical ivec2(idx, 0), so
+// off-device / small-image codegen is byte-for-byte unchanged.
+std::string IdxCoord(const Variable& src, const std::string& idx,
+                     uint32_t max_dim) {
+    if (!NeedsTiling(src.getImgSize(), max_dim)) {
+        return "ivec2(" + idx + ", 0)";
+    }
+    const uint32_t w = TileWidth(max_dim);
+    uint32_t shift = 0;
+    while ((1u << shift) < w) {
+        shift++;
+    }
+    return "ivec2((" + idx + ") & " + std::to_string(w - 1) + ", (" + idx +
+           ") >> " + std::to_string(shift) + ")";
+}
+
 }  // namespace
 
 uint32_t PhysChannels(VType vtype) {
@@ -75,7 +95,8 @@ void main() {
 
 namespace {
 
-std::string GenerateShaderImpl(const SubStage& ss, bool comp) {
+std::string GenerateShaderImpl(const SubStage& ss, bool comp,
+                               uint32_t max_dim) {
     // FRAG substages, raster-headed substages (a RASTER function at the
     // top followed by fused FRAG functions -- the paper's "same shader
     // types except for top rasterization"), or COMP substages (all inputs
@@ -206,14 +227,34 @@ std::string GenerateShaderImpl(const SubStage& ss, bool comp) {
     bool needs_ggx_sample = false;
     bool needs_g1_ibl = false;
     bool needs_ggx_conv_w = false;
+    // texelFetch coordinates for the two sampler-parameterized GLSL helpers,
+    // folded for 2-D tiling per their actual per-face / per-vertex tables.
+    // They stay byte-identical to the historical ivec2(i, 0) when nothing
+    // tiles (all off-device and small-image shaders).
+    std::string aa_faces_c = "ivec2(owner - 1, 0)";
+    std::string aa_vclip_c = "ivec2(vi[k], 0)";
+    std::string fc_faces_c = "ivec2(f, 0)";
+    std::string fc_vp_x_c = "ivec2(vi.x, 0)";
+    std::string fc_vp_y_c = "ivec2(vi.y, 0)";
+    std::string fc_vp_z_c = "ivec2(vi.z, 0)";
     for (const auto& f : ss.funcs) {
         const std::string& c = NodeAccess::Node(f)->fwd_code;
         if (c == "__antialias__" || c == "__antialias_bwd_img__" ||
             c.rfind("__antialias_bwd_vtx__", 0) == 0) {
             needs_aa_helper = true;
+            // xs = {img/gy, tri_id, vtx_clip, faces}
+            const Variables axs = f.getInputVars();
+            aa_faces_c = IdxCoord(axs[3], "owner - 1", max_dim);
+            aa_vclip_c = IdxCoord(axs[2], "vi[k]", max_dim);
         }
         if (c == "__nc_face_term__") {
             needs_face_cross = true;
+            // xs = {pos, faces, face_adj}
+            const Variables nxs = f.getInputVars();
+            fc_faces_c = IdxCoord(nxs[1], "f", max_dim);
+            fc_vp_x_c = IdxCoord(nxs[0], "vi.x", max_dim);
+            fc_vp_y_c = IdxCoord(nxs[0], "vi.y", max_dim);
+            fc_vp_z_c = IdxCoord(nxs[0], "vi.z", max_dim);
         }
         if (c.rfind("__face_fetch_bwd__", 0) == 0 ||
             c.rfind("__antialias_bwd_vtx__", 0) == 0) {
@@ -257,14 +298,15 @@ std::string GenerateShaderImpl(const SubStage& ss, bool comp) {
 )";
     }
     if (needs_face_cross) {
-        head << R"(vec3 dressi_face_cross(sampler2D vpos, sampler2D faces, int f) {
-    ivec3 vi = ivec3(texelFetch(faces, ivec2(f, 0), 0).xyz + 0.5);
-    vec3 p0 = texelFetch(vpos, ivec2(vi.x, 0), 0).xyz;
-    vec3 p1 = texelFetch(vpos, ivec2(vi.y, 0), 0).xyz;
-    vec3 p2 = texelFetch(vpos, ivec2(vi.z, 0), 0).xyz;
-    return cross(p1 - p0, p2 - p0);
-}
-)";
+        head << "vec3 dressi_face_cross(sampler2D vpos, sampler2D faces, "
+                "int f) {\n"
+             << "    ivec3 vi = ivec3(texelFetch(faces, " << fc_faces_c
+             << ", 0).xyz + 0.5);\n"
+             << "    vec3 p0 = texelFetch(vpos, " << fc_vp_x_c << ", 0).xyz;\n"
+             << "    vec3 p1 = texelFetch(vpos, " << fc_vp_y_c << ", 0).xyz;\n"
+             << "    vec3 p2 = texelFetch(vpos, " << fc_vp_z_c << ", 0).xyz;\n"
+             << "    return cross(p1 - p0, p2 - p0);\n"
+             << "}\n";
     }
     if (needs_aa_helper) {
         head << R"(const ivec2 dressi_aa_offs[8] = ivec2[8](
@@ -283,12 +325,14 @@ bool dressi_aa_pair(sampler2D tri, sampler2D vclip, sampler2D faces,
     for (int o = 0; o < 2; o++) {
         int owner = o == 0 ? itn : its;
         if (owner == 0) continue;
-        vec3 fidx = texelFetch(faces, ivec2(owner - 1, 0), 0).xyz;
+        vec3 fidx = texelFetch(faces, )"
+             << aa_faces_c << R"(, 0).xyz;
         ivec3 vi = ivec3(fidx + 0.5);
         vec2 q[3];
         bool ok = true;
         for (int k = 0; k < 3; k++) {
-            vec4 c = texelFetch(vclip, ivec2(vi[k], 0), 0);
+            vec4 c = texelFetch(vclip, )"
+             << aa_vclip_c << R"(, 0);
             if (abs(c.w) < 1e-6) { ok = false; break; }
             q[k] = (c.xy / c.w * 0.5 + 0.5) * wh;
         }
@@ -469,6 +513,32 @@ vec2 dressi_hammersley(uint i, uint n) {
     std::map<Variable, size_t> slt_binding;
     for (size_t i = 0; i < ss.slt_vars.size(); i++) {
         slt_binding[ss.slt_vars[i]] = i;
+    }
+    // 2-D tiling of an oversized {N,1} slt table (N > maxImageDimension2D) is
+    // wired through the linear-index fold only for the ops whose index reads
+    // route through the tile-aware GLSL helpers below. Any other index op
+    // reading such a table would silently read the wrong texel, so fail
+    // loudly instead -- no example mesh is this large, and the reachable
+    // aa-target path (via dressi_aa_pair) is covered.
+    if (max_dim != 0) {
+        static const std::set<std::string> kTileAwareMarkers = {
+                "__antialias__", "__antialias_bwd_img__", "__nc_face_term__"};
+        for (const auto& v : ss.slt_vars) {
+            if (!NeedsTiling(v.getImgSize(), max_dim)) {
+                continue;
+            }
+            for (const auto& f : ss.funcs) {
+                const Variables fin = f.getInputVars();
+                if (std::find(fin.begin(), fin.end(), v) == fin.end()) {
+                    continue;
+                }
+                DRESSI_CHECK(
+                        kTileAwareMarkers.count(NodeAccess::Node(f)->fwd_code),
+                        "a mesh table wider than maxImageDimension2D reaches an "
+                        "op without 2-D-tiling support on this GPU; only the "
+                        "AntiAlias/normal-consistency reads are tile-aware");
+            }
+        }
     }
     std::map<Variable, size_t> tex_binding;
     for (size_t i = 0; i < ss.tex_vars.size(); i++) {
@@ -2013,15 +2083,15 @@ vec2 dressi_hammersley(uint i, uint n) {
 
 }  // namespace
 
-std::string GenerateFragShader(const SubStage& ss) {
-    return GenerateShaderImpl(ss, /*comp=*/false);
+std::string GenerateFragShader(const SubStage& ss, uint32_t max_dim) {
+    return GenerateShaderImpl(ss, /*comp=*/false, max_dim);
 }
 
-std::string GenerateCompShader(const SubStage& ss) {
-    return GenerateShaderImpl(ss, /*comp=*/true);
+std::string GenerateCompShader(const SubStage& ss, uint32_t max_dim) {
+    return GenerateShaderImpl(ss, /*comp=*/true, max_dim);
 }
 
-RasterShaders GenerateRasterShaders(const SubStage& ss) {
+RasterShaders GenerateRasterShaders(const SubStage& ss, uint32_t max_dim) {
     // A raster substage holds one RASTER function (its earliest, by
     // creation id) optionally followed by fused FRAG functions (the
     // paper's raster-headed packing). The vertex shader is a passthrough;
@@ -2048,7 +2118,7 @@ RasterShaders GenerateRasterShaders(const SubStage& ss) {
         vs << "}\n";
         shaders.vert = vs.str();
     }
-    shaders.frag = GenerateFragShader(ss);
+    shaders.frag = GenerateFragShader(ss, max_dim);
     return shaders;
 }
 

@@ -54,21 +54,28 @@ void SendImageToDevice(const VkContext& ctx, const vkw::ImagePackPtr& img,
     const uint32_t n_phys = PhysChannels(vtype);
     DRESSI_CHECK(cpu_img.channels == n_logical,
                  "sendImg: channel count does not match the Variable's VType");
-    DRESSI_CHECK(cpu_img.width == img->view_size.width &&
-                         cpu_img.height == img->view_size.height,
+    // The device image may be a 2-D tile of an oversized 1-D leaf (physical
+    // {W, ceil(N/W)} vs logical {N,1}); the tile holds >= N texels row-major,
+    // so the logical rows fill its first N texels and any tail is zero pad.
+    const size_t n_logical_px = size_t(cpu_img.width) * cpu_img.height;
+    const size_t n_phys_px =
+            size_t(img->view_size.width) * img->view_size.height;
+    const bool tiled = cpu_img.width != img->view_size.width ||
+                       cpu_img.height != img->view_size.height;
+    DRESSI_CHECK(tiled ? (cpu_img.height == 1 && n_logical_px <= n_phys_px)
+                       : true,
                  "sendImg: image size mismatch");
 
-    const size_t n_pixels = size_t(cpu_img.width) * cpu_img.height;
-    const size_t n_bytes = n_pixels * n_phys * sizeof(float);
+    const size_t n_bytes = n_phys_px * n_phys * sizeof(float);
     const auto& staging =
             EnsureStaging(ctx, ctx.send_staging, n_bytes,
                           vk::BufferUsageFlagBits::eTransferSrc,
                           /*cached=*/false);
-    if (n_logical == n_phys) {
+    if (n_logical == n_phys && !tiled) {
         vkw::SendToDevice(ctx.device, staging, cpu_img.data, n_bytes);
     } else {
-        std::vector<float> phys(n_pixels * n_phys, 0.f);
-        for (size_t p = 0; p < n_pixels; p++) {
+        std::vector<float> phys(n_phys_px * n_phys, 0.f);
+        for (size_t p = 0; p < n_logical_px; p++) {
             for (uint32_t c = 0; c < n_logical; c++) {
                 phys[p * n_phys + c] = cpu_img.data[p * n_logical + c];
             }
@@ -99,12 +106,18 @@ void RecordImageUploads(const VkContext& ctx,
         const uint32_t n_phys = PhysChannels(it.vtype);
         DRESSI_CHECK(it.cpu.channels == NumComponents(it.vtype),
                      "sendImgs: channel count mismatch");
-        DRESSI_CHECK(it.cpu.width == it.img->view_size.width &&
-                             it.cpu.height == it.img->view_size.height,
+        // Physical (possibly 2-D-tiled) extent drives the staging region;
+        // the logical rows fill its head (see SendImageToDevice).
+        const size_t n_logical_px = size_t(it.cpu.width) * it.cpu.height;
+        const size_t n_phys_px = size_t(it.img->view_size.width) *
+                                 it.img->view_size.height;
+        const bool tiled = it.cpu.width != it.img->view_size.width ||
+                           it.cpu.height != it.img->view_size.height;
+        DRESSI_CHECK(tiled ? (it.cpu.height == 1 && n_logical_px <= n_phys_px)
+                           : true,
                      "sendImgs: image size mismatch");
         offsets[i] = total;
-        total += size_t(it.cpu.width) * it.cpu.height * n_phys *
-                 sizeof(float);
+        total += n_phys_px * n_phys * sizeof(float);
         total = (total + 15) & ~size_t(15);
     }
     const auto& staging =
@@ -120,14 +133,17 @@ void RecordImageUploads(const VkContext& ctx,
         const auto& it = items[i];
         const uint32_t n_logical = NumComponents(it.vtype);
         const uint32_t n_phys = PhysChannels(it.vtype);
-        const size_t n_pixels = size_t(it.cpu.width) * it.cpu.height;
+        const size_t n_logical_px = size_t(it.cpu.width) * it.cpu.height;
+        const size_t n_phys_px = size_t(it.img->view_size.width) *
+                                 it.img->view_size.height;
+        const bool tiled = n_logical_px != n_phys_px;
         float* dst = reinterpret_cast<float*>(base + offsets[i]);
-        if (n_logical == n_phys) {
+        if (n_logical == n_phys && !tiled) {
             std::memcpy(dst, it.cpu.data,
-                        n_pixels * n_phys * sizeof(float));
+                        n_logical_px * n_phys * sizeof(float));
         } else {
-            std::memset(dst, 0, n_pixels * n_phys * sizeof(float));
-            for (size_t p = 0; p < n_pixels; p++) {
+            std::memset(dst, 0, n_phys_px * n_phys * sizeof(float));
+            for (size_t p = 0; p < n_logical_px; p++) {
                 for (uint32_t c = 0; c < n_logical; c++) {
                     dst[p * n_phys + c] = it.cpu.data[p * n_logical + c];
                 }
@@ -144,12 +160,13 @@ void RecordImageUploads(const VkContext& ctx,
         const auto init_layout =
                 it.initialized ? kRead : vk::ImageLayout::eUndefined;
         vkw::SetImageLayout(cmd, it.img, init_layout, kDst);
+        const uint32_t pw = it.img->view_size.width;
+        const uint32_t ph = it.img->view_size.height;
         const vk::BufferImageCopy region(
-                offsets[i], it.cpu.width, it.cpu.height,
+                offsets[i], pw, ph,
                 vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0,
                                            0, 1),
-                vk::Offset3D(0, 0, 0),
-                vk::Extent3D(it.cpu.width, it.cpu.height, 1));
+                vk::Offset3D(0, 0, 0), vk::Extent3D(pw, ph, 1));
         cmd->copyBufferToImage(staging->buf.get(),
                                it.img->img_res_pack->img.get(), kDst, region);
         vkw::SetImageLayout(cmd, it.img, kDst, kRead);

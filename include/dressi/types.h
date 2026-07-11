@@ -38,6 +38,35 @@ struct ImgSize {
     bool isUniform() const { return w == 1 && h == 1; }
 };
 
+// 2-D tiling of oversized 1-D data images. A {N,1} texelFetch image whose
+// width N exceeds the device's maxImageDimension2D cannot be created (NVIDIA's
+// limit is 32768, Intel iGPUs report 16384). Such an image is instead stored
+// as {W, ceil(N/W)} with W a power of two <= the limit, so neither extent
+// exceeds it. Addressing stays linear -- element i lives at
+// (i & (W-1), i >> log2(W)), matching the row-major image memory -- so a
+// shader is layout-agnostic: when N fits, W == N and it degrades exactly to
+// the untiled ivec2(i, 0) fetch. `max_dim == 0` (the default sentinel used off
+// the device path) disables tiling entirely.
+inline uint32_t TileWidth(uint32_t max_dim) {
+    uint32_t w = 1;
+    while ((w << 1) <= max_dim) {
+        w <<= 1;
+    }
+    return w;  // largest power of two <= max_dim
+}
+
+inline bool NeedsTiling(ImgSize s, uint32_t max_dim) {
+    return max_dim != 0 && s.h == 1 && s.w > max_dim;
+}
+
+inline ImgSize PhysImgSize(ImgSize logical, uint32_t max_dim) {
+    if (!NeedsTiling(logical, max_dim)) {
+        return logical;
+    }
+    const uint32_t w = TileWidth(max_dim);
+    return {w, (logical.w + w - 1) / w};
+}
+
 // Simple CPU-side buffer of a 2D image (row-major, tightly packed logical
 // channels; e.g. VEC3 -> channels == 3)
 struct CpuImage {

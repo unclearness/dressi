@@ -14,7 +14,17 @@ namespace dressi {
 namespace {
 
 vkw::ImagePackPtr CreateVarImage(const VkContext& ctx, const Variable& var) {
-    const ImgSize size = var.getImgSize();
+    const ImgSize logical = var.getImgSize();
+    const uint32_t max_dim = ctx.limits.maxImageDimension2D;
+    // Oversized 1-D data images are folded into a 2-D tile (see PhysImgSize).
+    // Only static leaves are ever this wide (per-face/-vertex tables); a
+    // computed image at this width would also be a render target, and its
+    // producing pass's framebuffer/viewport would exceed the same limit --
+    // not supported, so fail loudly rather than emit an invalid pipeline.
+    const ImgSize size = PhysImgSize(logical, max_dim);
+    DRESSI_CHECK(!(NeedsTiling(logical, max_dim) && var.getCreator()),
+                 "image extent exceeds maxImageDimension2D and is not a static "
+                 "leaf; computed images this large are unsupported on this GPU");
     return vkw::CreateImagePack(
             ctx.physical_device, ctx.device, FormatOf(var.getVType()),
             {size.w, size.h}, 1,
@@ -381,7 +391,8 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
         auto fb = vkw::CreateFrameBuffer(ctx.device, rp, fb_imgs);
         plan.frame_buffers.push_back(fb);
 
-        const RasterShaders shaders = GenerateRasterShaders(ss);
+        const RasterShaders shaders =
+                GenerateRasterShaders(ss, ctx.limits.maxImageDimension2D);
         auto vert_module = ctx.glsl_compiler->compileFromString(
                 ctx.device, shaders.vert, vk::ShaderStageFlagBits::eVertex);
         auto frag_module = ctx.glsl_compiler->compileFromString(
