@@ -49,8 +49,45 @@ bounded-fan-in SumPixelWise tree. Measured:
   in earlier logs); judged not a meaningful regression, but the commit
   message's "unchanged" is not exact for HSR.
 
-## Open issues
+## Follow-up: why HSR (and only HSR) re-packs differently
 
-- Optional: investigate why RSP leaves the split in the HSR graph (likely an
-  attachment/limit budget already consumed in the target substage) if the
-  +1 substage or the IoU wiggle ever matters.
+Investigated with temporary instrumentation in `greedy_packer.cpp` (a debug
+dump of every final substage's function-name sequence + a trace of
+SumPixelWise placement attempts), run on both builds and diffed. The
+instrumentation was reverted after the investigation.
+
+1. **The unordered-container hypothesis is ruled out.** The only
+   `std::unordered_map` in packing (`pending_consumers`) is find/count-only;
+   every unordered_set in build_backward/traverse/reactive is a pure
+   membership filter. Nothing order-dependent ever iterates an unordered
+   container — iterated maps are `std::map<Variable,...>` under the
+   node-id `std::less`. Empirically: 3 HSR runs are bit-identical, so the
+   packing is deterministic; it changed *between commits*, not between runs.
+
+2. **It is not an attachment-budget failure at the loss sum.** On this GPU
+   `max_input_attachments = min(16, dev) = 16`; the traces show the 4+4+2
+   tree nodes joining substages with room to spare, and even the old flat
+   8-input sum was well under 16.
+
+3. **Actual mechanism: candidate-unlock order in the back-to-front greedy
+   packer.** With the flat 8-ary sum, packing it made all 8 per-view loss
+   branches become candidates *simultaneously*; with the tree, S3 unlocks
+   {S1,S2}, then S1/S2 unlock their 4 views in two groups at different
+   times. The `CountEdges`-preference + id tie-break then interleaves the
+   8 HSR view-branches differently, and the greedy fusion cuts different
+   substage boundaries throughout the forward/backward view blocks (e.g.
+   base per-view groups of 12/19/22/142 funcs become 13/27/14/65/20/20/111
+   regroupings; net +1 substage). Boundaries don't change per-func math
+   (fp32 attachments), but the driver's shader compiler contracts
+   mul+add→FMA *within* one shader, so different fusion groupings shift
+   low-bit rounding; HSR's Step/Sigmoid thresholds amplify that into the
+   observed small trajectory change. In AA the diff is exactly ONE
+   substage (funcs 51→53: the 3 tree nodes fused where the flat node used
+   to sit; every other boundary byte-identical), and the gradient of a sum
+   is exactly 1 regardless of grouping — hence AA's bit-identical run.
+
+Conclusion: deterministic, packing-order butterfly effect confined to the
+HSR graph; quality within historical session range, wall time unchanged.
+If exact NVIDIA-invariance is ever wanted, fold wide sums at *pack* time
+(device limits in hand) instead of at graph-build time — invasive, since
+the packer currently cannot split a single function; not worth it today.
