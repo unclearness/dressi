@@ -10,6 +10,17 @@
             "environment": {
                 "VULKAN_SDK": "C:/VulkanSDK/1.4.350.0"
             }
+        },
+        {
+            "name": "linux",
+            "displayName": "Linux (Ninja, gcc)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_C_COMPILER": "gcc",
+                "CMAKE_CXX_COMPILER": "g++"
+            }
         }
     ],
     "buildPresets": [
@@ -22,6 +33,10 @@
             "name": "debug",
             "configurePreset": "msvc",
             "configuration": "Debug"
+        },
+        {
+            "name": "linux-release",
+            "configurePreset": "linux"
         }
     ],
     "testPresets": [
@@ -29,6 +44,11 @@
             "name": "release",
             "configurePreset": "msvc",
             "configuration": "Release",
+            "output": { "outputOnFailure": true }
+        },
+        {
+            "name": "linux-release",
+            "configurePreset": "linux",
             "output": { "outputOnFailure": true }
         }
     ]

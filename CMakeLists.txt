@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# This project uses no C++20 modules. With Ninja + GCC/Clang, CMake would
+# otherwise scan every C++20 translation unit for module dependencies
+# (-fmodules-ts), which is pure overhead here and best avoided.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
 option(DRESSI_BUILD_TESTS "Build unit tests" ON)
 option(DRESSI_BUILD_EXAMPLES "Build examples" ON)
 option(DRESSI_BUILD_PYTHON "Build the Python (torch) bindings" OFF)
@@ -17,18 +22,37 @@ find_package(Vulkan REQUIRED)
 
 # glslang from the Vulkan SDK (runtime GLSL -> SPIR-V compilation for vkw).
 # The SDK's glslang-config.cmake is broken (references a nonexistent
-# <SDK>/Lib/lib/... path), so link the static libs directly with per-config
-# debug ("d" suffix) selection.
+# <SDK>/Lib/lib/... path), so link the static libs directly.
 add_library(dressi_glslang INTERFACE)
-target_include_directories(dressi_glslang SYSTEM INTERFACE
-    "${DRESSI_VULKAN_SDK_ROOT}/Include/glslang")
 set(_glslang_libs
     glslang SPIRV MachineIndependent GenericCodeGen OSDependent
     glslang-default-resource-limits SPIRV-Tools-opt SPIRV-Tools)
-foreach(_lib IN LISTS _glslang_libs)
+if(WIN32)
+    # Windows SDK nests glslang's whole tree under Include/glslang, so that one
+    # include dir resolves both <SPIRV/...> and <glslang/Public/...>. Libs are
+    # <name>.lib / <name>d.lib with per-config debug ("d" suffix) selection.
+    target_include_directories(dressi_glslang SYSTEM INTERFACE
+        "${DRESSI_VULKAN_SDK_INCLUDE}/glslang")
+    foreach(_lib IN LISTS _glslang_libs)
+        target_link_libraries(dressi_glslang INTERFACE
+            "$<IF:$<CONFIG:Debug>,${DRESSI_VULKAN_SDK_LIB}/${_lib}d.lib,${DRESSI_VULKAN_SDK_LIB}/${_lib}.lib>")
+    endforeach()
+else()
+    # Linux SDK flattens glslang's headers directly under include/glslang, so
+    # <SPIRV/...> resolves under include/glslang while <glslang/Public/...>
+    # resolves under include; add both. The archives are static lib<name>.a
+    # with circular interdependencies (glslang <-> MachineIndependent <-> SPIRV),
+    # so wrap them in a link group for GNU ld to resolve regardless of order.
+    target_include_directories(dressi_glslang SYSTEM INTERFACE
+        "${DRESSI_VULKAN_SDK_INCLUDE}"
+        "${DRESSI_VULKAN_SDK_INCLUDE}/glslang")
+    set(_glslang_paths "")
+    foreach(_lib IN LISTS _glslang_libs)
+        list(APPEND _glslang_paths "${DRESSI_VULKAN_SDK_LIB}/lib${_lib}.a")
+    endforeach()
     target_link_libraries(dressi_glslang INTERFACE
-        "$<IF:$<CONFIG:Debug>,${DRESSI_VULKAN_SDK_ROOT}/Lib/${_lib}d.lib,${DRESSI_VULKAN_SDK_ROOT}/Lib/${_lib}.lib>")
-endforeach()
+        -Wl,--start-group ${_glslang_paths} -Wl,--end-group)
+endif()
 
 include(FetchContent)
 
@@ -37,6 +61,14 @@ set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+if(UNIX AND NOT APPLE)
+    # Build the X11 backend only. Wayland would additionally require
+    # wayland-scanner + libwayland-dev + libxkbcommon-dev; X11-only GLFW still
+    # runs under Wayland compositors via XWayland, so this keeps the build
+    # dependency-light. Override with -DGLFW_BUILD_WAYLAND=ON if desired.
+    set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_X11 ON CACHE BOOL "" FORCE)
+endif()
 FetchContent_Declare(glfw
     GIT_REPOSITORY https://github.com/glfw/glfw.git
     GIT_TAG 3.4
@@ -81,7 +113,7 @@ target_include_directories(dressi_assets SYSTEM INTERFACE
 # (the glad drop bundles only a subset).
 add_library(dressi_glad STATIC third_party/glad/src/vulkan.c)
 target_include_directories(dressi_glad SYSTEM PUBLIC
-    "${DRESSI_VULKAN_SDK_ROOT}/Include"
+    "${DRESSI_VULKAN_SDK_INCLUDE}"
     third_party/glad/include)
 
 # Logging / performance measurement
@@ -106,13 +138,19 @@ target_include_directories(dressi_vkw SYSTEM PUBLIC
 target_compile_definitions(dressi_vkw PUBLIC
     VULKAN_HPP_ENABLE_DYNAMIC_LOADER_TOOL=1
     VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
-    ENABLE_OPT=1
-    NOMINMAX
-    WIN32_LEAN_AND_MEAN)
+    ENABLE_OPT=1)
+if(WIN32)
+    target_compile_definitions(dressi_vkw PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
 target_link_libraries(dressi_vkw PUBLIC
     Vulkan::Vulkan
     dressi_glslang
     glfw)
+if(NOT WIN32)
+    # The glslang/SPIRV-Tools static archives pull in pthread and dlopen.
+    find_package(Threads REQUIRED)
+    target_link_libraries(dressi_vkw PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+endif()
 
 # ------------------------------------------------------------------------------
 # dressi: the Dressi-AD library
