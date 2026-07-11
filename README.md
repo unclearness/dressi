@@ -320,11 +320,33 @@ Vulkan SDK (auto-detected under `C:\VulkanSDK`), a Vulkan 1.1+ GPU.
 
 ```sh
 git clone --recursive <this repo>
-cmake --preset msvc
+cmake --preset msvc                # also downloads the example datasets
 cmake --build --preset release
 ctest --preset release            # all tests
 ctest --preset release -LE gpu    # CPU-only tests (no GPU required)
 ./build/examples/Release/image_fitting.exe
+```
+
+### Datasets
+
+The example/test assets are large and license-encumbered, so `data/` is
+git-ignored and populated at CMake **configure** time by
+[`cmake/FetchAssets.cmake`](cmake/FetchAssets.cmake):
+
+| Path | Source | Size |
+| --- | --- | --- |
+| `data/bunny/` (obj + mtl + atlas) | [kunzhou.net](http://www.kunzhou.net/tex-models/bunny.zip) | ~3 MB |
+| `data/Avocado/glTF/` (Table 4 mesh) | [glTF-Sample-Models](https://github.com/KhronosGroup/glTF-Sample-Models/tree/main/2.0/Avocado) | ~8 MB |
+| `data/suburban_garden_4k.exr` (PBS env map) | [Poly Haven](https://polyhaven.com/a/suburban_garden) | ~97 MB |
+
+Each asset is hash-verified and skipped if already present, so it runs once.
+Avocado is copied out of a full clone of the sample-models repo (~1.2 GB,
+one-time). Pass `-DDRESSI_FETCH_DATA=OFF` to skip all downloads (offline /
+air-gapped builds that provision `data/` another way), then run the mesh
+self-reconstruction benchmark with:
+
+```sh
+./build/examples/Release/silhouette_optimization.exe --mesh=data/Avocado/glTF/Avocado.gltf
 ```
 
 ## Example

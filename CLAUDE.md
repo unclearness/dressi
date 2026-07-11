@@ -17,8 +17,14 @@ ctest --preset release -LE gpu       # CPU-only (no Vulkan device needed)
 ./build/examples/Release/texture_optimization.exe data/bunny
 ./build/examples/Release/silhouette_optimization.exe data/bunny --technique=hardsoftras
 ./build/examples/Release/silhouette_optimization.exe data/bunny --technique=aa
+./build/examples/Release/silhouette_optimization.exe --mesh=data/Avocado/glTF/Avocado.gltf
 ```
 
+- Datasets live in `data/` (git-ignored — large/licensed) and are downloaded
+  at configure time by `cmake/FetchAssets.cmake` (bunny zip + Avocado glTF +
+  the PBS env-map EXR; hash-verified, skipped once present). Avocado is copied
+  out of a full `glTF-Sample-Models` clone (~1.2 GB, one-time). Disable with
+  `-DDRESSI_FETCH_DATA=OFF` and provision `data/` yourself.
 - Vulkan SDK is auto-located under `C:/VulkanSDK/*` (`cmake/FindVulkanSdk.cmake`);
   the `VULKAN_SDK` env var is NOT set system-wide on this machine.
 - The SDK's `glslang-config.cmake` is broken (bad internal path); glslang

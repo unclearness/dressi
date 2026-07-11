@@ -121,6 +121,12 @@ if(MSVC)
     target_compile_options(dressi_vkw PRIVATE /bigobj)
 endif()
 
+# Provision example / test datasets into data/ (large, .gitignore'd). Only
+# needed when something consumes them; skipped for a library-only build.
+if(DRESSI_BUILD_TESTS OR DRESSI_BUILD_EXAMPLES)
+    include(FetchAssets)
+endif()
+
 if(DRESSI_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
