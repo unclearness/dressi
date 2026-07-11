@@ -2747,6 +2747,137 @@ Variable TextureBilinear(const Variable& tex, const Variable& uv,
     return MakeOp(std::move(desc), {tex, uv});
 }
 
+namespace {
+
+// Sums `n_tiles` vertically stacked {W, tile_h} tiles into one
+Variable TileSum(const Variable& stacked, uint32_t tile_h,
+                 uint32_t n_tiles) {
+    OpDesc desc;
+    desc.name = "TileSum";
+    desc.fwd_code = "__tile_sum__ th=" + std::to_string(tile_h) +
+                    " n=" + std::to_string(n_tiles);
+    desc.input_access = {InputAccess::TexelFetch};
+    desc.infer = [tile_h](const Variables& xs)
+            -> std::pair<VType, ImgSize> {
+        return {xs[0].getVType(), {xs[0].getImgSize().w, tile_h}};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [tile_h, n_tiles](const std::vector<CpuTensor>& xs)
+            -> CpuTensor {
+        const CpuTensor& in = xs[0];
+        const uint32_t w = in.size.w;
+        const uint32_t n = in.numComp();
+        CpuTensor out;
+        out.vtype = in.vtype;
+        out.size = {w, tile_h};
+        out.data.assign(size_t(w) * tile_h * n, 0.f);
+        for (uint32_t k = 0; k < n_tiles; k++) {
+            for (uint32_t y = 0; y < tile_h; y++) {
+                for (uint32_t x = 0; x < w; x++) {
+                    const float* src =
+                            &in.data[(size_t(k * tile_h + y) * w + x) * n];
+                    float* dst = &out.data[(size_t(y) * w + x) * n];
+                    for (uint32_t c = 0; c < n; c++) {
+                        dst[c] += src[c];
+                    }
+                }
+            }
+        }
+        return out;
+    };
+    return MakeOp(std::move(desc), {stacked});
+}
+
+// Exact transpose of EquirectSample's manual 4-tap bilinear w.r.t. the
+// map: each map texel scans EVERY dir pixel, re-derives the forward's
+// taps, and accumulates gy where a tap lands on this texel. The scan is
+// WIDE (GatherDistGrad-style): {map_w, map_h * K} partials — partial k
+// covers one horizontal band of the dir image — then a TileSum, because
+// a {map_w, map_h} target runs only map_texels threads and is brutally
+// latency-bound (measured 45 ms for a 64x32 map over 4 x 192^2 screens;
+// ~1 ms with K = 64).
+Variable EquirectSampleBwd(const Variable& gy, const Variable& dir,
+                           ImgSize map_size) {
+    const ImgSize dir_size = dir.getImgSize();
+    // Enough partials to occupy the GPU, but at most one per dir row
+    uint32_t k = 1;
+    while (size_t(map_size.w) * map_size.h * k < 65536 && k < dir_size.h) {
+        k *= 2;
+    }
+    const uint32_t rows_per = (dir_size.h + k - 1) / k;
+
+    OpDesc desc;
+    desc.name = "EquirectSampleBwd";
+    desc.fwd_code = "__equirect_sample_bwd__ k=" + std::to_string(k);
+    desc.input_access = {InputAccess::TexelFetch, InputAccess::TexelFetch};
+    desc.infer = [map_size, k](const Variables& xs)
+            -> std::pair<VType, ImgSize> {
+        return {xs[0].getVType(), {map_size.w, map_size.h * k}};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [map_size, k,
+                rows_per](const std::vector<CpuTensor>& xs) -> CpuTensor {
+        const CpuTensor& gy_t = xs[0];
+        const CpuTensor& dir_t = xs[1];
+        const int mw = int(map_size.w), mh = int(map_size.h);
+        const uint32_t n = gy_t.numComp();
+        CpuTensor out;
+        out.vtype = gy_t.vtype;
+        out.size = {map_size.w, map_size.h * k};
+        out.data.assign(size_t(mw) * mh * k * n, 0.f);
+        for (uint32_t py = 0; py < dir_t.size.h; py++) {
+            const uint32_t tile = py / rows_per;
+            for (uint32_t px = 0; px < dir_t.size.w; px++) {
+                const size_t p = size_t(py) * dir_t.size.w + px;
+                ibl::Vec3 d = {dir_t.data[p * 3 + 0],
+                               dir_t.data[p * 3 + 1],
+                               dir_t.data[p * 3 + 2]};
+                const float dlen = std::sqrt(ibl::Dot(d, d));
+                if (dlen < 1e-8f) {
+                    continue;
+                }
+                d = {d.x / dlen, d.y / dlen, d.z / dlen};
+                float u, v;
+                ibl::EquirectUvFromDir(d, &u, &v);
+                const float sx = u * float(mw) - 0.5f;
+                const float sy = v * float(mh) - 0.5f;
+                const int ix = int(std::floor(sx));
+                const int iy = int(std::floor(sy));
+                const float fx = sx - float(ix);
+                const float fy = sy - float(iy);
+                for (int dy = 0; dy <= 1; dy++) {
+                    for (int dx = 0; dx <= 1; dx++) {
+                        int x = ix + dx;
+                        if (x < 0) {
+                            x += mw;
+                        }
+                        if (x >= mw) {
+                            x -= mw;
+                        }
+                        const int y = std::clamp(iy + dy, 0, mh - 1);
+                        const float w = (dx == 0 ? 1.f - fx : fx) *
+                                        (dy == 0 ? 1.f - fy : fy);
+                        float* o = &out.data[(size_t(tile * mh + y) * mw +
+                                              x) *
+                                             n];
+                        for (uint32_t c = 0; c < n; c++) {
+                            o[c] += gy_t.data[p * n + c] * w;
+                        }
+                    }
+                }
+            }
+        }
+        return out;
+    };
+    Variable partials = MakeOp(std::move(desc), {gy, dir});
+    if (k == 1) {
+        return partials;
+    }
+    return TileSum(partials, map_size.h, k);
+}
+
+}  // namespace
+
 Variable EquirectSample(const Variable& map, const Variable& dir) {
     const VType map_type = map.getVType();
     DRESSI_CHECK(!IsIntVType(map_type) && !IsMatrixVType(map_type),
@@ -2765,7 +2896,15 @@ Variable EquirectSample(const Variable& map, const Variable& dir) {
             -> std::pair<VType, ImgSize> {
         return {map_type, xs[1].getImgSize()};
     };
-    desc.bwd = NullBwd;  // forward-only (env-map gradients are Stage C)
+    // Differentiable w.r.t. the map (exact bilinear transpose; O(map *
+    // pixels) — keep optimized maps small). Not w.r.t. dir.
+    desc.bwd = [](const Variables& xs, const Variable&, const Variable& gy,
+                  uint32_t bwd_idx) -> Variable {
+        if (bwd_idx != 0) {
+            return nullptr;
+        }
+        return EquirectSampleBwd(gy, xs[1], xs[0].getImgSize());
+    };
     desc.cpu = [](const std::vector<CpuTensor>& xs) -> CpuTensor {
         const CpuTensor& map_t = xs[0];
         const CpuTensor& dir_t = xs[1];
@@ -2792,6 +2931,63 @@ Variable EquirectSample(const Variable& map, const Variable& dir) {
     return MakeOp(std::move(desc), {map, dir});
 }
 
+namespace {
+
+// Exact transpose of IrradianceConv (the forward is a deterministic
+// linear map): each source texel gathers over the (small) output map
+Variable IrradianceConvBwd(const Variable& gy, ImgSize env_size) {
+    OpDesc desc;
+    desc.name = "IrradianceConvBwd";
+    desc.fwd_code = "__irradiance_conv_bwd__";
+    desc.input_access = {InputAccess::TexelFetch};
+    desc.infer = [env_size](const Variables& xs)
+            -> std::pair<VType, ImgSize> {
+        return {xs[0].getVType(), env_size};
+    };
+    desc.bwd = NullBwd;
+    desc.cpu = [env_size](const std::vector<CpuTensor>& xs) -> CpuTensor {
+        const CpuTensor& gy_t = xs[0];
+        const uint32_t ow = gy_t.size.w, oh = gy_t.size.h;
+        const uint32_t sw = env_size.w, sh = env_size.h;
+        const uint32_t n = gy_t.numComp();
+        const float scale = ibl::kTwoPi / (float(sw) * float(sh));
+        CpuTensor out;
+        out.vtype = gy_t.vtype;
+        out.size = env_size;
+        out.data.assign(size_t(sw) * sh * n, 0.f);
+        for (uint32_t sy = 0; sy < sh; sy++) {
+            const float sv = (float(sy) + 0.5f) / float(sh);
+            const float sin_th = std::sin(sv * ibl::kPi);
+            for (uint32_t sx = 0; sx < sw; sx++) {
+                const ibl::Vec3 d = ibl::DirFromEquirectUv(
+                        (float(sx) + 0.5f) / float(sw), sv);
+                float* o = &out.data[(size_t(sy) * sw + sx) * n];
+                for (uint32_t ty = 0; ty < oh; ty++) {
+                    for (uint32_t tx = 0; tx < ow; tx++) {
+                        const ibl::Vec3 N = ibl::DirFromEquirectUv(
+                                (float(tx) + 0.5f) / float(ow),
+                                (float(ty) + 0.5f) / float(oh));
+                        const float w =
+                                std::max(ibl::Dot(N, d), 0.f) * sin_th;
+                        const float* g =
+                                &gy_t.data[(size_t(ty) * ow + tx) * n];
+                        for (uint32_t c = 0; c < n; c++) {
+                            o[c] += g[c] * w;
+                        }
+                    }
+                }
+                for (uint32_t c = 0; c < n; c++) {
+                    o[c] *= scale;
+                }
+            }
+        }
+        return out;
+    };
+    return MakeOp(std::move(desc), {gy});
+}
+
+}  // namespace
+
 Variable IrradianceConv(const Variable& env, ImgSize out_size) {
     const VType env_type = env.getVType();
     DRESSI_CHECK(!IsIntVType(env_type) && !IsMatrixVType(env_type),
@@ -2811,7 +3007,13 @@ Variable IrradianceConv(const Variable& env, ImgSize out_size) {
             -> std::pair<VType, ImgSize> {
         return {env_type, out_size};
     };
-    desc.bwd = NullBwd;  // forward-only (transpose gather is Stage C)
+    // The forward is a deterministic linear map — the backward is its
+    // exact transpose gather over the (small) irradiance map
+    const ImgSize env_size = env.getImgSize();
+    desc.bwd = [env_size](const Variables&, const Variable&,
+                          const Variable& gy, uint32_t) -> Variable {
+        return IrradianceConvBwd(gy, env_size);
+    };
     desc.cpu = [out_size](const std::vector<CpuTensor>& xs) -> CpuTensor {
         const CpuTensor& env_t = xs[0];
         const uint32_t sw = env_t.size.w, sh = env_t.size.h;

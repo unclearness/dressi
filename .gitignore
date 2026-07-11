@@ -35,3 +35,5 @@ __pycache__/
 /data/
 /third_party/glad.zip
 /pbr_out/
+/pbrmat_out/
+/pbrenv_out/

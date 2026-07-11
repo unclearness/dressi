@@ -101,8 +101,10 @@ inputs changed (reactive cache).
   `__gather_dist_grad__`, `__antialias__`, `__antialias_bwd_img__`,
   `__antialias_bwd_vtx__`, `__col_sum__`, `__sum_all__`,
   `__sum_partial__`, and the IBL set `__equirect_sample__`,
+  `__equirect_sample_bwd__ k=` (+ `__tile_sum__ th= n=`),
   `__sample_bilinear__`, `__gather_inv_uv_bilinear__`,
-  `__irradiance_conv__`, `__prefilter_env__ r= n=`, `__brdf_lut__ n=`
+  `__irradiance_conv__`, `__irradiance_conv_bwd__`,
+  `__prefilter_env__ r= n=`, `__brdf_lut__ n=`
   with `dressi_*` GLSL helpers mirrored bit-for-bit(-ish) in
   `core/ibl_math.h` for the CPU oracle). The per-vertex gather backwards (GatherDistGrad,
   AntiAliasBwdVtx) default to WIDE (`wide=1` marker): {V,max_deg}
@@ -211,14 +213,27 @@ inputs changed (reactive cache).
   single pref_img. All bilinear filtering is manual 4-tap texelFetch
   inside the special ops (`__equirect_sample__` u-wraps at the seam;
   hardware `texture()` bilinear would break GPU-vs-CPU parity and the
-  clamp sampler would break the seam). Precompute ops (IrradianceConv /
-  PrefilterEnv / BrdfIntegrationLut) are forward-only: with a static env
-  leaf the reactive cache runs them once and prunes them (pbr_shading:
+  clamp sampler would break the seam). With a static env leaf the
+  reactive cache runs the precompute once and prunes it (pbr_shading:
   12 stages warmup -> 5 steady). `F::TextureBilinear` IS differentiable
   w.r.t. the texture via `__gather_inv_uv_bilinear__` (tent-weighted
   variant of the inverse-UV gather; it accumulates EVERY contributing
   pixel, so stable optimizer steps are ~sum(w^2) smaller than the
   nearest gather's one-pixel step — see test_ibl_gpu.cpp).
+- Envmap gradients (pbr_envmap_optimization): `F::EquirectSample` and
+  `F::IrradianceConv` are differentiable w.r.t. the map/env via EXACT
+  transposes (deterministic linear maps, no atomics). The equirect
+  transpose scans every dir pixel per map texel, split WIDE into
+  {map_w, map_h*K} horizontal-band partials + `__tile_sum__` — the
+  unsplit {map} target ran only map_texels threads and took 45 ms where
+  the WIDE version takes ~1 ms (same trap as the {V,1} vertex gathers).
+  Keep OPTIMIZED env leaves small (64x32 default). PrefilterEnv /
+  BrdfIntegrationLut stay forward-only: specular IBL re-renders forward
+  from the current env each iteration but contributes NO env gradient
+  (an importance-sampled prefilter has no cheap transpose; a
+  deterministic direct-sum prefilter variant is the documented future
+  path). AvgPool2x2 chains are differentiable, so pooled sources
+  propagate.
 - glTF UV convention: `LoadGltfScene` does NOT flip V (glTF is top-left
   origin, matching image row 0); the older `LoadGltfMesh` keeps its 1-v
   flip (OBJ-ism) for compatibility with existing examples.

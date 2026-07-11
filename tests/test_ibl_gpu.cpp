@@ -252,3 +252,106 @@ INSTANTIATE_TEST_SUITE_P(
             return info.param == DressiAD::PackingMode::Naive ? "Naive"
                                                               : "RSP";
         });
+
+// Envmap-gradient path on the GPU: raw-gradient parity vs the CPU
+// evaluator for the diffuse chain (env -> AvgPool -> IrradianceConv ->
+// EquirectSample) plus the direct env sample, and a small recovery loop.
+TEST_P(IblGpu, EnvGradientParity) {
+    const ImgSize env_size = {16, 8};
+    const ImgSize dir_size = {8, 8};
+    Variable env(VEC3, env_size);
+    Variable dir(VEC3, dir_size);
+    Variable irr = F::IrradianceConv(F::AvgPool2x2(env), {8, 4});
+    Variable shade = F::EquirectSample(irr, dir) +
+                     F::EquirectSample(env, dir) * 0.3f;
+    Variable loss = F::Mean(shade * shade);
+    Variable env_mut = env;
+    env_mut.setRequiresGradRecursively();
+
+    const CpuImage env_img = MakeImage(env_size.w, env_size.h, 3, [](size_t i) {
+        return 0.1f + 0.25f * float((i * 11) % 7) / 7.f;
+    });
+    const CpuImage dir_img = MakeImage(dir_size.w, dir_size.h, 3, [](size_t i) {
+        return std::sin(float(i) * 0.7f + 0.3f);
+    });
+
+    DressiAD ad;
+    ad.setPackingMode(GetParam());
+    ad.setLossVar(loss);
+    ad.setGradOutputsEnabled(true);
+    ad.sendImg(env, env_img);
+    ad.sendImg(dir, dir_img);
+    ad.execStep();
+
+    const auto grads = ad.inputGrads();
+    ASSERT_EQ(grads.size(), 1u);
+    ASSERT_TRUE(grads[0].first == env);
+
+    CpuEvaluator ev;
+    ev.bindImage(env, env_img);
+    ev.bindImage(dir, dir_img);
+    ExpectImagesNear(ad.recvImg(grads[0].second),
+                     CpuImageFromTensor(ev.eval(grads[0].second)), 1e-4f);
+}
+
+TEST_P(IblGpu, EnvRecoveryFromObservations) {
+    // Recover a tiny env from direct-view observations at dense directions
+    const ImgSize env_size = {8, 4};
+    const ImgSize dir_size = {16, 16};
+    Variable env(VEC3, env_size);
+    Variable dir(VEC3, dir_size);
+    Variable target(VEC3, dir_size);
+    Variable pred = F::EquirectSample(env, dir);
+    Variable diff = pred - target;
+    Variable loss = F::Mean(diff * diff);
+    Variable env_mut = env;
+    env_mut.setRequiresGradRecursively();
+
+    const CpuImage env_gt = MakeImage(env_size.w, env_size.h, 3, [](size_t i) {
+        return 0.1f + 0.8f * float((i * 13) % 9) / 9.f;
+    });
+    // Dense direction coverage of the sphere (equirect grid + a twist)
+    CpuImage dir_img(dir_size.w, dir_size.h, 3);
+    for (uint32_t y = 0; y < dir_size.h; y++) {
+        for (uint32_t x = 0; x < dir_size.w; x++) {
+            const float u = (float(x) + 0.5f) / float(dir_size.w);
+            const float v = (float(y) + 0.5f) / float(dir_size.h);
+            const float phi = (u - 0.5f) * 6.2831853f;
+            const float theta = v * 3.14159265f;
+            dir_img.at(x, y, 0) = std::sin(theta) * std::cos(phi);
+            dir_img.at(x, y, 1) = std::cos(theta);
+            dir_img.at(x, y, 2) = std::sin(theta) * std::sin(phi);
+        }
+    }
+
+    CpuEvaluator ev;
+    ev.bindImage(env, env_gt);
+    ev.bindImage(dir, dir_img);
+    const CpuImage gt_obs = CpuImageFromTensor(ev.eval(pred));
+
+    const float lr = 8.f;
+    DressiAD ad;
+    ad.setPackingMode(GetParam());
+    ad.setLossVar(loss);
+    ad.setOptimizer([lr](Variables xs, Variables gxs) {
+        Variables updated;
+        for (size_t i = 0; i < xs.size(); i++) {
+            updated.push_back(xs[i] - gxs[i] * lr);
+        }
+        return updated;
+    });
+    ad.sendImg(env, CpuImage(env_size.w, env_size.h, 3, 0.4f));
+    ad.sendImg(dir, dir_img);
+    ad.sendImg(target, gt_obs);
+    for (int iter = 0; iter < 400; iter++) {
+        ad.execStep();
+    }
+    EXPECT_LT(ad.recvImg(loss).data[0], 1e-4f);
+
+    const CpuImage rec = ad.recvImg(env);
+    float max_err = 0.f;
+    for (size_t i = 0; i < rec.data.size(); i++) {
+        max_err = std::max(max_err, std::abs(rec.data[i] - env_gt.data[i]));
+    }
+    EXPECT_LT(max_err, 0.15f);  // pole rows are weakly constrained
+}

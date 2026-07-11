@@ -221,10 +221,13 @@ std::string GenerateShaderImpl(const SubStage& ss, bool comp) {
         if (c == "__equirect_sample__") {
             needs_equirect_uv = needs_bilerp_wrap = true;
         }
+        if (c.rfind("__equirect_sample_bwd__", 0) == 0) {
+            needs_equirect_uv = true;
+        }
         if (c == "__sample_bilinear__") {
             needs_bilerp_clamp = true;
         }
-        if (c == "__irradiance_conv__") {
+        if (c == "__irradiance_conv__" || c == "__irradiance_conv_bwd__") {
             needs_dir_from_equirect = true;
         }
         if (c.rfind("__prefilter_env__", 0) == 0) {
@@ -437,9 +440,12 @@ vec2 dressi_hammersley(uint i, uint n) {
                code == "__rasterize_face_id__" ||
                code.rfind("__rasterize_soft__", 0) == 0 ||
                code == "__equirect_sample__" ||
+               code.rfind("__equirect_sample_bwd__", 0) == 0 ||
+               code.rfind("__tile_sum__", 0) == 0 ||
                code == "__sample_bilinear__" ||
                code == "__gather_inv_uv_bilinear__" ||
                code == "__irradiance_conv__" ||
+               code == "__irradiance_conv_bwd__" ||
                code.rfind("__prefilter_env__", 0) == 0 ||
                code.rfind("__brdf_lut__", 0) == 0;
     };
@@ -711,6 +717,114 @@ vec2 dressi_hammersley(uint i, uint n) {
                  << map_bind << ", ivec2(" << map_size.w << ", " << map_size.h
                  << "), dressi_equirect_uv(d))" << SwizzleOf(n) << ";\n";
             body << "        }\n";
+            body << "    }\n";
+            continue;
+        }
+        if (node->fwd_code.rfind("__equirect_sample_bwd__", 0) == 0) {
+            // xs = {gy (screen), dir (screen)}; output = {map_w, map_h*K}
+            // partials (partial k covers one horizontal dir band; a
+            // TileSum follows). Exact transpose of __equirect_sample__:
+            // re-derive the forward's 4 taps per pixel and accumulate gy
+            // where a tap hits this texel.
+            const int k_tiles = std::stoi(node->fwd_code.substr(
+                    node->fwd_code.find("k=") + 2));
+            const size_t gy_bind = slt_binding.at(xs[0]);
+            const size_t dir_bind = slt_binding.at(xs[1]);
+            const ImgSize scr = xs[0].getImgSize();
+            const ImgSize map = {y.getImgSize().w,
+                                 y.getImgSize().h / uint32_t(k_tiles)};
+            const int rows_per = int((scr.h + uint32_t(k_tiles) - 1) /
+                                     uint32_t(k_tiles));
+            const uint32_t n = NumComponents(y.getVType());
+            body << "    " << y_type << " " << y_name << " = " << y_type
+                 << "(0.0);\n";
+            body << "    {\n";
+            body << "    int row0 = (dressi_coord.y / " << map.h << ") * "
+                 << rows_per << ";\n";
+            body << "    int row1 = min(row0 + " << rows_per << ", "
+                 << scr.h << ");\n";
+            body << "    ivec2 mcoord = ivec2(dressi_coord.x, "
+                    "dressi_coord.y % "
+                 << map.h << ");\n";
+            body << "    for (int sy = row0; sy < row1; sy++)\n";
+            body << "    for (int sx = 0; sx < " << scr.w << "; sx++) {\n";
+            body << "        vec3 d = texelFetch(u_slt" << dir_bind
+                 << ", ivec2(sx, sy), 0).xyz;\n";
+            body << "        float dlen = length(d);\n";
+            body << "        if (dlen < 1e-8) continue;\n";
+            body << "        d /= dlen;\n";
+            body << "        vec2 st = dressi_equirect_uv(d) * vec2("
+                 << map.w << ".0, " << map.h << ".0) - 0.5;\n";
+            body << "        ivec2 i0 = ivec2(floor(st));\n";
+            body << "        vec2 f = st - vec2(i0);\n";
+            body << "        for (int dy = 0; dy <= 1; dy++)\n";
+            body << "        for (int dx = 0; dx <= 1; dx++) {\n";
+            body << "            int x = i0.x + dx;\n";
+            body << "            if (x < 0) x += " << map.w << ";\n";
+            body << "            if (x >= " << map.w << ") x -= " << map.w
+                 << ";\n";
+            body << "            int yy = clamp(i0.y + dy, 0, "
+                 << (map.h - 1) << ");\n";
+            body << "            if (x == mcoord.x && yy == mcoord.y) {\n";
+            body << "                " << y_name << " += texelFetch(u_slt"
+                 << gy_bind << ", ivec2(sx, sy), 0)" << SwizzleOf(n)
+                 << " * ((dx == 0 ? 1.0 - f.x : f.x) * (dy == 0 ? 1.0 - "
+                    "f.y : f.y));\n";
+            body << "            }\n";
+            body << "        }\n";
+            body << "    }\n";
+            body << "    }\n";
+            continue;
+        }
+        if (node->fwd_code.rfind("__tile_sum__", 0) == 0) {
+            // Sums n vertically stacked {W, th} tiles into one
+            const int th = std::stoi(node->fwd_code.substr(
+                    node->fwd_code.find("th=") + 3));
+            const int n_tiles = std::stoi(node->fwd_code.substr(
+                    node->fwd_code.find(" n=") + 3));
+            const size_t in_bind = slt_binding.at(xs[0]);
+            const uint32_t n = NumComponents(y.getVType());
+            body << "    " << y_type << " " << y_name << " = " << y_type
+                 << "(0.0);\n";
+            body << "    for (int k = 0; k < " << n_tiles << "; k++) {\n";
+            body << "        " << y_name << " += texelFetch(u_slt" << in_bind
+                 << ", ivec2(dressi_coord.x, dressi_coord.y + k * " << th
+                 << "), 0)" << SwizzleOf(n) << ";\n";
+            body << "    }\n";
+            continue;
+        }
+        if (node->fwd_code == "__irradiance_conv_bwd__") {
+            // xs = {gy (irradiance map)}; output at env-source size. Exact
+            // transpose of __irradiance_conv__ (deterministic linear map)
+            const size_t gy_bind = slt_binding.at(xs[0]);
+            const ImgSize out = xs[0].getImgSize();  // irradiance map
+            const ImgSize src = y.getImgSize();      // env source
+            const uint32_t n = NumComponents(y.getVType());
+            const float scale = 6.28318530717958648f /
+                                (float(src.w) * float(src.h));
+            body << "    " << y_type << " " << y_name << " = " << y_type
+                 << "(0.0);\n";
+            body << "    {\n";
+            body << "        float sv = (float(dressi_coord.y) + 0.5) / "
+                 << src.h << ".0;\n";
+            body << "        float sin_th = sin(sv * "
+                    "3.14159265358979324);\n";
+            body << "        vec3 d = dressi_dir_from_equirect(vec2("
+                 << "(float(dressi_coord.x) + 0.5) / " << src.w
+                 << ".0, sv));\n";
+            body << "        for (int ty = 0; ty < " << out.h
+                 << "; ty++)\n";
+            body << "        for (int tx = 0; tx < " << out.w
+                 << "; tx++) {\n";
+            body << "            vec3 N = dressi_dir_from_equirect(vec2("
+                 << "(float(tx) + 0.5) / " << out.w
+                 << ".0, (float(ty) + 0.5) / " << out.h << ".0));\n";
+            body << "            " << y_name << " += texelFetch(u_slt"
+                 << gy_bind << ", ivec2(tx, ty), 0)" << SwizzleOf(n)
+                 << " * (max(dot(N, d), 0.0) * sin_th);\n";
+            body << "        }\n";
+            body << "        " << y_name << " *= " << FloatLit(scale)
+                 << ";\n";
             body << "    }\n";
             continue;
         }

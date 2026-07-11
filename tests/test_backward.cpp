@@ -464,3 +464,56 @@ TEST(Backward, TextureBilinearTextureGrad) {
 
     CheckGrad(loss, {{tex, tex_t}, {uv, uv_t}, {inv_uv, inv_t}}, tex);
 }
+
+TEST(Backward, EquirectSampleMapGrad) {
+    const ImgSize map_size = {8, 4};
+    Variable map(VEC3, map_size);
+    Variable dir(VEC3, {3, 2});
+    Variable out = F::EquirectSample(map, dir);
+    Variable loss = F::Mean(out * out + out);
+
+    auto map_t = MakeTensor(VEC3, map_size, [](size_t i) {
+        return 0.15f + 0.1f * float((i * 3) % 8);
+    });
+    CpuTensor dirs;
+    dirs.vtype = VEC3;
+    dirs.size = {3, 2};
+    dirs.data = {0.3f,  0.9f, -0.2f, -1.f, 0.1f, 0.4f,  0.5f, -0.6f, 0.7f,
+                 0.f,   0.f,  0.f,   // zero dir contributes nothing
+                 -0.4f, 0.2f, -0.9f, 0.8f, 0.5f, -0.1f};
+    ASSERT_EQ(dirs.data.size(), size_t(3 * 2 * 3));
+    CheckGrad(loss, {{map, map_t}, {dir, dirs}}, map);
+}
+
+TEST(Backward, IrradianceConvEnvGrad) {
+    const ImgSize env_size = {8, 4};
+    Variable env(VEC3, env_size);
+    Variable irr = F::IrradianceConv(env, {4, 2});
+    Variable loss = F::Mean(irr * irr + irr);
+
+    auto env_t = MakeTensor(VEC3, env_size, [](size_t i) {
+        return 0.2f + 0.07f * float((i * 5) % 11);
+    });
+    CheckGrad(loss, {{env, env_t}}, env);
+}
+
+TEST(Backward, EnvThroughIrradianceChain) {
+    // env -> AvgPool2x2 -> IrradianceConv -> EquirectSample(by normals):
+    // the envmap-optimization diffuse path end to end
+    const ImgSize env_size = {8, 4};
+    Variable env(VEC3, env_size);
+    Variable n_dir(VEC3, {2, 2});
+    Variable irr = F::IrradianceConv(F::AvgPool2x2(env), {4, 2});
+    Variable shaded = F::EquirectSample(irr, n_dir);
+    Variable loss = F::Mean(shaded * shaded);
+
+    auto env_t = MakeTensor(VEC3, env_size, [](size_t i) {
+        return 0.25f + 0.09f * float((i * 7) % 5);
+    });
+    CpuTensor dirs;
+    dirs.vtype = VEC3;
+    dirs.size = {2, 2};
+    dirs.data = {0.f, 1.f, 0.f, 0.7f, 0.1f, 0.7f,
+                 -0.6f, 0.5f, 0.6f, 0.2f, -0.9f, 0.4f};
+    CheckGrad(loss, {{env, env_t}, {n_dir, dirs}}, env);
+}

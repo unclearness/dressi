@@ -279,13 +279,16 @@ Variable TextureBilinear(const Variable& tex, const Variable& uv,
 
 // Samples an equirectangular map by per-pixel direction (need not be
 // normalized; zero-length directions return 0). Bilinear with u-wrap at
-// the seam and v-clamp at the poles. Forward-only.
+// the seam and v-clamp at the poles. Differentiable w.r.t. the map (the
+// exact bilinear transpose; each map texel scans EVERY dir pixel, so keep
+// optimized maps small); not w.r.t. dir.
 Variable EquirectSample(const Variable& map, const Variable& dir);
 
 // Diffuse irradiance convolution of an equirect environment: deterministic
 // cos-weighted sum over EVERY source texel per output texel (cost =
 // out_texels * src_texels — pre-pool the source). Stores E(N)/pi, so a
-// constant environment L0 yields exactly L0. Forward-only.
+// constant environment L0 yields exactly L0. Differentiable w.r.t. env
+// (exact transpose of the linear map).
 Variable IrradianceConv(const Variable& env, ImgSize out_size);
 
 // Split-sum prefiltered environment for one roughness level (GGX
