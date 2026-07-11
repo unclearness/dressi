@@ -328,6 +328,22 @@ GltfScene LoadGltfScene(const std::string& path, bool normalize) {
             scene.mesh.uv.at(v, 0, 1) =
                     ReadAccessorFloat(model, uv_acc, v, 1);
         }
+        // Some assets store REPEAT-wrapped coordinates offset by whole
+        // periods (DamagedHelmet: V in [1, 2]). Our samplers clamp, so
+        // remove the integer offset per axis — safe as long as no
+        // triangle actually crosses an integer boundary.
+        for (uint32_t c = 0; c < 2; c++) {
+            float mn = 1e30f;
+            for (uint32_t v = 0; v < n_verts; v++) {
+                mn = std::min(mn, scene.mesh.uv.at(v, 0, c));
+            }
+            const float shift = std::floor(mn);
+            if (shift != 0.f) {
+                for (uint32_t v = 0; v < n_verts; v++) {
+                    scene.mesh.uv.at(v, 0, c) -= shift;
+                }
+            }
+        }
     }
     for (uint32_t f = 0; f < n_faces; f++) {
         for (uint32_t k = 0; k < 3; k++) {

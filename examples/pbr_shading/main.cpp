@@ -112,18 +112,19 @@ int main(int argc, char* argv[]) try {
                                                   : FallbackTex(0.f, 0.f, 0.f);
 
     // ------------------------------ Graph --------------------------------
-    PbrSceneLeaves scene;
-    scene.clip = Variable(VEC4, {n_verts, 1});
-    scene.uvh = Variable(VEC4, {n_verts, 1});
-    scene.normal = Variable(VEC3, {n_verts, 1});
-    scene.tangent = Variable(VEC3, {n_verts, 1});
-    scene.wpos = Variable(VEC3, {n_verts, 1});
-    scene.faces = Variable(IVEC3, {gltf.mesh.numFaces(), 1});
-    scene.albedo = Variable(VEC3, albedo_img.getImgSize());
-    scene.mr = Variable(VEC3, mr_img.getImgSize());
-    scene.normal_map = Variable(VEC3, nrm_img.getImgSize());
-    scene.ao = Variable(VEC3, ao_img.getImgSize());
-    scene.emissive = Variable(VEC3, emis_img.getImgSize());
+    PbrGeometryLeaves geom;
+    geom.clip = Variable(VEC4, {n_verts, 1});
+    geom.uvh = Variable(VEC4, {n_verts, 1});
+    geom.normal = Variable(VEC3, {n_verts, 1});
+    geom.tangent = Variable(VEC3, {n_verts, 1});
+    geom.wpos = Variable(VEC3, {n_verts, 1});
+    geom.faces = Variable(IVEC3, {gltf.mesh.numFaces(), 1});
+    PbrMaterialLeaves mat;
+    mat.albedo = Variable(VEC3, albedo_img.getImgSize());
+    mat.mr = Variable(VEC3, mr_img.getImgSize());
+    mat.normal_map = Variable(VEC3, nrm_img.getImgSize());
+    mat.ao = Variable(VEC3, ao_img.getImgSize());
+    mat.emissive = Variable(VEC3, emis_img.getImgSize());
 
     PbrFrameLeaves frame;
     frame.cam_pos = Variable(VEC3, {1, 1});
@@ -138,7 +139,7 @@ int main(int argc, char* argv[]) try {
     // Viewer: no gradients -> the inverse-UV table is a never-uploaded dummy
     Variable dummy_inv_uv(VEC4, albedo_img.getImgSize());
     const PbrOutputs out =
-            BuildPbrForward(scene, frame, ibl, dummy_inv_uv, screen);
+            BuildPbrForward(geom, mat, frame, ibl, dummy_inv_uv, screen);
 
     DressiAD ad;
     ad.setLossVar(out.ldr);  // forward-only: the image itself is the "loss"
@@ -146,16 +147,16 @@ int main(int argc, char* argv[]) try {
     ad.markOutput(out.albedo);
     ad.markOutput(out.normal);
 
-    ad.sendImg(scene.uvh, uvh_img);
-    ad.sendImg(scene.normal, gltf.normal);
-    ad.sendImg(scene.tangent, tangent_img);
-    ad.sendImg(scene.wpos, gltf.mesh.pos);
-    ad.sendImg(scene.faces, gltf.mesh.faces);
-    ad.sendImg(scene.albedo, albedo_img);
-    ad.sendImg(scene.mr, mr_img);
-    ad.sendImg(scene.normal_map, nrm_img);
-    ad.sendImg(scene.ao, ao_img);
-    ad.sendImg(scene.emissive, emis_img);
+    ad.sendImg(geom.uvh, uvh_img);
+    ad.sendImg(geom.normal, gltf.normal);
+    ad.sendImg(geom.tangent, tangent_img);
+    ad.sendImg(geom.wpos, gltf.mesh.pos);
+    ad.sendImg(geom.faces, gltf.mesh.faces);
+    ad.sendImg(mat.albedo, albedo_img);
+    ad.sendImg(mat.mr, mr_img);
+    ad.sendImg(mat.normal_map, nrm_img);
+    ad.sendImg(mat.ao, ao_img);
+    ad.sendImg(mat.emissive, emis_img);
     ad.sendImg(env, env_img);
 
     // --------------------------- Render loop -----------------------------
@@ -211,7 +212,7 @@ int main(int argc, char* argv[]) try {
 
         const auto t0 = Clock::now();
         frame_img = ad.execStepWithSendsAndRecvImgsStacked(
-                {{scene.clip, CpuImageView(clip_img)},
+                {{geom.clip, CpuImageView(clip_img)},
                  {frame.cam_pos, CpuImageView(cam_pos_img)},
                  {frame.cam_fwd, CpuImageView(cam_fwd_img)},
                  {frame.cam_right, CpuImageView(cam_right_img)},
