@@ -304,8 +304,25 @@ int main(int argc, char* argv[]) try {
                 10.0 * std::log10(1.0 / (mse + 1e-12)), cnt);
     };
 
-    VkViewer viewer(screen.w * 2, screen.h, "pbr envmap optimization");
-    bool viewer_open = viewer.valid();
+    // Live view: every input view tiled (GT targets fixed, optimized
+    // renders refreshing) plus the env map under optimization stacked
+    // under its ground truth (both Reinhard-tonemapped and upscaled)
+    const uint32_t tile_cols = 3;
+    const uint32_t tile_rows = (n_views + tile_cols - 1) / tile_cols;
+    const uint32_t win_w = screen.w * tile_cols;
+    const uint32_t win_h = screen.h * tile_rows;
+    const uint32_t env_up = std::max(1u, 512u / env_size.w);
+    VkViewer viewer_target(win_w, win_h, "targets (GT env, fixed views)");
+    VkViewer viewer_pred(win_w, win_h, "optimized-env render");
+    VkViewer viewer_env(env_size.w * env_up, env_size.h * env_up * 2,
+                        "env map (GT / optimized)");
+    viewer_target.setPosition(60, 60);
+    viewer_pred.setPosition(60 + int(win_w) + 16, 60);
+    viewer_env.setPosition(60, 60 + int(win_h) + 46);
+    bool viewer_open = viewer_target.valid() && viewer_pred.valid() &&
+                       viewer_env.valid();
+    CpuImage target_tile;
+    const CpuImage env_gt_disp = Upscale(TonemapForView(env_gt_img), env_up);
 
     using Clock = std::chrono::steady_clock;
     std::vector<double> iter_ms;  // steady-state samples (>= warmup)
@@ -333,12 +350,27 @@ int main(int argc, char* argv[]) try {
                          ad.recvImg(views[0].target));
             SaveImagePng(out_dir + "/render_first_view0.png",
                          ad.recvImg(views[0].pred));
+            std::vector<CpuImage> targets;
+            for (auto& view : views) {
+                targets.push_back(ad.recvImg(view.target));
+            }
+            target_tile = TileImages(targets, tile_cols);
         }
         if (viewer_open && iter % 20 == 0) {
-            viewer.setTitle(fmt::format("pbr envmap opt  iter {}", iter));
-            viewer_open = viewer.update(TileImages(
-                    {ad.recvImg(views[0].target), ad.recvImg(views[0].pred)},
-                    2));
+            std::vector<CpuImage> preds;
+            for (auto& view : views) {
+                preds.push_back(ad.recvImg(view.pred));
+            }
+            viewer_pred.setTitle(
+                    fmt::format("optimized-env render  iter {}", iter));
+            viewer_open =
+                    viewer_target.update(target_tile) &&
+                    viewer_pred.update(TileImages(preds, tile_cols)) &&
+                    viewer_env.update(TileImages(
+                            {env_gt_disp,
+                             Upscale(TonemapForView(ad.recvImg(env_opt)),
+                                     env_up)},
+                            1));
         }
         if (iter % 200 == 0 || iter == n_iters - 1) {
             const auto [psnr, cnt] = psnr_vs_gt();

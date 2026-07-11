@@ -303,8 +303,30 @@ int main(int argc, char* argv[]) try {
                 10.0 * std::log10(1.0 / (mse + 1e-12)), cnt);
     };
 
-    VkViewer viewer(screen.w * 2, screen.h, "pbr material optimization");
-    bool viewer_open = viewer.valid();
+    // Live view: every input view tiled (GT targets fixed, optimized
+    // renders refreshing) plus the texture atlas under optimization
+    // (gamma-encoded for display — the graph works in linear space)
+    const auto display_gamma = [](CpuImage img) {
+        for (float& v : img.data) {
+            v = std::pow(std::max(v, 0.f), 1.f / 2.2f);
+        }
+        return img;
+    };
+    const uint32_t tile_cols = 3;
+    const uint32_t tile_rows = (n_views + tile_cols - 1) / tile_cols;
+    const uint32_t win_w = screen.w * tile_cols;
+    const uint32_t win_h = screen.h * tile_rows;
+    VkViewer viewer_target(win_w, win_h, "targets (GT, fixed views)");
+    VkViewer viewer_pred(win_w, win_h, "optimized render");
+    VkViewer viewer_tex(512, 256,
+                        "texture " + optimize + " (GT | optimized)");
+    viewer_target.setPosition(60, 60);
+    viewer_pred.setPosition(60 + int(win_w) + 16, 60);
+    viewer_tex.setPosition(60, 60 + int(win_h) + 46);
+    bool viewer_open = viewer_target.valid() && viewer_pred.valid() &&
+                       viewer_tex.valid();
+    CpuImage target_tile;
+    const CpuImage gt_tex_disp = display_gamma(gt_opt);
 
     using Clock = std::chrono::steady_clock;
     double opt_ms = 0.0;
@@ -319,12 +341,26 @@ int main(int argc, char* argv[]) try {
         if (iter == 0) {
             SaveImagePng(out_dir + "/target_view0.png",
                          ad.recvImg(views[0].target));
+            std::vector<CpuImage> targets;
+            for (auto& view : views) {
+                targets.push_back(ad.recvImg(view.target));
+            }
+            target_tile = TileImages(targets, tile_cols);
         }
         if (viewer_open && iter % 20 == 0) {
-            viewer.setTitle(fmt::format("pbr material opt  iter {}", iter));
-            viewer_open = viewer.update(TileImages(
-                    {ad.recvImg(views[0].target), ad.recvImg(views[0].pred)},
-                    2));
+            std::vector<CpuImage> preds;
+            for (auto& view : views) {
+                preds.push_back(ad.recvImg(view.pred));
+            }
+            viewer_pred.setTitle(
+                    fmt::format("optimized render  iter {}", iter));
+            viewer_open =
+                    viewer_target.update(target_tile) &&
+                    viewer_pred.update(TileImages(preds, tile_cols)) &&
+                    viewer_tex.update(TileImages(
+                            {gt_tex_disp,
+                             display_gamma(ad.recvImg(opt_tex))},
+                            2));
         }
         if (iter % 200 == 0 || iter == n_iters - 1) {
             const auto [psnr, cnt] = psnr_vs_gt();

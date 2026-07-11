@@ -165,10 +165,13 @@ int main(int argc, char* argv[]) try {
     const uint32_t win_h = 256 * tile_rows;
     VkViewer viewer_target(win_w, win_h, "targets (GT, fixed views)");
     VkViewer viewer_pred(win_w, win_h, "optimized render");
+    VkViewer viewer_tex(512, 256, "texture atlas (GT | optimized)");
     // Fixed side-by-side layout (deterministic placement for recording)
     viewer_target.setPosition(80, 80);
     viewer_pred.setPosition(80 + int(win_w) + 16, 80);
-    bool viewer_open = viewer_target.valid() && viewer_pred.valid();
+    viewer_tex.setPosition(80, 80 + int(win_h) + 46);
+    bool viewer_open = viewer_target.valid() && viewer_pred.valid() &&
+                       viewer_tex.valid();
     if (!viewer_open) {
         spdlog::warn("live viewer unavailable; continuing headless");
     }
@@ -206,7 +209,9 @@ int main(int argc, char* argv[]) try {
             viewer_pred.setTitle(
                     fmt::format("optimized render  iter {}", iter));
             viewer_open = viewer_pred.update(TileImages(preds, tile_cols)) &&
-                          viewer_target.update(target_tile);
+                          viewer_target.update(target_tile) &&
+                          viewer_tex.update(TileImages(
+                                  {gt_tex_img, ad.recvImg(tex)}, 2));
             view_ms += std::chrono::duration<double, std::milli>(
                                Clock::now() - tv0)
                                .count();
