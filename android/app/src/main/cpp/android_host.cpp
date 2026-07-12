@@ -1,0 +1,155 @@
+#include "android_host.h"
+
+#include <spdlog/sinks/android_sink.h>
+#include <spdlog/sinks/callback_sink.h>
+#include <spdlog/spdlog.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+
+namespace dressi_android {
+
+void NotifyLog(const std::string& line);  // jni_bridge.cpp
+
+SurfaceState& SurfaceState::instance() {
+    static SurfaceState state;
+    return state;
+}
+
+void SurfaceState::setSurface(ANativeWindow* window) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_window) {
+        ANativeWindow_release(m_window);
+    }
+    m_window = window;
+    if (m_window) {
+        // Fixed pixel layout for the CPU blit; the compositor scales the
+        // buffer to the view, we letterbox inside it ourselves.
+        ANativeWindow_setBuffersGeometry(m_window, 0, 0,
+                                         WINDOW_FORMAT_RGBA_8888);
+    }
+}
+
+void SurfaceState::selectStream(int index) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_selected = index;
+}
+
+int SurfaceState::registerStream(const std::string& title) {
+    std::vector<std::string> titles;
+    int id = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        id = int(m_titles.size());
+        m_titles.push_back(title);
+        titles = m_titles;
+    }
+    NotifyStreamsChanged(titles);
+    return id;
+}
+
+void SurfaceState::clearStreams() {
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_titles.clear();
+        m_selected = 0;
+    }
+    NotifyStreamsChanged({});
+}
+
+bool SurfaceState::blit(int stream_id, const dressi::CpuImage& img) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (!m_window || stream_id != m_selected || img.width == 0 ||
+        img.height == 0) {
+        return true;  // stream not visible; keep the example running
+    }
+    ANativeWindow_Buffer buf;
+    if (ANativeWindow_lock(m_window, &buf, nullptr) != 0) {
+        return true;
+    }
+    auto* pixels = static_cast<uint32_t*>(buf.bits);
+    const uint32_t bw = uint32_t(buf.width), bh = uint32_t(buf.height);
+    // Letterbox: integer-friendly nearest scale preserving aspect
+    const float scale = std::min(float(bw) / float(img.width),
+                                 float(bh) / float(img.height));
+    const uint32_t dw = std::max(1u, uint32_t(float(img.width) * scale));
+    const uint32_t dh = std::max(1u, uint32_t(float(img.height) * scale));
+    const uint32_t ox = (bw - dw) / 2, oy = (bh - dh) / 2;
+    const bool rgb = img.channels >= 3;
+    for (uint32_t y = 0; y < bh; y++) {
+        uint32_t* row = pixels + size_t(y) * uint32_t(buf.stride);
+        if (y < oy || y >= oy + dh) {
+            std::fill(row, row + bw, 0xFF000000u);
+            continue;
+        }
+        const uint32_t sy =
+                std::min(img.height - 1,
+                         uint32_t(float(y - oy) / float(dh) *
+                                  float(img.height)));
+        for (uint32_t x = 0; x < bw; x++) {
+            if (x < ox || x >= ox + dw) {
+                row[x] = 0xFF000000u;
+                continue;
+            }
+            const uint32_t sx =
+                    std::min(img.width - 1,
+                             uint32_t(float(x - ox) / float(dw) *
+                                      float(img.width)));
+            const size_t p = (size_t(sy) * img.width + sx) * img.channels;
+            const auto to8 = [&](float v) {
+                return uint32_t(std::clamp(v, 0.f, 1.f) * 255.f + 0.5f);
+            };
+            const uint32_t r = to8(img.data[p]);
+            const uint32_t g = rgb ? to8(img.data[p + 1]) : r;
+            const uint32_t b = rgb ? to8(img.data[p + 2]) : r;
+            row[x] = 0xFF000000u | (b << 16) | (g << 8) | r;
+        }
+    }
+    ANativeWindow_unlockAndPost(m_window);
+    return true;
+}
+
+namespace {
+
+class AndroidViewer : public dressi_examples::IViewer {
+public:
+    explicit AndroidViewer(const std::string& title)
+        : m_stream_id(SurfaceState::instance().registerStream(title)) {}
+
+    bool valid() const override { return true; }
+    bool update(const dressi::CpuImage& img) override {
+        return SurfaceState::instance().blit(m_stream_id, img);
+    }
+    void setTitle(const std::string& title) override {
+        (void)title;  // stream titles stay stable; iter counters go to logs
+    }
+    void setPosition(int, int) override {}
+
+private:
+    int m_stream_id;
+};
+
+}  // namespace
+
+std::unique_ptr<dressi_examples::IViewer> AndroidHost::makeViewer(
+        uint32_t width, uint32_t height, const std::string& title) {
+    (void)width;
+    (void)height;  // the blit letterboxes into whatever surface exists
+    return std::make_unique<AndroidViewer>(title);
+}
+
+void InstallLogSinks() {
+    auto logcat = std::make_shared<spdlog::sinks::android_sink_mt>("dressi");
+    auto ui = std::make_shared<spdlog::sinks::callback_sink_mt>(
+            [](const spdlog::details::log_msg& msg) {
+                NotifyLog(std::string(msg.payload.begin(),
+                                      msg.payload.end()));
+            });
+    auto logger = std::make_shared<spdlog::logger>(
+            "dressi", spdlog::sinks_init_list{logcat, ui});
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+}
+
+}  // namespace dressi_android

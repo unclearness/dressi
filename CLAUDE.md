@@ -40,6 +40,41 @@ ctest --preset release -LE gpu       # CPU-only (no Vulkan device needed)
   GPU timestamp breakdown every 100 frames; `DRESSI_VK_DEBUG=1` enables
   the Vulkan validation layers.
 
+## Android (see README-android.md)
+
+- `android/` is a Gradle/Kotlin app (one APK, all six examples; JNI →
+  `libdressi_examples.so`). Its `app/src/main/cpp/CMakeLists.txt`
+  add_subdirectory's the repo root with `DRESSI_FETCH_DATA=OFF`.
+  Pinned: NDK 28.2.13676358, SDK CMake 3.31.6, AGP 8.13.2, minSdk 29,
+  arm64-v8a only. Build: open `android/` in Android Studio, or
+  `android> .\gradlew.bat :app:assembleDebug` (JAVA_HOME = AS jbr).
+- Root CMake `if(ANDROID)` branches: glslang/SPIRV-Tools/SPIRV-Headers/
+  Vulkan-Headers are FetchContent-built at the lockstep tag
+  `vulkan-sdk-1.4.350.0` (SDK ships x86_64 only; NDK lacks vulkan.hpp so
+  the fetched headers shadow the sysroot's vulkan.h — keep .h/.hpp from
+  ONE source). `find_package(Vulkan)` is skipped on Android (its
+  Vulkan::Headers alias collides with the fetched project); the NDK's
+  `vulkan` is linked directly (dynamic dispatch needs only the loader).
+  GLFW/glad are desktop-only. Kotlin gotcha: block comments NEST — a
+  `/**` glob inside a KDoc comment is a syntax error.
+- Example logic lives in `examples/<name>/run.cpp`
+  (`Run<Name>(args, ExampleHost&)`, registry in
+  `examples/common/example_registry.cpp`); desktop mains are thin
+  DesktopHost wrappers, Android provides streams (one SurfaceView +
+  `ANativeWindow_lock` CPU blit — no EGL, no second Vulkan context) and a
+  Stop flag polled per iteration. `silhouette_optimization` requires the
+  geometryShader feature (gl_PrimitiveID) — the app grays it out from the
+  startup caps probe.
+- Bench cross-check duty (same spirit as the Python rule): the Android
+  refactor moved example mains into run.cpp — any example-loop change
+  must re-verify the DESKTOP medians too.
+- Assets: Gradle `syncDressiAssets` bundles bunny/Avocado/DamagedHelmet +
+  `data/suburban_garden_512.exr` (bake once:
+  `build/tools/Release/downsample_exr.exe data/suburban_garden_4k.exr
+  data/suburban_garden_512.exr 512`); extracted to filesDir on first
+  launch, outputs in `files/out/<example>/` (adb: `run-as
+  org.dressi.examples`).
+
 ## Benchmarking (how README / perf numbers are produced)
 
 Every performance figure in the README is a **median steady-state

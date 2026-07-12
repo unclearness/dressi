@@ -628,6 +628,19 @@ CpuImage LoadImageExr(const std::string& path) {
     return img;
 }
 
+void SaveImageExr(const std::string& path, const CpuImage& img) {
+    if (img.channels != 3) {
+        throw std::runtime_error("SaveImageExr: expected 3 channels");
+    }
+    const char* err = nullptr;
+    if (SaveEXR(img.data.data(), int(img.width), int(img.height), 3,
+                /*save_as_fp16=*/1, path.c_str(), &err) != TINYEXR_SUCCESS) {
+        std::string msg = err ? err : "unknown error";
+        FreeEXRErrorMessage(err);
+        throw std::runtime_error("Failed to save EXR: " + path + " " + msg);
+    }
+}
+
 CpuImage SrgbToLinear(const CpuImage& img) {
     CpuImage out = img;
     for (float& v : out.data) {

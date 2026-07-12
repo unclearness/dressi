@@ -1,7 +1,15 @@
 # Build directories
 /build/
+/build-android/
 /out/
 /cmake-build-*/
+
+# Android app (Gradle)
+/android/.gradle/
+/android/local.properties
+/android/app/build/
+/android/app/.cxx/
+/android/app/src/main/assets/data/
 
 # IDE
 /.vs/

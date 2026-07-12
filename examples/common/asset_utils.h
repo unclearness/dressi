@@ -57,6 +57,10 @@ dressi::CpuImage LoadImageRgb(const std::string& path);
 // Loads an EXR (e.g. an equirectangular HDR env map) as 3-channel float
 dressi::CpuImage LoadImageExr(const std::string& path);
 
+// Saves a 3-channel float image as EXR (half-float, ZIP) — used to bake
+// the small env map bundled into the Android APK (tools/downsample_exr)
+void SaveImageExr(const std::string& path, const dressi::CpuImage& img);
+
 // Gamma-decodes an sRGB-encoded [0,1] image to linear (pow 2.2)
 dressi::CpuImage SrgbToLinear(const dressi::CpuImage& img);
 

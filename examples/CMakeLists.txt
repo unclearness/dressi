@@ -1,50 +1,37 @@
-add_executable(image_fitting image_fitting/main.cpp)
-target_link_libraries(image_fitting PRIVATE dressi)
-
-add_executable(texture_optimization
-    texture_optimization/main.cpp
-    common/asset_utils.cpp
-    common/vk_viewer.cpp)
-target_link_libraries(texture_optimization PRIVATE dressi dressi_assets
-                                                   dressi_glad glfw
-                                                   spdlog::spdlog)
-
-add_executable(silhouette_optimization
-    silhouette_optimization/main.cpp
+# All example logic lives in dressi_examples_core (portable: desktop +
+# Android). Desktop adds the GLFW live viewer + thin main() executables;
+# the Android app links the core and provides its own host/viewer (JNI).
+add_library(dressi_examples_core STATIC
     common/asset_utils.cpp
     common/geometry_utils.cpp
-    common/vk_viewer.cpp)
-target_link_libraries(silhouette_optimization PRIVATE dressi dressi_assets
-                                                      dressi_glad glfw
-                                                      spdlog::spdlog)
-
-add_executable(pbr_shading
-    pbr_shading/main.cpp
-    common/asset_utils.cpp
     common/pbr_graph.cpp
-    common/vk_viewer.cpp)
-target_link_libraries(pbr_shading PRIVATE dressi dressi_assets dressi_glad
-                                          glfw spdlog::spdlog)
+    common/example_registry.cpp
+    image_fitting/run.cpp
+    texture_optimization/run.cpp
+    silhouette_optimization/run.cpp
+    pbr_shading/run.cpp
+    pbr_material_optimization/run.cpp
+    pbr_envmap_optimization/run.cpp)
+target_link_libraries(dressi_examples_core PUBLIC dressi dressi_assets
+                                                  spdlog::spdlog)
+if(MSVC)
+    target_compile_options(dressi_examples_core PRIVATE /W4 /permissive-
+                                                        /utf-8)
+endif()
 
-add_executable(pbr_material_optimization
-    pbr_material_optimization/main.cpp
-    common/asset_utils.cpp
-    common/pbr_graph.cpp
-    common/vk_viewer.cpp)
-target_link_libraries(pbr_material_optimization
-    PRIVATE dressi dressi_assets dressi_glad glfw spdlog::spdlog)
+if(NOT ANDROID)
+    add_library(dressi_examples_desktop STATIC
+        common/vk_viewer.cpp
+        common/desktop_host.cpp)
+    target_link_libraries(dressi_examples_desktop
+        PUBLIC dressi_examples_core dressi_glad glfw)
 
-add_executable(pbr_envmap_optimization
-    pbr_envmap_optimization/main.cpp
-    common/asset_utils.cpp
-    common/pbr_graph.cpp
-    common/vk_viewer.cpp)
-target_link_libraries(pbr_envmap_optimization
-    PRIVATE dressi dressi_assets dressi_glad glfw spdlog::spdlog)
-
-foreach(_tgt image_fitting texture_optimization silhouette_optimization
-        pbr_shading pbr_material_optimization pbr_envmap_optimization)
-    if(MSVC)
-        target_compile_options(${_tgt} PRIVATE /W4 /permissive- /utf-8)
-    endif()
-endforeach()
+    foreach(_tgt image_fitting texture_optimization silhouette_optimization
+            pbr_shading pbr_material_optimization pbr_envmap_optimization)
+        add_executable(${_tgt} ${_tgt}/main.cpp)
+        target_link_libraries(${_tgt} PRIVATE dressi_examples_desktop)
+        if(MSVC)
+            target_compile_options(${_tgt} PRIVATE /W4 /permissive- /utf-8)
+        endif()
+    endforeach()
+endif()

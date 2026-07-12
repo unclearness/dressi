@@ -16,18 +16,70 @@ option(DRESSI_BUILD_EXAMPLES "Build examples" ON)
 option(DRESSI_BUILD_PYTHON "Build the Python (torch) bindings" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-include(FindVulkanSdk)
+if(NOT ANDROID)
+    # The desktop Vulkan SDK provides headers/libs (glslang etc.). On Android
+    # everything comes from source-built Khronos repos + the NDK's
+    # libvulkan.so instead; find_package(Vulkan) would create a
+    # Vulkan::Headers target that collides with the fetched Vulkan-Headers
+    # project, so it is skipped there.
+    include(FindVulkanSdk)
+    find_package(Vulkan REQUIRED)
+endif()
 
-find_package(Vulkan REQUIRED)
+include(FetchContent)
 
-# glslang from the Vulkan SDK (runtime GLSL -> SPIR-V compilation for vkw).
-# The SDK's glslang-config.cmake is broken (references a nonexistent
-# <SDK>/Lib/lib/... path), so link the static libs directly.
+# glslang (runtime GLSL -> SPIR-V compilation for vkw).
+# Desktop: from the Vulkan SDK — its glslang-config.cmake is broken
+# (references a nonexistent <SDK>/Lib/lib/... path), so link the static libs
+# directly. Android: the SDK ships x86_64 archives only, so build the whole
+# SPIR-V stack from source, pinned to the SDK's lockstep tag (the three repos
+# tag every SDK release in mutually compatible states).
 add_library(dressi_glslang INTERFACE)
 set(_glslang_libs
     glslang SPIRV MachineIndependent GenericCodeGen OSDependent
     glslang-default-resource-limits SPIRV-Tools-opt SPIRV-Tools)
-if(WIN32)
+if(ANDROID)
+    set(DRESSI_GLSLANG_TAG "vulkan-sdk-1.4.350.0"
+        CACHE STRING "Lockstep vulkan-sdk tag for glslang/SPIRV-Tools/SPIRV-Headers")
+    set(SPIRV_SKIP_TESTS ON CACHE BOOL "" FORCE)
+    set(SPIRV_SKIP_EXECUTABLES ON CACHE BOOL "" FORCE)
+    set(SKIP_SPIRV_TOOLS_INSTALL ON CACHE BOOL "" FORCE)
+    set(GLSLANG_TESTS OFF CACHE BOOL "" FORCE)
+    set(GLSLANG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "" FORCE)
+    # ENABLE_OPT=1 matches the desktop dressi_vkw configuration.
+    set(ENABLE_OPT ON CACHE BOOL "" FORCE)
+    set(ALLOW_EXTERNAL_SPIRV_TOOLS ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(spirv-headers
+        GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Headers.git
+        GIT_TAG ${DRESSI_GLSLANG_TAG}
+        GIT_SHALLOW TRUE)
+    FetchContent_Declare(spirv-tools
+        GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Tools.git
+        GIT_TAG ${DRESSI_GLSLANG_TAG}
+        GIT_SHALLOW TRUE)
+    FetchContent_Declare(glslang
+        GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
+        GIT_TAG ${DRESSI_GLSLANG_TAG}
+        GIT_SHALLOW TRUE)
+    # The NDK sysroot ships only the C headers (vulkan/vulkan.h); vkw needs
+    # Vulkan-Hpp (vulkan/vulkan.hpp). Fetch the lockstep Vulkan-Headers and
+    # let its include dir shadow the sysroot's older vulkan.h so the .h/.hpp
+    # pair stays consistent (and matches the desktop SDK version).
+    FetchContent_Declare(vulkan-headers
+        GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
+        GIT_TAG ${DRESSI_GLSLANG_TAG}
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(vulkan-headers)
+    FetchContent_MakeAvailable(spirv-headers)
+    # SPIRV-Tools looks for its headers via SPIRV-Headers_SOURCE_DIR;
+    # FetchContent only sets the lowercased spirv-headers_SOURCE_DIR.
+    set(SPIRV-Headers_SOURCE_DIR "${spirv-headers_SOURCE_DIR}" CACHE PATH "" FORCE)
+    FetchContent_MakeAvailable(spirv-tools glslang)
+    # Source-built targets propagate their own include dirs; no manual paths.
+    target_link_libraries(dressi_glslang INTERFACE
+        glslang SPIRV glslang-default-resource-limits SPIRV-Tools-opt SPIRV-Tools)
+elseif(WIN32)
     # Windows SDK nests glslang's whole tree under Include/glslang, so that one
     # include dir resolves both <SPIRV/...> and <glslang/Public/...>. Libs are
     # <name>.lib / <name>d.lib with per-config debug ("d" suffix) selection.
@@ -54,9 +106,9 @@ else()
         -Wl,--start-group ${_glslang_paths} -Wl,--end-group)
 endif()
 
-include(FetchContent)
-
-# GLFW: vkw.h includes <GLFW/glfw3.h> on desktop even for headless use
+# GLFW: vkw.h includes <GLFW/glfw3.h> on desktop even for headless use.
+# On Android vkw.h switches to <android/native_window.h> and GLFW is unused.
+if(NOT ANDROID)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
@@ -74,6 +126,7 @@ FetchContent_Declare(glfw
     GIT_TAG 3.4
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(glfw)
+endif()
 
 # Asset loaders for examples/tests (header-only usage)
 FetchContent_Declare(tinyobjloader
@@ -110,11 +163,14 @@ target_include_directories(dressi_assets SYSTEM INTERFACE
 
 # glad Vulkan loader (user-provided) for the example live viewer.
 # The SDK include path comes first so the full vk_video header set is used
-# (the glad drop bundles only a subset).
-add_library(dressi_glad STATIC third_party/glad/src/vulkan.c)
-target_include_directories(dressi_glad SYSTEM PUBLIC
-    "${DRESSI_VULKAN_SDK_INCLUDE}"
-    third_party/glad/include)
+# (the glad drop bundles only a subset). Desktop-only: the Android app blits
+# via ANativeWindow instead of a second Vulkan instance.
+if(NOT ANDROID)
+    add_library(dressi_glad STATIC third_party/glad/src/vulkan.c)
+    target_include_directories(dressi_glad SYSTEM PUBLIC
+        "${DRESSI_VULKAN_SDK_INCLUDE}"
+        third_party/glad/include)
+endif()
 
 # Logging / performance measurement
 set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
@@ -142,10 +198,15 @@ target_compile_definitions(dressi_vkw PUBLIC
 if(WIN32)
     target_compile_definitions(dressi_vkw PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
-target_link_libraries(dressi_vkw PUBLIC
-    Vulkan::Vulkan
-    dressi_glslang
-    glfw)
+target_link_libraries(dressi_vkw PUBLIC dressi_glslang)
+if(ANDROID)
+    # Vulkan::Headers (the fetched 1.4.x set, .h and .hpp consistent) must
+    # shadow the sysroot's older vulkan.h; the NDK's libvulkan.so is linked
+    # directly. vkw.h uses ANativeWindow + __android_log under __ANDROID__.
+    target_link_libraries(dressi_vkw PUBLIC Vulkan::Headers vulkan android log)
+else()
+    target_link_libraries(dressi_vkw PUBLIC Vulkan::Vulkan glfw)
+endif()
 if(NOT WIN32)
     # The glslang/SPIRV-Tools static archives pull in pthread and dlopen.
     find_package(Threads REQUIRED)
@@ -168,8 +229,9 @@ if(MSVC)
 endif()
 
 # Provision example / test datasets into data/ (large, .gitignore'd). Only
-# needed when something consumes them; skipped for a library-only build.
-if(DRESSI_BUILD_TESTS OR DRESSI_BUILD_EXAMPLES)
+# needed when something consumes them; skipped for a library-only build and
+# on Android (the app bundles a curated subset via Gradle).
+if((DRESSI_BUILD_TESTS OR DRESSI_BUILD_EXAMPLES) AND NOT ANDROID)
     include(FetchAssets)
 endif()
 
@@ -180,6 +242,9 @@ endif()
 
 if(DRESSI_BUILD_EXAMPLES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/CMakeLists.txt")
     add_subdirectory(examples)
+    if(NOT ANDROID)
+        add_subdirectory(tools)
+    endif()
 endif()
 
 if(DRESSI_BUILD_PYTHON)

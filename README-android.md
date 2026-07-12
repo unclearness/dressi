@@ -1,0 +1,79 @@
+# opendressi on Android
+
+The `android/` directory is an Android Studio project bundling all six
+examples into one app (`org.dressi.examples`): pick an example, watch
+the live view (streams of what the desktop shows in GLFW windows), read the
+logs, stop anytime. The engine runs exactly the desktop code path —
+headless Vulkan compute + runtime GLSL→SPIR-V (glslang built from source
+for arm64).
+
+Initial targets: Snapdragon 8 Gen 2 (Adreno 740) and Dimensity 9500
+(Arm G1-Ultra). Both are Vulkan 1.3-class; `silhouette_optimization`
+additionally needs the `geometryShader` feature (checked at startup and
+grayed out if absent).
+
+## Prerequisites (one-time)
+
+1. **Android Studio** with SDK platform 36, **NDK 28.2.13676358** and
+   **CMake 3.31.6** (SDK Manager → SDK Tools; the exact versions are pinned
+   in `android/app/build.gradle.kts`).
+2. **Datasets**: run a desktop CMake configure once (downloads `data/`):
+   ```sh
+   cmake --preset msvc          # or your platform preset
+   ```
+3. **Small env map** (the 97 MB 4k EXR is not bundled into the APK):
+   ```sh
+   cmake --build --preset release --target downsample_exr
+   ./build/tools/Release/downsample_exr.exe data/suburban_garden_4k.exr data/suburban_garden_512.exr 512
+   ```
+
+The Gradle task `syncDressiAssets` copies the curated subset
+(bunny, Avocado, DamagedHelmet, `suburban_garden_512.exr`) into
+`app/src/main/assets/data/` before every build (APK ≈ 15 MB). Missing
+files only disable the affected examples at runtime.
+
+## Build & run
+
+- Android Studio: open `android/`, let Gradle sync, Run on a connected
+  arm64 device (**no emulator** — the engine needs a real Vulkan GPU).
+- CLI:
+  ```powershell
+  cd android
+  $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
+  .\gradlew.bat :app:assembleDebug
+  adb install -r app\build\outputs\apk\debug\app-debug.apk
+  adb logcat -s dressi
+  ```
+
+## What to expect on device
+
+- The main screen shows the Vulkan device caps JSON (geometryShader,
+  maxImageDimension2D, per-stage descriptor limits) — capture this on a new
+  device first.
+- The first `execStep` of a run compiles every stage's GLSL on-device
+  (seconds on a phone; the log shows stage counts). Steady-state iterations
+  follow.
+- Example outputs (PNGs, OBJ) land in
+  `files/out/<example>/`; pull them with
+  ```sh
+  adb shell run-as org.dressi.examples ls files/out
+  adb shell "run-as org.dressi.examples cat files/out/texture_optimization/recovered_texture.png" > recovered.png
+  ```
+- Mobile UI defaults are reduced vs the desktop defaults (fewer
+  iterations/views, smaller screens); the quality-gate exit code 1 on a
+  shortened run means "converged less than the desktop gate", not an error.
+
+## Architecture notes
+
+- `examples/*/run.cpp` hold the example logic
+  (`Run<Name>(args, ExampleHost&)`); desktop `main.cpp`s and the Android
+  JNI runner both call them. `ExampleHost::makeViewer` returns GLFW windows
+  on desktop and "streams" on Android (one SurfaceView, stream selector
+  buttons); `cancelled()` is the Stop button.
+- The blit path is `ANativeWindow_lock` software copy (no EGL, no second
+  Vulkan context) — same design as the desktop `VkViewer` (CPU image →
+  window).
+- glslang/SPIRV-Tools/SPIRV-Headers/Vulkan-Headers are FetchContent-built
+  from the Khronos repos at the lockstep tag `vulkan-sdk-1.4.350.0`
+  (matches the desktop SDK; the NDK ships no arm64 glslang and only the C
+  Vulkan headers).
