@@ -3,6 +3,7 @@
 
 #include <functional>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -88,6 +89,9 @@ public:
     // Introspection (current build)
     size_t getStageCount() const;
     size_t getSubStageCount() const;
+    // Vulkan physical-device name (e.g. "Adreno (TM) 740"); empty until a
+    // context exists (shared-context construction or the first execStep).
+    std::string getDeviceName() const;
 
     // Execute one step of rendering and optimization
     void execStep();

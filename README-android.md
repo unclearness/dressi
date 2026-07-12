@@ -67,6 +67,29 @@ files only disable the affected examples at runtime.
   quality-gate exit code 1 on a shortened run means "converged less than
   the desktop gate", not an error.
 
+## Cross-device benchmarking
+
+`texture_optimization` and `silhouette_optimization` write a
+`bench.json` (device name, parameters, median steady-state ms/iter,
+quality metric) into their output directory on every run — desktop and
+Android alike. To build a comparison table across machines/phones:
+
+```sh
+# desktop: run the examples normally; bench.json lands in texopt_out/,
+# silopt_out_hardsoftras/ etc.
+
+# per Android device: run the two examples in the app, then pull
+mkdir -p bench_results
+adb shell run-as org.dressi.examples cat files/out/texture_optimization/bench.json > bench_results/<device>_texopt.json
+adb shell run-as org.dressi.examples cat files/out/silhouette_optimization/bench.json > bench_results/<device>_sil.json
+
+python scripts/bench_summary.py texopt_out silopt_out_hardsoftras bench_results
+```
+
+Output: one Markdown table per example, one row per device/run, sorted
+by median ms/iter. Filenames don't matter — the device name inside the
+JSON is what's shown.
+
 ## Architecture notes
 
 - `examples/*/run.cpp` hold the example logic

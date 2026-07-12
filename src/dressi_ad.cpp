@@ -212,6 +212,14 @@ std::vector<std::pair<Variable, Variable>> DressiAD::inputGrads() const {
     return pairs;
 }
 
+std::string DressiAD::getDeviceName() const {
+    if (!m_impl->ctx) {
+        return {};
+    }
+    const auto props = vkw::GetPhysicalProperties(m_impl->ctx->physical_device);
+    return std::string(props->deviceName.data());
+}
+
 size_t DressiAD::getStageCount() const {
     return m_impl->stages.size();
 }

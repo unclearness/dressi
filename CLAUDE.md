@@ -100,6 +100,11 @@ report a raw mean-over-all-iters:
   workload, so the Python optimization examples use 10-iteration blocks
   after the warmup and report the median block-average time. Progress
   readbacks and printing stay between timed blocks.
+- **Cross-device records:** texture_optimization / silhouette_optimization
+  write `bench.json` (device, params, median steady-state ms/iter,
+  quality) into their `--out-dir`; `scripts/bench_summary.py <dirs/files>`
+  renders the Markdown comparison table (Android: pull the files with
+  `adb shell run-as org.dressi.examples cat files/out/<example>/bench.json`).
 - **When you improve the Python (`dressi.torch`) speed, ALWAYS also
   re-measure the C++ path** (`silhouette_optimization` /
   `scripts/dressi_native_bench.py`) for the same workload — several

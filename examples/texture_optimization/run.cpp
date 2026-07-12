@@ -15,9 +15,11 @@
 #include <spdlog/cfg/env.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -199,6 +201,11 @@ int dressi_examples::RunTextureOptimization(
     using Clock = std::chrono::steady_clock;
     double opt_ms = 0.0;   // execStep only
     double view_ms = 0.0;  // recvImg + tiling + window updates
+    // Cross-device benchmark metric: MEDIAN steady-state jitter+execStep
+    // ms/iter, excluding the build/rebuild warmup (see CLAUDE.md
+    // "Benchmarking"); the running mean above stays for progress logs.
+    std::vector<double> opt_samples;
+    const int opt_warmup = std::min(20, n_iters / 2);
     for (int iter = 0; iter < n_iters; iter++) {
         if (host.cancelled()) {
             break;
@@ -207,7 +214,12 @@ int dressi_examples::RunTextureOptimization(
         send_jitter(iter);
         ad.execStep();
         const auto t1 = Clock::now();
-        opt_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
+        const double iter_ms =
+                std::chrono::duration<double, std::milli>(t1 - t0).count();
+        opt_ms += iter_ms;
+        if (iter >= opt_warmup) {
+            opt_samples.push_back(iter_ms);
+        }
 
         if (iter == 0) {
             std::vector<CpuImage> targets;
@@ -287,6 +299,35 @@ int dressi_examples::RunTextureOptimization(
                  recovered_ok, updated,
                  updated ? 100.f * float(recovered_ok) / float(updated)
                          : 0.f);
+
+    // Benchmark record for scripts/bench_summary.py
+    double median_ms = 0.0;
+    if (!opt_samples.empty()) {
+        std::sort(opt_samples.begin(), opt_samples.end());
+        median_ms = opt_samples[opt_samples.size() / 2];
+    }
+#ifdef __ANDROID__
+    const char* bench_platform = "android";
+#elif defined(_WIN32)
+    const char* bench_platform = "windows";
+#else
+    const char* bench_platform = "linux";
+#endif
+    spdlog::info("median steady-state {:.3f} ms/iter ({} warmup excluded)",
+                 median_ms, opt_warmup);
+    {
+        std::ofstream f(out_dir + "/bench.json");
+        f << fmt::format(
+                "{{\"example\":\"texture_optimization\","
+                "\"device\":\"{}\",\"platform\":\"{}\","
+                "\"screen\":{},\"views\":{},\"iters\":{},"
+                "\"median_ms_per_iter\":{:.4f},\"warmup_excluded\":{},"
+                "\"final_loss\":{:.8f},\"accurate_pct\":{:.1f}}}\n",
+                ad.getDeviceName(), bench_platform, screen.w, n_views,
+                n_iters, median_ms, opt_warmup, final_loss,
+                updated ? 100.f * float(recovered_ok) / float(updated)
+                        : 0.f);
+    }
     spdlog::info("outputs in {}/", out_dir);
 
     const bool ok = final_loss < 1e-4f && updated > 0 &&

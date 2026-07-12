@@ -32,6 +32,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -656,6 +657,38 @@ int dressi_examples::RunSilhouetteOptimization(
                  first_loss, last_loss,
                  first_loss / std::max(last_loss, 1e-12f), mean_iou,
                  flipped, face_adj.size());
+
+    // Benchmark record for scripts/bench_summary.py (median steady-state
+    // execStep ms/iter, warmup excluded — CLAUDE.md "Benchmarking")
+    double median_ms = 0.0;
+    if (!opt_samples.empty()) {
+        std::vector<double> s = opt_samples;
+        std::sort(s.begin(), s.end());
+        median_ms = s[s.size() / 2];
+    }
+#ifdef __ANDROID__
+    const char* bench_platform = "android";
+#elif defined(_WIN32)
+    const char* bench_platform = "windows";
+#else
+    const char* bench_platform = "linux";
+#endif
+    {
+        std::ofstream f(out_dir + "/bench.json");
+        f << fmt::format(
+                "{{\"example\":\"silhouette_optimization\","
+                "\"device\":\"{}\",\"platform\":\"{}\","
+                "\"technique\":\"{}\",\"screen\":{},\"views\":{},"
+                "\"iters\":{},\"samples\":{},\"peels\":{},"
+                "\"single_view\":{},"
+                "\"median_ms_per_iter\":{:.4f},\"warmup_excluded\":{},"
+                "\"mean_iou\":{:.4f},\"loss_drop\":{:.1f}}}\n",
+                ad.getDeviceName(), bench_platform, opt.technique,
+                opt.screen, opt.n_views, opt.n_iters, opt.samples,
+                opt.peels, opt.single_view ? "true" : "false", median_ms,
+                opt_warmup, mean_iou,
+                first_loss / std::max(last_loss, 1e-12f));
+    }
     spdlog::info("outputs in {}/", out_dir);
     return (last_loss < first_loss / 5.f && mean_iou > 0.85f) ? 0 : 1;
 } catch (const std::exception& e) {
