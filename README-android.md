@@ -7,10 +7,11 @@ logs, stop anytime. The engine runs exactly the desktop code path —
 headless Vulkan compute + runtime GLSL→SPIR-V (glslang built from source
 for arm64).
 
-Initial targets: Snapdragon 8 Gen 2 (Adreno 740) and Dimensity 9500
-(Arm G1-Ultra). Both are Vulkan 1.3-class; `silhouette_optimization`
-additionally needs the `geometryShader` feature (checked at startup and
-grayed out if absent).
+Verified devices: **Snapdragon 8 Gen 2 (Adreno 740)** and **Dimensity
+9500 (Arm G1-Ultra)** — all six examples run to completion on both, with
+the same parameters and results as the desktop builds.
+`silhouette_optimization` additionally needs the `geometryShader` feature
+(checked at startup and grayed out if absent; present on both devices).
 
 ## Prerequisites (one-time)
 
@@ -59,9 +60,12 @@ files only disable the affected examples at runtime.
   adb shell run-as org.dressi.examples ls files/out
   adb shell "run-as org.dressi.examples cat files/out/texture_optimization/recovered_texture.png" > recovered.png
   ```
-- Mobile UI defaults are reduced vs the desktop defaults (fewer
-  iterations/views, smaller screens); the quality-gate exit code 1 on a
-  shortened run means "converged less than the desktop gate", not an error.
+- The app runs the examples with the desktop-default parameters (only
+  the data/output paths differ) — full optimization runs take minutes on
+  a phone (e.g. ~5 min texture_optimization, ~15 s silhouette on an
+  Adreno 740). Shorten runs by editing `MainActivity.defaultArgs`; a
+  quality-gate exit code 1 on a shortened run means "converged less than
+  the desktop gate", not an error.
 
 ## Architecture notes
 

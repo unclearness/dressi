@@ -9,7 +9,11 @@ Dressi-AD is a define-and-run reverse-mode automatic differentiation
 framework specialized for differentiable rendering: computational graphs of
 2D images are compiled into GLSL fragment shaders, packed into a minimal
 number of Vulkan render passes (Reactive Shader Packing), and executed on
-any Vulkan-capable GPU. The public C++ API follows Appendix A of the paper.
+any Vulkan-capable GPU — including smartphones: every example runs
+unmodified on Android, verified on Snapdragon 8 Gen 2 (Adreno 740) and
+Dimensity 9500 (Mali/G1-Ultra class) devices (see
+[README-android.md](README-android.md)). The public C++ API follows
+Appendix A of the paper.
 
 Vertex-position gradients are provided by two techniques: **HardSoftRas**
 from the Dressi paper and the differentiable **screen-space anti-aliasing**
@@ -348,6 +352,15 @@ self-reconstruction benchmark with:
 ```sh
 ./build/examples/Release/silhouette_optimization.exe --mesh=data/Avocado/glTF/Avocado.gltf
 ```
+
+### Android
+
+`android/` is an Android Studio project that bundles all six examples into
+one app (Kotlin UI + JNI, live view on a SurfaceView, on-device
+GLSL→SPIR-V compilation). All examples complete with the same parameters
+and results as the desktop builds; **verified on a Snapdragon 8 Gen 2
+(Adreno 740) and a Dimensity 9500 (Mali/G1-Ultra class) device**. Build
+instructions and on-device notes: [README-android.md](README-android.md).
 
 ## Example
 
