@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-opendressi: a C++/Vulkan re-implementation of the Dressi differentiable
+dressi: a C++/Vulkan re-implementation of the Dressi differentiable
 renderer (arXiv:2204.01386, EG 2022). The public API follows the paper's
 Appendix A (`Variable` / `Function` / `namespace F` / `DressiAD`); when in
 doubt about API shape, that appendix is the reference. Gradient formulas

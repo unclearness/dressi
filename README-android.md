@@ -1,4 +1,4 @@
-# opendressi on Android
+# dressi on Android
 
 The `android/` directory is an Android Studio project bundling all six
 examples into one app (`org.dressi.examples`): pick an example, watch

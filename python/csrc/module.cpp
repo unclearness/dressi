@@ -54,7 +54,7 @@ struct PyVkContext {
 }  // namespace
 
 NB_MODULE(_C, m) {
-    m.doc() = "opendressi core bindings (Dressi differentiable renderer)";
+    m.doc() = "dressi core bindings (Dressi differentiable renderer)";
     // Engine/graph caches legitimately outlive the interpreter's last GC
     // pass (the torch layer caches DressiAD engines per shape signature)
     nb::set_leak_warnings(false);

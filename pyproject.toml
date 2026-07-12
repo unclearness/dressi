@@ -1,5 +1,5 @@
 [project]
-name = "opendressi"
+name = "dressi"
 version = "0.1.0"
 description = "Vulkan-backed differentiable rasterization (Dressi, EG 2022) with an nvdiffrast-compatible PyTorch API"
 requires-python = ">=3.11"
