@@ -8,8 +8,10 @@ headless Vulkan compute + runtime GLSL→SPIR-V (glslang built from source
 for arm64).
 
 Verified devices: **Snapdragon 8 Gen 2 (Adreno 740)** and **Dimensity
-9500 (Arm G1-Ultra)** — all six examples run to completion on both, with
-the same parameters and results as the desktop builds.
+9500 (Mali-G1-Ultra MC12)** — all six examples run to completion on both,
+with the same parameters and results as the desktop builds. Measured
+per-example timings for both phones are in
+[docs/benchmarks.md](docs/benchmarks.md).
 `silhouette_optimization` additionally needs the `geometryShader` feature
 (checked at startup and grayed out if absent; present on both devices).
 
