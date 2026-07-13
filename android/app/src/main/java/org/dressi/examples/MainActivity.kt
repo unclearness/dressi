@@ -3,11 +3,13 @@ package org.dressi.examples
 import android.app.Activity
 import android.graphics.Color
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.HorizontalScrollView
@@ -148,6 +150,24 @@ class MainActivity : Activity(), NativeBridge.Listener {
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.MATCH_PARENT))
         setContentView(root)
+
+        // Android 15+ (targetSdk 35+) forces edge-to-edge, so the content
+        // draws behind the system bars. Without insetting, the bottom
+        // Stop/Back row renders UNDER the navigation bar and the nav bar
+        // steals its touches — the buttons look enabled but are dead. Pad the
+        // root by the system-bar insets so every control sits in the safe area.
+        root.setOnApplyWindowInsetsListener { v, insets ->
+            @Suppress("DEPRECATION")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val bars = insets.getInsets(WindowInsets.Type.systemBars())
+                v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            } else {
+                v.setPadding(insets.systemWindowInsetLeft,
+                    insets.systemWindowInsetTop, insets.systemWindowInsetRight,
+                    insets.systemWindowInsetBottom)
+            }
+            insets
+        }
     }
 
     private fun vbox() = LinearLayout(this).apply {
