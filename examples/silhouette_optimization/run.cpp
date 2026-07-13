@@ -32,11 +32,11 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
-#include <fstream>
 #include <string>
 #include <vector>
 
 #include "../common/asset_utils.h"
+#include "../common/bench.h"
 #include "../common/geometry_utils.h"
 #include "dressi/dressi.h"
 
@@ -660,34 +660,21 @@ int dressi_examples::RunSilhouetteOptimization(
 
     // Benchmark record for scripts/bench_summary.py (median steady-state
     // execStep ms/iter, warmup excluded — CLAUDE.md "Benchmarking")
-    double median_ms = 0.0;
-    if (!opt_samples.empty()) {
-        std::vector<double> s = opt_samples;
-        std::sort(s.begin(), s.end());
-        median_ms = s[s.size() / 2];
-    }
-#ifdef __ANDROID__
-    const char* bench_platform = "android";
-#elif defined(_WIN32)
-    const char* bench_platform = "windows";
-#else
-    const char* bench_platform = "linux";
-#endif
     {
-        std::ofstream f(out_dir + "/bench.json");
-        f << fmt::format(
-                "{{\"example\":\"silhouette_optimization\","
-                "\"device\":\"{}\",\"platform\":\"{}\","
-                "\"technique\":\"{}\",\"screen\":{},\"views\":{},"
-                "\"iters\":{},\"samples\":{},\"peels\":{},"
-                "\"single_view\":{},"
-                "\"median_ms_per_iter\":{:.4f},\"warmup_excluded\":{},"
-                "\"mean_iou\":{:.4f},\"loss_drop\":{:.1f}}}\n",
-                ad.getDeviceName(), bench_platform, opt.technique,
-                opt.screen, opt.n_views, opt.n_iters, opt.samples,
-                opt.peels, opt.single_view ? "true" : "false", median_ms,
-                opt_warmup, mean_iou,
-                first_loss / std::max(last_loss, 1e-12f));
+        BenchRecord rec("silhouette_optimization", ad.getDeviceName());
+        rec.add("technique", opt.technique);
+        rec.add("screen", int64_t(opt.screen));
+        rec.add("views", int64_t(opt.n_views));
+        rec.add("iters", int64_t(opt.n_iters));
+        rec.add("samples", int64_t(opt.samples));
+        rec.add("peels", int64_t(opt.peels));
+        rec.add("single_view", opt.single_view);
+        rec.add("median_ms_per_iter", MedianMs(opt_samples));
+        rec.add("warmup_excluded", int64_t(opt_warmup));
+        rec.add("mean_iou", double(mean_iou));
+        rec.add("loss_drop",
+                double(first_loss / std::max(last_loss, 1e-12f)), 1);
+        rec.save(out_dir + "/bench.json");
     }
     spdlog::info("outputs in {}/", out_dir);
     return (last_loss < first_loss / 5.f && mean_iou > 0.85f) ? 0 : 1;

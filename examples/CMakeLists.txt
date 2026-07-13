@@ -3,6 +3,7 @@
 # the Android app links the core and provides its own host/viewer (JNI).
 add_library(dressi_examples_core STATIC
     common/asset_utils.cpp
+    common/bench.cpp
     common/geometry_utils.cpp
     common/pbr_graph.cpp
     common/example_registry.cpp

@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "../common/asset_utils.h"
+#include "../common/bench.h"
 #include "../common/pbr_graph.h"
 #include "dressi/dressi.h"
 
@@ -404,6 +405,19 @@ int dressi_examples::RunPbrEnvmapOptimization(
                  ad.recvImg(views[0].pred));
     spdlog::info("final loss {:.6f}, env PSNR {:.2f} dB over {} components",
                  ad.recvImg(loss).data[0], psnr, cnt);
+
+    // Benchmark record for scripts/bench_summary.py
+    {
+        BenchRecord rec("pbr_envmap_optimization", ad.getDeviceName());
+        rec.add("screen", int64_t(size));
+        rec.add("envres", int64_t(env_size.w));
+        rec.add("views", int64_t(n_views));
+        rec.add("iters", int64_t(n_iters));
+        rec.add("median_ms_per_iter", MedianMs(iter_ms));
+        rec.add("warmup_excluded", int64_t(warmup));
+        rec.add("psnr_db", psnr, 2);
+        rec.save(out_dir + "/bench.json");
+    }
     spdlog::info("outputs in {}/", out_dir);
     return (psnr > 10.0 && cnt > 0) ? 0 : 1;
 } catch (const std::exception& e) {

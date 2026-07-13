@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Summarize cross-device benchmark records into Markdown tables.
 
-texture_optimization and silhouette_optimization write a one-object
-``bench.json`` into their ``--out-dir`` at the end of a run (fields:
-device, platform, parameters, median steady-state ms/iter, quality).
-Collect those files from every machine/phone and render one table per
-example, one row per run, sorted by median time.
+Every example writes a one-object ``bench.json`` into its ``--out-dir``
+at the end of a run: GPU device name, host info (os / cpu / ram), the
+parameters, the MEDIAN steady-state ms per iteration (warmup excluded),
+and the example's quality metric. Collect those files from every
+machine/phone and render one table per example, one row per run, sorted
+by median time.
 
 Usage:
     python scripts/bench_summary.py [path ...]
@@ -20,7 +21,6 @@ current directory is searched — e.g. after:
 
     # pull one file per example per Android device (any filename works)
     adb shell run-as org.dressi.examples cat files/out/texture_optimization/bench.json > bench_results/pixel_texopt.json
-    adb shell run-as org.dressi.examples cat files/out/silhouette_optimization/bench.json > bench_results/pixel_sil.json
 
     python scripts/bench_summary.py texopt_out silopt_out_hardsoftras bench_results
 """
@@ -56,15 +56,29 @@ def find_records(paths):
 
 
 def params_of(rec):
-    if rec.get("example") == "silhouette_optimization":
+    ex = rec.get("example")
+    if ex == "silhouette_optimization":
         p = (f"{rec.get('technique', '?')} {rec.get('screen', '?')}px "
              f"{rec.get('views', '?')}v {rec.get('iters', '?')}it "
              f"s{rec.get('samples', '?')} K{rec.get('peels', '?')}")
         if rec.get("single_view"):
             p += " single-view"
         return p
-    return (f"{rec.get('screen', '?')}px {rec.get('views', '?')}v "
-            f"{rec.get('iters', '?')}it")
+    if ex == "texture_optimization":
+        return (f"{rec.get('screen', '?')}px {rec.get('views', '?')}v "
+                f"{rec.get('iters', '?')}it")
+    if ex == "image_fitting":
+        return f"{rec.get('screen', '?')}px {rec.get('iters', '?')}it"
+    if ex == "pbr_material_optimization":
+        return (f"{rec.get('optimize', '?')} {rec.get('screen', '?')}px "
+                f"tex{rec.get('tex', '?')} {rec.get('views', '?')}v "
+                f"{rec.get('iters', '?')}it")
+    if ex == "pbr_envmap_optimization":
+        return (f"{rec.get('screen', '?')}px env{rec.get('envres', '?')} "
+                f"{rec.get('views', '?')}v {rec.get('iters', '?')}it")
+    if ex == "pbr_shading":
+        return f"{rec.get('screen', '?')}px {rec.get('frames', '?')} frames"
+    return ""
 
 
 def quality_of(rec):
@@ -72,7 +86,27 @@ def quality_of(rec):
         return f"IoU {rec['mean_iou']:.4f}"
     if "accurate_pct" in rec:
         return f"{rec['accurate_pct']:.1f}% accurate"
+    if "psnr_db" in rec:
+        return f"PSNR {rec['psnr_db']:.2f} dB"
+    if "fps" in rec:
+        return f"{rec['fps']:.0f} FPS"
+    if "max_err" in rec:
+        return f"max err {rec['max_err']:.4f}"
     return ""
+
+
+def host_of(rec):
+    parts = []
+    if rec.get("cpu"):
+        cpu = rec["cpu"]
+        if rec.get("cpu_cores"):
+            cpu += f" ({rec['cpu_cores']}c)"
+        parts.append(cpu)
+    if rec.get("ram_gb"):
+        parts.append(f"{rec['ram_gb']:.0f} GB")
+    if rec.get("os"):
+        parts.append(rec["os"])
+    return ", ".join(parts) or rec.get("platform", "")
 
 
 def main():
@@ -84,10 +118,10 @@ def main():
         rows = [r for r in records if r.get("example") == example]
         rows.sort(key=lambda r: r.get("median_ms_per_iter", float("inf")))
         print(f"## {example}\n")
-        print("| device | platform | parameters | median ms/iter | quality |")
+        print("| device | host | parameters | median ms/iter | quality |")
         print("| --- | --- | --- | ---: | --- |")
         for r in rows:
-            print(f"| {r.get('device', '?')} | {r.get('platform', '?')} "
+            print(f"| {r.get('device', '?')} | {host_of(r)} "
                   f"| {params_of(r)} "
                   f"| {r.get('median_ms_per_iter', float('nan')):.3f} "
                   f"| {quality_of(r)} |")

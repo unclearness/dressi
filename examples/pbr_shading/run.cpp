@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "../common/asset_utils.h"
+#include "../common/bench.h"
 #include "../common/pbr_graph.h"
 #include "dressi/dressi.h"
 
@@ -255,12 +256,20 @@ int dressi_examples::RunPbrShading(const std::vector<std::string>& args,
     }
 
     if (!exec_ms.empty()) {
-        std::sort(exec_ms.begin(), exec_ms.end());
-        const double med = exec_ms[exec_ms.size() / 2];
+        const double med = MedianMs(exec_ms);
         spdlog::info(
                 "steady state ({} frames after {}-frame warmup): median "
                 "{:.3f} ms/frame = {:.0f} FPS (excl. display)",
                 exec_ms.size(), warmup, med, 1000.0 / med);
+        // Benchmark record for scripts/bench_summary.py (a viewer, not an
+        // optimization — the metric is exec+readback per frame)
+        BenchRecord rec("pbr_shading", ad.getDeviceName());
+        rec.add("screen", int64_t(screen.w));
+        rec.add("frames", int64_t(frame_idx));
+        rec.add("median_ms_per_iter", med);
+        rec.add("warmup_excluded", int64_t(warmup));
+        rec.add("fps", 1000.0 / med, 1);
+        rec.save(out_dir + "/bench.json");
     }
     SaveImagePng(out_dir + "/frame_final.png", frame_img);
     SaveImagePng(out_dir + "/debug_albedo.png", ad.recvImg(out.albedo));

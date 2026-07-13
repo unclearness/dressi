@@ -5,7 +5,8 @@
 
 namespace dressi_examples {
 
-// No options (the 64x64 fit runs in seconds everywhere); args are ignored.
+// Options: --out-dir= (default imgfit_out; receives only bench.json —
+// the 64x64 fit itself produces no image outputs).
 int RunImageFitting(const std::vector<std::string>& args, ExampleHost& host);
 
 }  // namespace dressi_examples

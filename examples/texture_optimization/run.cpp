@@ -19,11 +19,11 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
-#include <fstream>
 #include <string>
 #include <vector>
 
 #include "../common/asset_utils.h"
+#include "../common/bench.h"
 #include "../common/sobol.h"
 #include "dressi/dressi.h"
 
@@ -301,32 +301,22 @@ int dressi_examples::RunTextureOptimization(
                          : 0.f);
 
     // Benchmark record for scripts/bench_summary.py
-    double median_ms = 0.0;
-    if (!opt_samples.empty()) {
-        std::sort(opt_samples.begin(), opt_samples.end());
-        median_ms = opt_samples[opt_samples.size() / 2];
-    }
-#ifdef __ANDROID__
-    const char* bench_platform = "android";
-#elif defined(_WIN32)
-    const char* bench_platform = "windows";
-#else
-    const char* bench_platform = "linux";
-#endif
+    const double median_ms = MedianMs(opt_samples);
     spdlog::info("median steady-state {:.3f} ms/iter ({} warmup excluded)",
                  median_ms, opt_warmup);
     {
-        std::ofstream f(out_dir + "/bench.json");
-        f << fmt::format(
-                "{{\"example\":\"texture_optimization\","
-                "\"device\":\"{}\",\"platform\":\"{}\","
-                "\"screen\":{},\"views\":{},\"iters\":{},"
-                "\"median_ms_per_iter\":{:.4f},\"warmup_excluded\":{},"
-                "\"final_loss\":{:.8f},\"accurate_pct\":{:.1f}}}\n",
-                ad.getDeviceName(), bench_platform, screen.w, n_views,
-                n_iters, median_ms, opt_warmup, final_loss,
-                updated ? 100.f * float(recovered_ok) / float(updated)
-                        : 0.f);
+        BenchRecord rec("texture_optimization", ad.getDeviceName());
+        rec.add("screen", int64_t(screen.w));
+        rec.add("views", int64_t(n_views));
+        rec.add("iters", int64_t(n_iters));
+        rec.add("median_ms_per_iter", median_ms);
+        rec.add("warmup_excluded", int64_t(opt_warmup));
+        rec.add("final_loss", double(final_loss), 8);
+        rec.add("accurate_pct",
+                updated ? 100.0 * double(recovered_ok) / double(updated)
+                        : 0.0,
+                1);
+        rec.save(out_dir + "/bench.json");
     }
     spdlog::info("outputs in {}/", out_dir);
 

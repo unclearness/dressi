@@ -69,10 +69,12 @@ files only disable the affected examples at runtime.
 
 ## Cross-device benchmarking
 
-`texture_optimization` and `silhouette_optimization` write a
-`bench.json` (device name, parameters, median steady-state ms/iter,
-quality metric) into their output directory on every run — desktop and
-Android alike. To build a comparison table across machines/phones:
+Every example writes a `bench.json` into its output directory on every
+run — desktop and Android alike: GPU device name, host info (OS, CPU /
+SoC, RAM; on Android also the phone model), the parameters, the median
+steady-state ms/iter (warmup excluded), and the example's quality
+metric (IoU / accuracy / PSNR / FPS). To build a comparison table
+across machines/phones:
 
 ```sh
 # desktop: run the examples normally; bench.json lands in texopt_out/,

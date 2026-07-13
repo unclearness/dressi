@@ -232,7 +232,7 @@ class MainActivity : Activity(), NativeBridge.Listener {
         val mesh = File(data, "DamagedHelmet/glTF/DamagedHelmet.gltf")
         val env = File(data, "suburban_garden_512.exr")
         return when (name) {
-            "image_fitting" -> arrayOf()
+            "image_fitting" -> arrayOf("--out-dir=$out")
             "texture_optimization", "silhouette_optimization" -> arrayOf(
                 "--data-dir=${File(data, "bunny")}", "--out-dir=$out")
             "pbr_shading", "pbr_material_optimization",

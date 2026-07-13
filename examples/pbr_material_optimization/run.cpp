@@ -15,6 +15,7 @@
 #include <spdlog/cfg/env.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -23,6 +24,7 @@
 #include <vector>
 
 #include "../common/asset_utils.h"
+#include "../common/bench.h"
 #include "../common/pbr_graph.h"
 #include "../common/sobol.h"
 #include "dressi/dressi.h"
@@ -335,6 +337,8 @@ int dressi_examples::RunPbrMaterialOptimization(
 
     using Clock = std::chrono::steady_clock;
     double opt_ms = 0.0;
+    std::vector<double> opt_samples;  // steady-state jitter+execStep ms
+    const int opt_warmup = std::min(20, n_iters / 2);
     for (int iter = 0; iter < n_iters; iter++) {
         if (host.cancelled()) {
             break;
@@ -342,9 +346,13 @@ int dressi_examples::RunPbrMaterialOptimization(
         const auto t0 = Clock::now();
         send_jitter(iter);
         ad.execStep();
-        opt_ms += std::chrono::duration<double, std::milli>(Clock::now() -
-                                                            t0)
-                          .count();
+        const double iter_ms =
+                std::chrono::duration<double, std::milli>(Clock::now() - t0)
+                        .count();
+        opt_ms += iter_ms;
+        if (iter >= opt_warmup) {
+            opt_samples.push_back(iter_ms);
+        }
 
         if (iter == 0) {
             SaveImagePng(out_dir + "/target_view0.png",
@@ -392,6 +400,23 @@ int dressi_examples::RunPbrMaterialOptimization(
                  ad.recvImg(views[0].pred));
     spdlog::info("final loss {:.6f}, {} PSNR {:.2f} dB over {} texels",
                  ad.recvImg(loss).data[0], optimize, psnr, cnt);
+
+    // Benchmark record for scripts/bench_summary.py
+    const double median_ms = MedianMs(opt_samples);
+    spdlog::info("median steady-state {:.3f} ms/iter ({} warmup excluded)",
+                 median_ms, opt_warmup);
+    {
+        BenchRecord rec("pbr_material_optimization", ad.getDeviceName());
+        rec.add("optimize", optimize);
+        rec.add("screen", int64_t(size));
+        rec.add("tex", int64_t(tex_max));
+        rec.add("views", int64_t(n_views));
+        rec.add("iters", int64_t(n_iters));
+        rec.add("median_ms_per_iter", median_ms);
+        rec.add("warmup_excluded", int64_t(opt_warmup));
+        rec.add("psnr_db", psnr, 2);
+        rec.save(out_dir + "/bench.json");
+    }
     spdlog::info("outputs in {}/", out_dir);
     return (psnr > 20.0 && cnt > 0) ? 0 : 1;
 } catch (const std::exception& e) {
