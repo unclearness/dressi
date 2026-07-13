@@ -135,10 +135,14 @@ FetchContent_Declare(tinyobjloader
     GIT_SHALLOW TRUE
     SOURCE_SUBDIR nonexistent_disable_add_subdirectory)
 FetchContent_MakeAvailable(tinyobjloader)
+# stb has no release tags; pin an explicit commit for reproducibility (never
+# track the moving `master`). This matches VulkanWrapper's STB_TAG so both stb
+# copies in the build are identical. GIT_SHALLOW is OFF because a shallow clone
+# cannot reliably reference an arbitrary commit hash.
 FetchContent_Declare(stb
     GIT_REPOSITORY https://github.com/nothings/stb.git
-    GIT_TAG master
-    GIT_SHALLOW TRUE
+    GIT_TAG c9064e317699d2e495f36ba4f9ac037e88ee371a
+    GIT_SHALLOW FALSE
     SOURCE_SUBDIR nonexistent_disable_add_subdirectory)
 FetchContent_MakeAvailable(stb)
 # tinygltf (glTF 2.0; the successor of tinygltfloader)

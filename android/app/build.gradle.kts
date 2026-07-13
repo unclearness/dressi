@@ -27,7 +27,22 @@ android {
     }
     buildFeatures { buildConfig = true }
     buildTypes {
-        release { isMinifyEnabled = false }
+        release {
+            isMinifyEnabled = false
+            // Benchmarking build: it must be installable AND pullable. Sign
+            // with the debug key so `adb install` works, and keep it
+            // debuggable so scripts/pull_android_benches.sh can `run-as` the
+            // app to read files/out/*/bench.json. AGP would otherwise pick the
+            // CMake "Debug" config for a debuggable variant (no -O, the
+            // assembleDebug native lib has only -g), so pin the native build
+            // to Release (-O3/-DNDEBUG, matching the desktop `release` preset)
+            // to keep the execStep timings meaningful.
+            signingConfig = signingConfigs.getByName("debug")
+            isDebuggable = true
+            externalNativeBuild {
+                cmake { arguments += "-DCMAKE_BUILD_TYPE=Release" }
+            }
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

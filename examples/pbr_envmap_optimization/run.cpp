@@ -25,6 +25,7 @@
 #include <spdlog/cfg/env.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -33,6 +34,7 @@
 #include <vector>
 
 #include "../common/asset_utils.h"
+#include "../common/bench.h"
 #include "../common/pbr_graph.h"
 #include "dressi/dressi.h"
 
@@ -94,7 +96,18 @@ int dressi_examples::RunPbrEnvmapOptimization(
     std::string out_dir = "pbrenv_out";
     uint32_t size = 192, env_w = 64, n_views = 4;
     int n_iters = 1500;
+    int view_interval = 1;  // live-viewer refresh cadence (iters); 0 = off
     float lr = 0.05f;
+    // Spatial smoothness prior on the recovered env (0 = off). The 4-view
+    // inverse is underdetermined: weakly observed texels (equirect poles +
+    // the sphere's nadir) fill with per-texel noise that the >=0 clamp
+    // rectifies into black speckle. A 2x2-block-variance penalty pulls each
+    // texel toward its local mean, filling those holes.
+    float env_reg = 0.05f;
+    // Non-negativity clamp on the optimized radiance (physically correct).
+    // --clamp=0 is a diagnostic: without it the underconstrained texels
+    // random-walk around their init instead of piling up at black.
+    bool clamp_nonneg = true;
     for (const std::string& arg : args) {
         if (arg.rfind("--mesh=", 0) == 0) {
             mesh_path = arg.substr(7);
@@ -110,8 +123,14 @@ int dressi_examples::RunPbrEnvmapOptimization(
             n_views = uint32_t(std::stoi(arg.substr(8)));
         } else if (arg.rfind("--iters=", 0) == 0) {
             n_iters = std::stoi(arg.substr(8));
+        } else if (arg.rfind("--view-interval=", 0) == 0) {
+            view_interval = std::stoi(arg.substr(16));
         } else if (arg.rfind("--lr=", 0) == 0) {
             lr = std::stof(arg.substr(5));
+        } else if (arg.rfind("--env-reg=", 0) == 0) {
+            env_reg = std::stof(arg.substr(10));
+        } else if (arg.rfind("--clamp=", 0) == 0) {
+            clamp_nonneg = std::stoi(arg.substr(8)) != 0;
         }
     }
     const ImgSize screen = {size, size};
@@ -217,6 +236,20 @@ int dressi_examples::RunPbrEnvmapOptimization(
     }
     Variable loss = F::SumPixelWise(view_losses);
 
+    // Env smoothness prior: mean per-2x2-block variance of the env,
+    // Var[x] = E[x^2] - E[x]^2 evaluated per non-overlapping block with
+    // AvgPool2x2. Minimizing it pulls each texel toward its local mean, so
+    // the underconstrained (noisy, black-speckled) poles/nadir are filled
+    // from their neighbors. Added to the loss => its gradient rides the
+    // same Adam step as the render gradient. Built BEFORE the requires-grad
+    // pass below so the pass propagates through it.
+    if (env_reg > 0.f) {
+        Variable pool_sq = F::AvgPool2x2(env_opt * env_opt);
+        Variable pool = F::AvgPool2x2(env_opt);
+        Variable block_var = pool_sq - pool * pool;
+        loss = loss + F::Float(env_reg) * F::Mean(block_var);
+    }
+
     Variable env_mut = env_opt;
     env_mut.setRequiresGradRecursively();
 
@@ -244,8 +277,13 @@ int dressi_examples::RunPbrEnvmapOptimization(
             ad.addUpdate(adam_t, t_new);
             state_registered = true;
         }
-        // Radiance stays non-negative (no upper bound: HDR)
-        return Variables{F::Max(env_opt - step, F::Float(0.f))};
+        // Radiance stays non-negative (no upper bound: HDR). --clamp=0
+        // drops the floor for the black-vs-gray diagnostic.
+        Variable updated = env_opt - step;
+        if (clamp_nonneg) {
+            updated = F::Max(updated, F::Float(0.f));
+        }
+        return Variables{updated};
     });
     for (auto& view : views) {
         ad.markOutput(view.target);
@@ -334,6 +372,7 @@ int dressi_examples::RunPbrEnvmapOptimization(
 
     using Clock = std::chrono::steady_clock;
     std::vector<double> iter_ms;  // steady-state samples (>= warmup)
+    std::vector<double> warmup_samples;  // the excluded build/rebuild iters
     const int warmup = 20;
     const auto median_ms = [&]() {
         if (iter_ms.empty()) {
@@ -354,6 +393,8 @@ int dressi_examples::RunPbrEnvmapOptimization(
                                   .count();
         if (iter >= warmup) {
             iter_ms.push_back(ms);
+        } else {
+            warmup_samples.push_back(ms);
         }
 
         if (iter == 0) {
@@ -367,7 +408,7 @@ int dressi_examples::RunPbrEnvmapOptimization(
             }
             target_tile = TileImages(targets, tile_cols);
         }
-        if (viewer_open && iter % 20 == 0) {
+        if (viewer_open && view_interval > 0 && iter % view_interval == 0) {
             std::vector<CpuImage> preds;
             for (auto& view : views) {
                 preds.push_back(ad.recvImg(view.pred));
@@ -402,8 +443,78 @@ int dressi_examples::RunPbrEnvmapOptimization(
                  Upscale(TonemapForView(ad.recvImg(env_opt)), 8));
     SaveImagePng(out_dir + "/render_last_view0.png",
                  ad.recvImg(views[0].pred));
+
+    // Diagnostic (see --clamp): the >=0 clamp makes underconstrained texels
+    // pile up at exactly 0 (black speckle); --clamp=0 lets them spread
+    // (gray noise, some negative). Report the distribution and save a
+    // linear-grayscale view that renders 0 as black (unlike the Reinhard
+    // tonemap, which NaNs on the negatives that appear with --clamp=0).
+    {
+        const CpuImage rec = ad.recvImg(env_opt);
+        float mn = 1e30f, mx = -1e30f;
+        double sum = 0.0;
+        size_t n_black = 0, n_neg = 0;
+        for (float v : rec.data) {
+            mn = std::min(mn, v);
+            mx = std::max(mx, v);
+            sum += v;
+            if (v < 0.02f) n_black++;
+            if (v < 0.f) n_neg++;
+        }
+        const double N = double(rec.data.size());
+        spdlog::info("env stats (clamp={}): min {:.3f} max {:.2f} mean {:.3f}"
+                     " | near-black(<0.02) {:.1f}% | negative {:.1f}%",
+                     clamp_nonneg, mn, mx, sum / N,
+                     100.0 * double(n_black) / N, 100.0 * double(n_neg) / N);
+        // Diverging view: non-negative radiance -> grayscale, NEGATIVE
+        // radiance -> red. With --clamp=1 the underconstrained texels are
+        // black (0); with --clamp=0 the very same texels light up red,
+        // i.e. the black speckle is where the env wants to go negative.
+        const auto g22 = [](float x) {
+            x = x < 0.f ? 0.f : (x > 1.f ? 1.f : x);
+            return std::pow(x, 1.f / 2.2f);
+        };
+        CpuImage lin(rec.width, rec.height, 3);
+        for (uint32_t i = 0; i < rec.width * rec.height; i++) {
+            const float v = rec.data[i * rec.channels];  // R channel proxy
+            if (v < 0.f) {
+                lin.data[i * 3 + 0] = g22(-v / 0.6f);
+                lin.data[i * 3 + 1] = 0.f;
+                lin.data[i * 3 + 2] = 0.f;
+            } else {
+                const float g = g22(v / 0.6f);
+                lin.data[i * 3 + 0] = g;
+                lin.data[i * 3 + 1] = g;
+                lin.data[i * 3 + 2] = g;
+            }
+        }
+        SaveImagePng(out_dir + "/env_recovered_signed.png", Upscale(lin, 8));
+    }
     spdlog::info("final loss {:.6f}, env PSNR {:.2f} dB over {} components",
                  ad.recvImg(loss).data[0], psnr, cnt);
+
+    // Benchmark record for scripts/bench_summary.py
+    const double steady_median = MedianMs(iter_ms);
+    const double warmup_ms = WarmupMs(warmup_samples, steady_median);
+    const double first_build_ms =
+            warmup_samples.empty() ? 0.0 : warmup_samples.front();
+    spdlog::info("one-time build/warmup {:.1f} ms (first build {:.1f} ms)",
+                 warmup_ms, first_build_ms);
+    {
+        BenchRecord rec("pbr_envmap_optimization", ad.getDeviceName());
+        rec.addPacking(ad.getFuncCount(), ad.getSubStageCount(),
+                       ad.getStageCount());
+        rec.add("screen", int64_t(size));
+        rec.add("envres", int64_t(env_size.w));
+        rec.add("views", int64_t(n_views));
+        rec.add("iters", int64_t(n_iters));
+        rec.add("median_ms_per_iter", steady_median);
+        rec.add("warmup_excluded", int64_t(warmup));
+        rec.add("warmup_ms", warmup_ms, 1);
+        rec.add("first_build_ms", first_build_ms, 1);
+        rec.add("psnr_db", psnr, 2);
+        rec.save(out_dir + "/bench.json");
+    }
     spdlog::info("outputs in {}/", out_dir);
     return (psnr > 10.0 && cnt > 0) ? 0 : 1;
 } catch (const std::exception& e) {

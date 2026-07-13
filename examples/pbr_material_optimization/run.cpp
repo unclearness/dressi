@@ -15,6 +15,7 @@
 #include <spdlog/cfg/env.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -23,6 +24,7 @@
 #include <vector>
 
 #include "../common/asset_utils.h"
+#include "../common/bench.h"
 #include "../common/pbr_graph.h"
 #include "../common/sobol.h"
 #include "dressi/dressi.h"
@@ -67,7 +69,8 @@ int dressi_examples::RunPbrMaterialOptimization(
     std::string out_dir = "pbrmat_out";
     std::string optimize = "albedo";  // or "mr"
     uint32_t size = 256, tex_max = 512, n_views = 6;
-    int n_iters = 2000;
+    int n_iters = 1200;  // albedo PSNR ~20.7 dB (21.2 at 2000; slow log climb)
+    int view_interval = 1;  // live-viewer refresh cadence (iters); 0 = off
     float lr = 0.02f;
     for (const std::string& arg : args) {
         if (arg.rfind("--mesh=", 0) == 0) {
@@ -86,6 +89,8 @@ int dressi_examples::RunPbrMaterialOptimization(
             n_views = uint32_t(std::stoul(arg.substr(8)));
         } else if (arg.rfind("--iters=", 0) == 0) {
             n_iters = std::stoi(arg.substr(8));
+        } else if (arg.rfind("--view-interval=", 0) == 0) {
+            view_interval = std::stoi(arg.substr(16));
         } else if (arg.rfind("--lr=", 0) == 0) {
             lr = std::stof(arg.substr(5));
         }
@@ -335,6 +340,9 @@ int dressi_examples::RunPbrMaterialOptimization(
 
     using Clock = std::chrono::steady_clock;
     double opt_ms = 0.0;
+    std::vector<double> opt_samples;  // steady-state jitter+execStep ms
+    std::vector<double> warmup_samples;  // the excluded build/rebuild iters
+    const int opt_warmup = std::min(20, n_iters / 2);
     for (int iter = 0; iter < n_iters; iter++) {
         if (host.cancelled()) {
             break;
@@ -342,9 +350,15 @@ int dressi_examples::RunPbrMaterialOptimization(
         const auto t0 = Clock::now();
         send_jitter(iter);
         ad.execStep();
-        opt_ms += std::chrono::duration<double, std::milli>(Clock::now() -
-                                                            t0)
-                          .count();
+        const double iter_ms =
+                std::chrono::duration<double, std::milli>(Clock::now() - t0)
+                        .count();
+        opt_ms += iter_ms;
+        if (iter >= opt_warmup) {
+            opt_samples.push_back(iter_ms);
+        } else {
+            warmup_samples.push_back(iter_ms);
+        }
 
         if (iter == 0) {
             SaveImagePng(out_dir + "/target_view0.png",
@@ -355,7 +369,7 @@ int dressi_examples::RunPbrMaterialOptimization(
             }
             target_tile = TileImages(targets, tile_cols);
         }
-        if (viewer_open && iter % 20 == 0) {
+        if (viewer_open && view_interval > 0 && iter % view_interval == 0) {
             std::vector<CpuImage> preds;
             for (auto& view : views) {
                 preds.push_back(ad.recvImg(view.pred));
@@ -392,6 +406,31 @@ int dressi_examples::RunPbrMaterialOptimization(
                  ad.recvImg(views[0].pred));
     spdlog::info("final loss {:.6f}, {} PSNR {:.2f} dB over {} texels",
                  ad.recvImg(loss).data[0], optimize, psnr, cnt);
+
+    // Benchmark record for scripts/bench_summary.py
+    const double median_ms = MedianMs(opt_samples);
+    const double warmup_ms = WarmupMs(warmup_samples, median_ms);
+    const double first_build_ms =
+            warmup_samples.empty() ? 0.0 : warmup_samples.front();
+    spdlog::info("median steady-state {:.3f} ms/iter ({} warmup excluded); "
+                 "one-time build/warmup {:.1f} ms (first build {:.1f} ms)",
+                 median_ms, opt_warmup, warmup_ms, first_build_ms);
+    {
+        BenchRecord rec("pbr_material_optimization", ad.getDeviceName());
+        rec.addPacking(ad.getFuncCount(), ad.getSubStageCount(),
+                       ad.getStageCount());
+        rec.add("optimize", optimize);
+        rec.add("screen", int64_t(size));
+        rec.add("tex", int64_t(tex_max));
+        rec.add("views", int64_t(n_views));
+        rec.add("iters", int64_t(n_iters));
+        rec.add("median_ms_per_iter", median_ms);
+        rec.add("warmup_excluded", int64_t(opt_warmup));
+        rec.add("warmup_ms", warmup_ms, 1);
+        rec.add("first_build_ms", first_build_ms, 1);
+        rec.add("psnr_db", psnr, 2);
+        rec.save(out_dir + "/bench.json");
+    }
     spdlog::info("outputs in {}/", out_dir);
     return (psnr > 20.0 && cnt > 0) ? 0 : 1;
 } catch (const std::exception& e) {

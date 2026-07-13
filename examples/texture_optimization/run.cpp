@@ -15,6 +15,7 @@
 #include <spdlog/cfg/env.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -22,6 +23,7 @@
 #include <vector>
 
 #include "../common/asset_utils.h"
+#include "../common/bench.h"
 #include "../common/sobol.h"
 #include "dressi/dressi.h"
 
@@ -48,7 +50,8 @@ int dressi_examples::RunTextureOptimization(
     std::string data_dir = "data/bunny";
     std::string out_dir = "texopt_out";
     uint32_t n_views = 6;
-    int n_iters = 4000;
+    int n_iters = 1500;  // 98.7% texel coverage (99.4% at 4000; jitter-limited)
+    int view_interval = 1;  // live-viewer refresh cadence (iters); 0 = off
     for (const std::string& arg : args) {
         if (arg.rfind("--data-dir=", 0) == 0) {
             data_dir = arg.substr(11);
@@ -58,6 +61,8 @@ int dressi_examples::RunTextureOptimization(
             n_views = uint32_t(std::stoul(arg.substr(8)));
         } else if (arg.rfind("--iters=", 0) == 0) {
             n_iters = std::stoi(arg.substr(8));
+        } else if (arg.rfind("--view-interval=", 0) == 0) {
+            view_interval = std::stoi(arg.substr(16));
         } else if (arg.rfind("--", 0) != 0) {
             data_dir = arg;  // positional data dir (back-compat)
         } else {
@@ -193,12 +198,17 @@ int dressi_examples::RunTextureOptimization(
     if (!viewer_open) {
         spdlog::warn("live viewer unavailable; continuing headless");
     }
-    const int view_interval = 10;
     CpuImage target_tile;
 
     using Clock = std::chrono::steady_clock;
     double opt_ms = 0.0;   // execStep only
     double view_ms = 0.0;  // recvImg + tiling + window updates
+    // Cross-device benchmark metric: MEDIAN steady-state jitter+execStep
+    // ms/iter, excluding the build/rebuild warmup (see CLAUDE.md
+    // "Benchmarking"); the running mean above stays for progress logs.
+    std::vector<double> opt_samples;
+    std::vector<double> warmup_samples;  // the excluded build/rebuild iters
+    const int opt_warmup = std::min(20, n_iters / 2);
     for (int iter = 0; iter < n_iters; iter++) {
         if (host.cancelled()) {
             break;
@@ -207,7 +217,14 @@ int dressi_examples::RunTextureOptimization(
         send_jitter(iter);
         ad.execStep();
         const auto t1 = Clock::now();
-        opt_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
+        const double iter_ms =
+                std::chrono::duration<double, std::milli>(t1 - t0).count();
+        opt_ms += iter_ms;
+        if (iter >= opt_warmup) {
+            opt_samples.push_back(iter_ms);
+        } else {
+            warmup_samples.push_back(iter_ms);
+        }
 
         if (iter == 0) {
             std::vector<CpuImage> targets;
@@ -221,7 +238,7 @@ int dressi_examples::RunTextureOptimization(
                          ad.recvImg(views[0].pred));
         }
 
-        if (viewer_open && iter % view_interval == 0) {
+        if (viewer_open && view_interval > 0 && iter % view_interval == 0) {
             const auto tv0 = Clock::now();
             std::vector<CpuImage> preds;
             for (uint32_t v = 0; v < n_views; v++) {
@@ -287,6 +304,33 @@ int dressi_examples::RunTextureOptimization(
                  recovered_ok, updated,
                  updated ? 100.f * float(recovered_ok) / float(updated)
                          : 0.f);
+
+    // Benchmark record for scripts/bench_summary.py
+    const double median_ms = MedianMs(opt_samples);
+    const double warmup_ms = WarmupMs(warmup_samples, median_ms);
+    const double first_build_ms =
+            warmup_samples.empty() ? 0.0 : warmup_samples.front();
+    spdlog::info("median steady-state {:.3f} ms/iter ({} warmup excluded); "
+                 "one-time build/warmup {:.1f} ms (first build {:.1f} ms)",
+                 median_ms, opt_warmup, warmup_ms, first_build_ms);
+    {
+        BenchRecord rec("texture_optimization", ad.getDeviceName());
+        rec.addPacking(ad.getFuncCount(), ad.getSubStageCount(),
+                       ad.getStageCount());
+        rec.add("screen", int64_t(screen.w));
+        rec.add("views", int64_t(n_views));
+        rec.add("iters", int64_t(n_iters));
+        rec.add("median_ms_per_iter", median_ms);
+        rec.add("warmup_excluded", int64_t(opt_warmup));
+        rec.add("warmup_ms", warmup_ms, 1);
+        rec.add("first_build_ms", first_build_ms, 1);
+        rec.add("final_loss", double(final_loss), 8);
+        rec.add("accurate_pct",
+                updated ? 100.0 * double(recovered_ok) / double(updated)
+                        : 0.0,
+                1);
+        rec.save(out_dir + "/bench.json");
+    }
     spdlog::info("outputs in {}/", out_dir);
 
     const bool ok = final_loss < 1e-4f && updated > 0 &&

@@ -100,6 +100,22 @@ report a raw mean-over-all-iters:
   workload, so the Python optimization examples use 10-iteration blocks
   after the warmup and report the median block-average time. Progress
   readbacks and printing stay between timed blocks.
+- **Cross-device records:** every example writes `bench.json` (GPU device,
+  host os/cpu/ram — phone model on Android, params, median steady-state
+  ms/iter, quality) into its `--out-dir` via `examples/common/bench.h`;
+  `scripts/bench_summary.py <dirs/files>` renders the Markdown comparison
+  table (Android: pull the files with
+  `adb shell run-as org.dressi.examples cat files/out/<example>/bench.json`).
+- **Warmup is recorded too, not just the median.** The same record carries
+  `warmup_ms` (the one-time build/rebuild overhead = wall time of the
+  excluded warmup iters minus what steady state would cost them; captures
+  pack + GLSL compile + Vulkan build AND the reactive rebuilds at iter ~2
+  and ~8) and `first_build_ms` (iter 0 alone, the single largest build).
+  `WarmupMs()` in `bench.cpp` computes it from the warmup-phase samples the
+  examples now keep; it is wall-clock and rough by design (for the per-phase
+  breakdown — substage-pack / vulkan-build / upload — use `SPDLOG_LEVEL=debug`,
+  which prints each `execStep`'s phase timings). The summary table shows a
+  `warmup ms (first)` column.
 - **When you improve the Python (`dressi.torch`) speed, ALWAYS also
   re-measure the C++ path** (`silhouette_optimization` /
   `scripts/dressi_native_bench.py`) for the same workload — several

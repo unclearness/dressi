@@ -8,8 +8,10 @@ headless Vulkan compute + runtime GLSL→SPIR-V (glslang built from source
 for arm64).
 
 Verified devices: **Snapdragon 8 Gen 2 (Adreno 740)** and **Dimensity
-9500 (Arm G1-Ultra)** — all six examples run to completion on both, with
-the same parameters and results as the desktop builds.
+9500 (Mali-G1-Ultra MC12)** — all six examples run to completion on both,
+with the same parameters and results as the desktop builds. Measured
+per-example timings for both phones are in
+[docs/benchmarks.md](docs/benchmarks.md).
 `silhouette_optimization` additionally needs the `geometryShader` feature
 (checked at startup and grayed out if absent; present on both devices).
 
@@ -37,13 +39,26 @@ files only disable the affected examples at runtime.
 
 - Android Studio: open `android/`, let Gradle sync, Run on a connected
   arm64 device (**no emulator** — the engine needs a real Vulkan GPU).
-- CLI:
+- CLI (debug — for development/logcat):
   ```powershell
   cd android
   $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
   .\gradlew.bat :app:assembleDebug
   adb install -r app\build\outputs\apk\debug\app-debug.apk
   adb logcat -s dressi
+  ```
+- **For any performance measurement, build the RELEASE variant instead.**
+  The debug build's native `.so` is compiled with no optimization (`-g`
+  only, no `-O`/`-DNDEBUG`), so its `execStep` timings are meaningless.
+  The `release` buildType is configured as a benchmarking build: native
+  is pinned to CMake `Release` (`-O3`/`-DNDEBUG`, matching the desktop
+  `release` preset), and it is signed with the debug key and kept
+  `debuggable` so `adb install` and `run-as` (bench pull) both work.
+  ```powershell
+  cd android
+  $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
+  .\gradlew.bat :app:assembleRelease
+  adb install -r app\build\outputs\apk\release\app-release.apk
   ```
 
 ## What to expect on device
@@ -66,6 +81,45 @@ files only disable the affected examples at runtime.
   Adreno 740). Shorten runs by editing `MainActivity.defaultArgs`; a
   quality-gate exit code 1 on a shortened run means "converged less than
   the desktop gate", not an error.
+
+## Cross-device benchmarking
+
+Every example writes a `bench.json` into its output directory on every
+run — desktop and Android alike: GPU device name, host info (OS, CPU /
+SoC, RAM; on Android also the phone model), the parameters, the median
+steady-state ms/iter (warmup excluded), and the example's quality
+metric (IoU / accuracy / PSNR / FPS). To build a comparison table
+across machines/phones:
+
+All `adb`/pull commands below run on the **host PC**, not on the phone —
+they drive the device over USB. On Windows run them in **Git Bash**
+(`adb` is the same binary on every OS); PowerShell works for the plain
+`adb` lines too, but `scripts/pull_android_benches.sh` is a bash script
+and needs Git Bash / WSL.
+
+```sh
+# desktop: run the examples normally; bench.json lands in texopt_out/,
+# silopt_out_hardsoftras/ etc.
+
+# per Android device: run the examples in the app (RELEASE build — see
+# "Build & run"), then pull every bench.json in one shot. Silhouette runs
+# as two technique buttons, each into its own out-dir
+# (files/out/silhouette_optimization_hardsoftras and _aa).
+scripts/pull_android_benches.sh -o bench_results/<device>
+python scripts/bench_summary.py bench_results/<device>
+```
+
+The pull script uses `run-as`, so it needs a debuggable build — the
+release benchmarking build above qualifies. To pull a single record by
+hand instead:
+
+```sh
+adb shell run-as org.dressi.examples cat files/out/silhouette_optimization_aa/bench.json > sil_aa.json
+```
+
+Output: one Markdown table per example, one row per device/run, sorted
+by median ms/iter. Filenames don't matter — the device name inside the
+JSON is what's shown.
 
 ## Architecture notes
 
