@@ -191,19 +191,28 @@ class MainActivity : Activity(), NativeBridge.Listener {
             val name = entry.substringBefore('|')
             val needsGeom = entry.substringAfter('|') == "1"
             val missing = missingAsset(name, data)
-            val button = Button(this).apply { text = name }
-            when {
-                needsGeom && !geometryShader -> {
-                    button.isEnabled = false
-                    button.text = "$name (geometryShader unavailable)"
-                }
-                missing != null -> {
-                    button.isEnabled = false
-                    button.text = "$name (missing asset: $missing)"
-                }
-                else -> button.setOnClickListener { startExample(name) }
+            val disabledReason = when {
+                needsGeom && !geometryShader -> "geometryShader unavailable"
+                missing != null -> "missing asset: $missing"
+                else -> null
             }
-            exampleList.addView(button)
+            // Silhouette runs two selectable techniques; give each its own
+            // button + out-dir so both bench.json records coexist. Everything
+            // else is a single technique-less button.
+            val techniques =
+                if (name == "silhouette_optimization") listOf("hardsoftras", "aa")
+                else listOf<String?>(null)
+            for (tech in techniques) {
+                val label = if (tech != null) "$name ($tech)" else name
+                val button = Button(this).apply { text = label }
+                if (disabledReason != null) {
+                    button.isEnabled = false
+                    button.text = "$label — $disabledReason"
+                } else {
+                    button.setOnClickListener { startExample(name, tech) }
+                }
+                exampleList.addView(button)
+            }
         }
     }
 
@@ -226,24 +235,39 @@ class MainActivity : Activity(), NativeBridge.Listener {
     // Native defaults == desktop defaults (verified on Adreno 740: no
     // device limit is hit; full optimization runs take ~5-8 min). Only the
     // paths differ from desktop. Tweak here for shorter runs.
-    private fun defaultArgs(name: String): Array<String> {
+    private fun defaultArgs(name: String, technique: String?): Array<String> {
         val data = dataDir!!
-        val out = File(filesDir, "out/$name").absolutePath
+        // Technique variants (silhouette) get a per-technique out-dir so their
+        // bench.json records do not overwrite each other.
+        val outName = if (technique != null) "${name}_$technique" else name
+        val out = File(filesDir, "out/$outName").absolutePath
         val mesh = File(data, "DamagedHelmet/glTF/DamagedHelmet.gltf")
         val env = File(data, "suburban_garden_512.exr")
         return when (name) {
             "image_fitting" -> arrayOf("--out-dir=$out")
-            "texture_optimization", "silhouette_optimization" -> arrayOf(
+            "texture_optimization" -> arrayOf(
                 "--data-dir=${File(data, "bunny")}", "--out-dir=$out")
-            "pbr_shading", "pbr_material_optimization",
+            "silhouette_optimization" -> arrayOf(
+                "--data-dir=${File(data, "bunny")}", "--out-dir=$out",
+                "--technique=${technique ?: "hardsoftras"}")
+            // pbr_shading is an interactive viewer that never self-terminates
+            // (time-based orbit), so on a phone it only writes bench.json if
+            // the user taps Stop after >20 frames — and a non-reproducible
+            // wall-clock orbit is unfit for a benchmark anyway. Give it a fixed
+            // frame budget so it runs a deterministic orbit, self-terminates,
+            // and always emits bench.json (like the optimization examples).
+            "pbr_shading" -> arrayOf(
+                "--mesh=$mesh", "--env=$env", "--out-dir=$out",
+                "--frames=200")
+            "pbr_material_optimization",
             "pbr_envmap_optimization" -> arrayOf(
                 "--mesh=$mesh", "--env=$env", "--out-dir=$out")
             else -> arrayOf()
         }
     }
 
-    private fun startExample(name: String) {
-        val args = defaultArgs(name)
+    private fun startExample(name: String, technique: String? = null) {
+        val args = defaultArgs(name, technique)
         logLines.clear()
         logText.text = ""
         if (!NativeBridge.startExample(name, args)) {
@@ -251,7 +275,7 @@ class MainActivity : Activity(), NativeBridge.Listener {
                 Toast.LENGTH_SHORT).show()
             return
         }
-        runTitle.text = name
+        runTitle.text = if (technique != null) "$name ($technique)" else name
         stopButton.isEnabled = true
         stopButton.text = "Stop"
         backButton.isEnabled = false

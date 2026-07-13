@@ -40,12 +40,15 @@ while getopts 'o:s:p:n:lh' opt; do
     esac
 done
 
-# Example registry names == the on-device out/<name> dirs (see
-# examples/common/example_registry.cpp and MainActivity.defaultArgs).
+# On-device out/<dir> names. These equal the registry example names EXCEPT
+# silhouette, which the app runs as two technique variants each into its own
+# out-dir (out/silhouette_optimization_<technique>); see
+# examples/common/example_registry.cpp and MainActivity.defaultArgs.
 examples=(
     image_fitting
     texture_optimization
-    silhouette_optimization
+    silhouette_optimization_hardsoftras
+    silhouette_optimization_aa
     pbr_shading
     pbr_material_optimization
     pbr_envmap_optimization
