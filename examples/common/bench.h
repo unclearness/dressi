@@ -12,6 +12,16 @@ namespace dressi_examples {
 // CLAUDE.md "Benchmarking".
 double MedianMs(std::vector<double> samples);
 
+// One-time build/warmup overhead in ms: the extra wall time the excluded
+// warmup iterations cost beyond the steady-state rate. Captures the full
+// pack + GLSL-compile + Vulkan-build ladder AND the reactive-cache
+// rebuilds at iter ~2 and ~8 (all within the warmup window).
+// `warmup_samples` are the per-iter ms of the excluded warmup iters;
+// `steady_median` is the post-warmup MedianMs. Rough by design (wall
+// clock, not the per-phase breakdown) — see CLAUDE.md "Benchmarking".
+double WarmupMs(const std::vector<double>& warmup_samples,
+                double steady_median);
+
 // One flat-JSON benchmark record for scripts/bench_summary.py. The
 // constructor fills the common keys (example, device, platform); add the
 // example's parameters and metrics, then save() into the run's out dir.

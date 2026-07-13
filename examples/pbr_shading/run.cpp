@@ -58,6 +58,7 @@ int dressi_examples::RunPbrShading(const std::vector<std::string>& args,
     std::string out_dir = "pbr_out";
     uint32_t size = 512;
     int max_frames = 0;  // 0 = until the window is closed
+    int view_interval = 1;  // live-viewer refresh cadence (frames); 0 = off
     for (const std::string& arg : args) {
         if (arg.rfind("--mesh=", 0) == 0) {
             mesh_path = arg.substr(7);
@@ -69,6 +70,8 @@ int dressi_examples::RunPbrShading(const std::vector<std::string>& args,
             size = uint32_t(std::stoi(arg.substr(7)));
         } else if (arg.rfind("--frames=", 0) == 0) {
             max_frames = std::stoi(arg.substr(9));
+        } else if (arg.rfind("--view-interval=", 0) == 0) {
+            view_interval = std::stoi(arg.substr(16));
         } else {
             mesh_path = arg;
         }
@@ -182,6 +185,7 @@ int dressi_examples::RunPbrShading(const std::vector<std::string>& args,
     using Clock = std::chrono::steady_clock;
     const auto t_start = Clock::now();
     std::vector<double> exec_ms;  // steady-state samples (>= warmup)
+    std::vector<double> warmup_samples;  // the excluded build/rebuild frames
     const int warmup = 20;
     CpuImage frame_img;
     int frame_idx = 0;
@@ -231,9 +235,12 @@ int dressi_examples::RunPbrShading(const std::vector<std::string>& args,
                                   .count();
         if (frame_idx >= warmup) {
             exec_ms.push_back(ms);
+        } else {
+            warmup_samples.push_back(ms);
         }
 
-        if (viewer_open) {
+        if (viewer_open && view_interval > 0 &&
+            frame_idx % view_interval == 0) {
             viewer_open = viewer->update(frame_img);
             if (!viewer_open && max_frames == 0) {
                 break;
@@ -257,10 +264,15 @@ int dressi_examples::RunPbrShading(const std::vector<std::string>& args,
 
     if (!exec_ms.empty()) {
         const double med = MedianMs(exec_ms);
+        const double warmup_ms = WarmupMs(warmup_samples, med);
+        const double first_build_ms =
+                warmup_samples.empty() ? 0.0 : warmup_samples.front();
         spdlog::info(
                 "steady state ({} frames after {}-frame warmup): median "
-                "{:.3f} ms/frame = {:.0f} FPS (excl. display)",
-                exec_ms.size(), warmup, med, 1000.0 / med);
+                "{:.3f} ms/frame = {:.0f} FPS (excl. display); one-time "
+                "build/warmup {:.1f} ms (first build {:.1f} ms)",
+                exec_ms.size(), warmup, med, 1000.0 / med, warmup_ms,
+                first_build_ms);
         // Benchmark record for scripts/bench_summary.py (a viewer, not an
         // optimization — the metric is exec+readback per frame)
         BenchRecord rec("pbr_shading", ad.getDeviceName());
@@ -268,6 +280,8 @@ int dressi_examples::RunPbrShading(const std::vector<std::string>& args,
         rec.add("frames", int64_t(frame_idx));
         rec.add("median_ms_per_iter", med);
         rec.add("warmup_excluded", int64_t(warmup));
+        rec.add("warmup_ms", warmup_ms, 1);
+        rec.add("first_build_ms", first_build_ms, 1);
         rec.add("fps", 1000.0 / med, 1);
         rec.save(out_dir + "/bench.json");
     }

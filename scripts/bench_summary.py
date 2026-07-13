@@ -4,7 +4,9 @@
 Every example writes a one-object ``bench.json`` into its ``--out-dir``
 at the end of a run: GPU device name, host info (os / cpu / ram), the
 parameters, the MEDIAN steady-state ms per iteration (warmup excluded),
-and the example's quality metric. Collect those files from every
+the one-time build/warmup overhead in ms (pack + GLSL compile + Vulkan
+build + reactive rebuilds; ``first_build_ms`` is iter 0 alone), and the
+example's quality metric. Collect those files from every
 machine/phone and render one table per example, one row per run, sorted
 by median time.
 
@@ -81,6 +83,17 @@ def params_of(rec):
     return ""
 
 
+def warmup_of(rec):
+    # One-time build/warmup overhead (ms), with the single largest build
+    # (iter 0) in parentheses. "-" for older records without the field.
+    if "warmup_ms" not in rec:
+        return "-"
+    s = f"{rec['warmup_ms']:.0f}"
+    if "first_build_ms" in rec:
+        s += f" ({rec['first_build_ms']:.0f})"
+    return s
+
+
 def quality_of(rec):
     if "mean_iou" in rec:
         return f"IoU {rec['mean_iou']:.4f}"
@@ -118,12 +131,14 @@ def main():
         rows = [r for r in records if r.get("example") == example]
         rows.sort(key=lambda r: r.get("median_ms_per_iter", float("inf")))
         print(f"## {example}\n")
-        print("| device | host | parameters | median ms/iter | quality |")
-        print("| --- | --- | --- | ---: | --- |")
+        print("| device | host | parameters | median ms/iter "
+              "| warmup ms (first) | quality |")
+        print("| --- | --- | --- | ---: | ---: | --- |")
         for r in rows:
             print(f"| {r.get('device', '?')} | {host_of(r)} "
                   f"| {params_of(r)} "
                   f"| {r.get('median_ms_per_iter', float('nan')):.3f} "
+                  f"| {warmup_of(r)} "
                   f"| {quality_of(r)} |")
         print()
     return 0

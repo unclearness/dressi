@@ -53,13 +53,14 @@ struct Options {
     std::string technique = "hardsoftras";
     uint32_t n_views = 8;
     uint32_t screen = 128;
-    int n_iters = 300;
+    int n_iters = 150;  // IoU plateaus by ~150 (0.951 vs 0.956 at 300)
     uint32_t sphere_level = 3;
     float radius_px = 3.f;
     uint32_t samples = 8;  // stochastic backward samples per face
     uint32_t peels = 1;    // hardsoftras depth-peeling layers (K)
     bool single_view = false;  // one (cycled) camera per iteration
     bool no_view = false;      // skip the live viewer (clean benchmarking)
+    int view_interval = 1;     // live-viewer refresh cadence (iters); 0 = off
     // Regularizer weights relative to the data-gradient RMS; negative =
     // per-technique default (hardsoftras: 0.15/0.4; aa: 0.5/0.5)
     float laplacian = -1.f;
@@ -102,6 +103,8 @@ Options ParseArgs(const std::vector<std::string>& args) {
             opt.single_view = value == "1" || value == "true";
         } else if (key == "--no-view") {
             opt.no_view = value == "1" || value == "true";
+        } else if (key == "--view-interval") {
+            opt.view_interval = std::stoi(value);
         } else if (key == "--lr") {
             opt.lr = std::stof(value);
         } else if (key == "--laplacian") {
@@ -539,7 +542,7 @@ int dressi_examples::RunSilhouetteOptimization(
     if (!viewer_open && !opt.no_view) {
         spdlog::warn("live viewer unavailable; continuing headless");
     }
-    const int view_interval = 5;
+    const int view_interval = opt.view_interval;
     CpuImage target_tile;
 
     // ---------------------------- Optimization ----------------------------
@@ -554,6 +557,7 @@ int dressi_examples::RunSilhouetteOptimization(
 
     using Clock = std::chrono::steady_clock;
     std::vector<double> opt_samples;  // per-iter execStep ms (steady state)
+    std::vector<double> warmup_samples;  // the excluded build/rebuild iters
     double view_ms = 0.0;
     float first_loss = 0.f;
     float last_loss = 0.f;
@@ -570,10 +574,13 @@ int dressi_examples::RunSilhouetteOptimization(
         }
         const auto t0 = Clock::now();
         ad.execStep();
+        const double iter_ms =
+                std::chrono::duration<double, std::milli>(Clock::now() - t0)
+                        .count();
         if (iter >= opt_warmup) {
-            opt_samples.push_back(std::chrono::duration<double, std::milli>(
-                                          Clock::now() - t0)
-                                          .count());
+            opt_samples.push_back(iter_ms);
+        } else {
+            warmup_samples.push_back(iter_ms);
         }
 
         if (iter == 0) {
@@ -588,7 +595,7 @@ int dressi_examples::RunSilhouetteOptimization(
             SaveImagePng(out_dir + "/pred_first.png",
                          TileImages(prds, tile_cols));
         }
-        if (viewer_open && iter % view_interval == 0) {
+        if (viewer_open && view_interval > 0 && iter % view_interval == 0) {
             const auto tv0 = Clock::now();
             std::vector<CpuImage> prds;
             for (size_t i = 0; i < preds.size(); i++) {
@@ -660,6 +667,12 @@ int dressi_examples::RunSilhouetteOptimization(
 
     // Benchmark record for scripts/bench_summary.py (median steady-state
     // execStep ms/iter, warmup excluded — CLAUDE.md "Benchmarking")
+    const double median_ms = MedianMs(opt_samples);
+    const double warmup_ms = WarmupMs(warmup_samples, median_ms);
+    const double first_build_ms =
+            warmup_samples.empty() ? 0.0 : warmup_samples.front();
+    spdlog::info("one-time build/warmup {:.1f} ms (first build {:.1f} ms)",
+                 warmup_ms, first_build_ms);
     {
         BenchRecord rec("silhouette_optimization", ad.getDeviceName());
         rec.add("technique", opt.technique);
@@ -669,8 +682,10 @@ int dressi_examples::RunSilhouetteOptimization(
         rec.add("samples", int64_t(opt.samples));
         rec.add("peels", int64_t(opt.peels));
         rec.add("single_view", opt.single_view);
-        rec.add("median_ms_per_iter", MedianMs(opt_samples));
+        rec.add("median_ms_per_iter", median_ms);
         rec.add("warmup_excluded", int64_t(opt_warmup));
+        rec.add("warmup_ms", warmup_ms, 1);
+        rec.add("first_build_ms", first_build_ms, 1);
         rec.add("mean_iou", double(mean_iou));
         rec.add("loss_drop",
                 double(first_loss / std::max(last_loss, 1e-12f)), 1);

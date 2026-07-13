@@ -142,6 +142,17 @@ double MedianMs(std::vector<double> samples) {
     return samples[samples.size() / 2];
 }
 
+double WarmupMs(const std::vector<double>& warmup_samples,
+                double steady_median) {
+    double sum = 0.0;
+    for (double ms : warmup_samples) {
+        sum += ms;
+    }
+    const double overhead =
+            sum - steady_median * static_cast<double>(warmup_samples.size());
+    return overhead > 0.0 ? overhead : 0.0;
+}
+
 BenchRecord::BenchRecord(const std::string& example,
                          const std::string& device) {
 #ifdef __ANDROID__

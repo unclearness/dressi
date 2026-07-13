@@ -5,6 +5,7 @@
 
 #include "run.h"
 
+#include <spdlog/cfg/env.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -19,6 +20,7 @@ using namespace dressi;
 
 int dressi_examples::RunImageFitting(const std::vector<std::string>& args,
                                      ExampleHost& host) try {
+    spdlog::cfg::load_env_levels();  // e.g. SPDLOG_LEVEL=debug for timings
     std::string out_dir = "imgfit_out";  // holds only bench.json
     for (const std::string& arg : args) {
         if (arg.rfind("--out-dir=", 0) == 0) {
@@ -71,19 +73,23 @@ int dressi_examples::RunImageFitting(const std::vector<std::string>& args,
 
     // Optimization iterations (median steady-state timing for bench.json)
     using Clock = std::chrono::steady_clock;
-    const int n_iters = 300;
+    const int n_iters = 150;  // loss hits the 1e-6 noise floor by ~100 iters
     const int opt_warmup = std::min(20, n_iters / 2);
     std::vector<double> opt_samples;
+    std::vector<double> warmup_samples;  // the excluded build/rebuild iters
     for (int iter = 0; iter < n_iters; iter++) {
         if (host.cancelled()) {
             break;
         }
         const auto t0 = Clock::now();
         dressi_ad.execStep();
+        const double iter_ms =
+                std::chrono::duration<double, std::milli>(Clock::now() - t0)
+                        .count();
         if (iter >= opt_warmup) {
-            opt_samples.push_back(std::chrono::duration<double, std::milli>(
-                                          Clock::now() - t0)
-                                          .count());
+            opt_samples.push_back(iter_ms);
+        } else {
+            warmup_samples.push_back(iter_ms);
         }
         if (iter % 50 == 0 || iter == n_iters - 1) {
             spdlog::info("iter {:4d}  loss {:.6f}", iter,
@@ -103,14 +109,20 @@ int dressi_examples::RunImageFitting(const std::vector<std::string>& args,
     spdlog::info("max |rendered - target| = {:.4f}", max_err);
 
     const double median_ms = MedianMs(opt_samples);
-    spdlog::info("median steady-state {:.3f} ms/iter ({} warmup excluded)",
-                 median_ms, opt_warmup);
+    const double warmup_ms = WarmupMs(warmup_samples, median_ms);
+    const double first_build_ms =
+            warmup_samples.empty() ? 0.0 : warmup_samples.front();
+    spdlog::info("median steady-state {:.3f} ms/iter ({} warmup excluded); "
+                 "one-time build/warmup {:.1f} ms (first build {:.1f} ms)",
+                 median_ms, opt_warmup, warmup_ms, first_build_ms);
     std::filesystem::create_directories(out_dir);
     BenchRecord rec("image_fitting", dressi_ad.getDeviceName());
     rec.add("screen", int64_t(W));
     rec.add("iters", int64_t(n_iters));
     rec.add("median_ms_per_iter", median_ms);
     rec.add("warmup_excluded", int64_t(opt_warmup));
+    rec.add("warmup_ms", warmup_ms, 1);
+    rec.add("first_build_ms", first_build_ms, 1);
     rec.add("max_err", double(max_err), 4);
     rec.save(out_dir + "/bench.json");
 
