@@ -28,6 +28,23 @@ void SurfaceState::setSurface(ANativeWindow* window) {
         // buffer to the view, we letterbox inside it ourselves.
         ANativeWindow_setBuffersGeometry(m_window, 0, 0,
                                          WINDOW_FORMAT_RGBA_8888);
+        // A run's SurfaceView is destroyed/recreated when Back/Start toggle
+        // its visibility, but the swapchain buffers keep the previous
+        // example's last frame until the new run blits (seconds away during
+        // the first build). Clear every buffer to black so no stale screen
+        // shows through. Post a few times to cover double/triple buffering.
+        for (int i = 0; i < 3; i++) {
+            ANativeWindow_Buffer buf;
+            if (ANativeWindow_lock(m_window, &buf, nullptr) != 0) {
+                break;
+            }
+            auto* pixels = static_cast<uint32_t*>(buf.bits);
+            for (uint32_t y = 0; y < uint32_t(buf.height); y++) {
+                uint32_t* row = pixels + size_t(y) * uint32_t(buf.stride);
+                std::fill(row, row + uint32_t(buf.width), 0xFF000000u);
+            }
+            ANativeWindow_unlockAndPost(m_window);
+        }
     }
 }
 
