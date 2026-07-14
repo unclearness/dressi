@@ -38,6 +38,8 @@ class MainActivity : Activity(), NativeBridge.Listener {
     private var dataDir: File? = null
     private var caps: JSONObject? = null
     private val logLines = ArrayDeque<String>()
+    private val streamButtons = mutableListOf<Button>()
+    private var selectedStream = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -240,8 +242,9 @@ class MainActivity : Activity(), NativeBridge.Listener {
         fun need(path: String): String? =
             if (File(data, path).exists()) null else path
         return when (name) {
-            "texture_optimization", "silhouette_optimization" ->
-                need("bunny/bunny.obj")
+            "texture_optimization", "silhouette_optimization",
+            "shape_texture_optimization" ->
+                need("bunny/bunny.obj") ?: need("bunny/bunny-atlas.jpg")
             "pbr_shading", "pbr_material_optimization",
             "pbr_envmap_optimization" ->
                 need("DamagedHelmet/glTF/DamagedHelmet.gltf")
@@ -265,7 +268,8 @@ class MainActivity : Activity(), NativeBridge.Listener {
         val env = File(data, "suburban_garden_512.exr")
         return when (name) {
             "image_fitting" -> arrayOf("--out-dir=$out")
-            "texture_optimization" -> arrayOf(
+            "texture_optimization",
+            "shape_texture_optimization" -> arrayOf(
                 "--data-dir=${File(data, "bunny")}", "--out-dir=$out")
             "silhouette_optimization" -> arrayOf(
                 "--data-dir=${File(data, "bunny")}", "--out-dir=$out",
@@ -327,13 +331,42 @@ class MainActivity : Activity(), NativeBridge.Listener {
     override fun onStreamsChanged(titles: Array<String>) {
         runOnUiThread {
             streamBar.removeAllViews()
+            streamButtons.clear()
+            // Default to the optimized stream (index 1: examples register the
+            // GT target first, the optimized result second); mirrors the
+            // native default in AndroidHost::registerStream.
+            selectedStream = if (titles.size > 1) 1 else 0
             titles.forEachIndexed { i, title ->
-                streamBar.addView(Button(this).apply {
+                val btn = Button(this).apply {
                     text = title
                     textSize = 11f
-                    setOnClickListener { NativeBridge.selectStream(i) }
-                })
+                    setOnClickListener { selectStreamButton(i) }
+                }
+                styleStreamButton(btn, i == selectedStream)
+                streamButtons.add(btn)
+                streamBar.addView(btn)
             }
+            if (titles.isNotEmpty()) {
+                NativeBridge.selectStream(selectedStream)
+            }
+        }
+    }
+
+    private fun selectStreamButton(index: Int) {
+        selectedStream = index
+        NativeBridge.selectStream(index)
+        streamButtons.forEachIndexed { i, b ->
+            styleStreamButton(b, i == index)
+        }
+    }
+
+    private fun styleStreamButton(btn: Button, selected: Boolean) {
+        if (selected) {
+            btn.setBackgroundColor(Color.rgb(30, 136, 229))  // blue
+            btn.setTextColor(Color.WHITE)
+        } else {
+            btn.setBackgroundColor(Color.rgb(224, 224, 224))
+            btn.setTextColor(Color.rgb(48, 48, 48))
         }
     }
 

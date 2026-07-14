@@ -33,17 +33,26 @@ public:
     int registerStream(const std::string& title);  // -> stream id
     void clearStreams();
 
-    // Converts the float [0,1] CpuImage (1 or 3 channels) to RGBA8,
-    // nearest-scales with letterboxing, and posts it. No-op (returns true)
-    // when this stream is not selected or no surface is attached.
+    // Caches this stream's latest frame (so a stream can be shown even after
+    // the example loop has stopped calling update), then converts the float
+    // [0,1] CpuImage (1 or 3 channels) to RGBA8, nearest-scales with
+    // letterboxing, and posts it when the stream is selected. Always returns
+    // true (a non-selected stream keeps the example running).
     bool blit(int stream_id, const dressi::CpuImage& img);
 
 private:
     SurfaceState() = default;
+    // Posts an already-RGBA-convertible float image to the current window.
+    // Caller must hold m_mutex and guarantee m_window != nullptr.
+    void drawLocked(const dressi::CpuImage& img);
+
     std::mutex m_mutex;
     ANativeWindow* m_window = nullptr;
     int m_selected = 0;
     std::vector<std::string> m_titles;
+    // Latest frame per stream id (parallel to m_titles); empty until a stream
+    // first blits. Lets selectStream / surface re-attach redraw a finished run.
+    std::vector<dressi::CpuImage> m_frames;
 };
 
 class AndroidHost : public dressi_examples::ExampleHost {

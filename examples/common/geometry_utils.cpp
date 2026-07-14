@@ -83,6 +83,119 @@ Mesh GenerateIcosphere(uint32_t level) {
     return mesh;
 }
 
+Mesh GenerateUvSphere(uint32_t stacks, uint32_t slices) {
+    stacks = std::max(2u, stacks);
+    slices = std::max(3u, slices);
+    const uint32_t cols = slices + 1;  // duplicate the seam column
+    const float kPi = 3.14159265358979323846f;
+    Mesh mesh;
+    mesh.pos = dressi::CpuImage(cols * (stacks + 1), 1, 3);
+    mesh.uv = dressi::CpuImage(cols * (stacks + 1), 1, 2);
+    const auto vid = [&](uint32_t i, uint32_t j) { return i * cols + j; };
+    for (uint32_t i = 0; i <= stacks; i++) {
+        const float theta = kPi * float(i) / float(stacks);  // 0=top..pi
+        const float st = std::sin(theta), ct = std::cos(theta);
+        for (uint32_t j = 0; j <= slices; j++) {
+            const float phi = 2.f * kPi * float(j) / float(slices);
+            const uint32_t v = vid(i, j);
+            mesh.pos.at(v, 0, 0) = st * std::cos(phi);
+            mesh.pos.at(v, 0, 1) = ct;
+            mesh.pos.at(v, 0, 2) = st * std::sin(phi);
+            mesh.uv.at(v, 0, 0) = float(j) / float(slices);
+            mesh.uv.at(v, 0, 1) = float(i) / float(stacks);
+        }
+    }
+    std::vector<std::array<uint32_t, 3>> faces;
+    faces.reserve(size_t(stacks) * slices * 2);
+    for (uint32_t i = 0; i < stacks; i++) {
+        for (uint32_t j = 0; j < slices; j++) {
+            const uint32_t tl = vid(i, j), tr = vid(i, j + 1);
+            const uint32_t bl = vid(i + 1, j), br = vid(i + 1, j + 1);
+            // Skip the degenerate pole triangle (tl==tr at the top cap,
+            // bl==br at the bottom cap); winding is CCW seen from OUTSIDE.
+            if (i != stacks - 1) {
+                faces.push_back({tl, br, bl});
+            }
+            if (i != 0) {
+                faces.push_back({tl, tr, br});
+            }
+        }
+    }
+    mesh.faces = dressi::CpuImage(uint32_t(faces.size()), 1, 3);
+    for (uint32_t i = 0; i < faces.size(); i++) {
+        for (uint32_t c = 0; c < 3; c++) {
+            mesh.faces.at(i, 0, c) = float(faces[i][c]);
+        }
+    }
+    return mesh;
+}
+
+dressi::CpuImage TransferDeformationByDirection(
+        const dressi::CpuImage& ctrl_rest_pos,
+        const dressi::CpuImage& ctrl_faces,
+        const dressi::CpuImage& ctrl_deformed_pos,
+        const dressi::CpuImage& dst_pos) {
+    const auto rest = [&](uint32_t v, uint32_t c) {
+        return ctrl_rest_pos.at(v, 0, c);
+    };
+    dressi::CpuImage out(dst_pos.width, 1, 3);
+    const uint32_t n_faces = ctrl_faces.width;
+    for (uint32_t d = 0; d < dst_pos.width; d++) {
+        const V3 dir = Normalized({dst_pos.at(d, 0, 0), dst_pos.at(d, 0, 1),
+                                   dst_pos.at(d, 0, 2)});
+        float best_t = 1e30f;
+        uint32_t hit = 0;
+        float hu = 0.f, hv = 0.f;
+        for (uint32_t f = 0; f < n_faces; f++) {
+            const uint32_t ia = uint32_t(ctrl_faces.at(f, 0, 0));
+            const uint32_t ib = uint32_t(ctrl_faces.at(f, 0, 1));
+            const uint32_t ic = uint32_t(ctrl_faces.at(f, 0, 2));
+            // Moeller-Trumbore, ray origin = 0, direction = dir
+            const V3 e1 = {rest(ib, 0) - rest(ia, 0), rest(ib, 1) - rest(ia, 1),
+                           rest(ib, 2) - rest(ia, 2)};
+            const V3 e2 = {rest(ic, 0) - rest(ia, 0), rest(ic, 1) - rest(ia, 1),
+                           rest(ic, 2) - rest(ia, 2)};
+            const V3 p = {dir.y * e2.z - dir.z * e2.y,
+                          dir.z * e2.x - dir.x * e2.z,
+                          dir.x * e2.y - dir.y * e2.x};
+            const float det = e1.x * p.x + e1.y * p.y + e1.z * p.z;
+            if (std::abs(det) < 1e-20f) {
+                continue;
+            }
+            const float inv = 1.f / det;
+            const V3 tv = {-rest(ia, 0), -rest(ia, 1), -rest(ia, 2)};
+            const float u = (tv.x * p.x + tv.y * p.y + tv.z * p.z) * inv;
+            if (u < -1e-4f || u > 1.f + 1e-4f) {
+                continue;
+            }
+            const V3 q = {tv.y * e1.z - tv.z * e1.y, tv.z * e1.x - tv.x * e1.z,
+                          tv.x * e1.y - tv.y * e1.x};
+            const float v = (dir.x * q.x + dir.y * q.y + dir.z * q.z) * inv;
+            if (v < -1e-4f || u + v > 1.f + 1e-4f) {
+                continue;
+            }
+            const float t = (e2.x * q.x + e2.y * q.y + e2.z * q.z) * inv;
+            if (t > 1e-6f && t < best_t) {
+                best_t = t;
+                hit = f;
+                hu = u;
+                hv = v;
+            }
+        }
+        // point = a + u*(b-a) + v*(c-a) -> weights (1-u-v, u, v) on a,b,c
+        const uint32_t ia = uint32_t(ctrl_faces.at(hit, 0, 0));
+        const uint32_t ib = uint32_t(ctrl_faces.at(hit, 0, 1));
+        const uint32_t ic = uint32_t(ctrl_faces.at(hit, 0, 2));
+        const float wa = 1.f - hu - hv;
+        for (uint32_t c = 0; c < 3; c++) {
+            out.at(d, 0, c) = wa * ctrl_deformed_pos.at(ia, 0, c) +
+                              hu * ctrl_deformed_pos.at(ib, 0, c) +
+                              hv * ctrl_deformed_pos.at(ic, 0, c);
+        }
+    }
+    return out;
+}
+
 void SaveObjMesh(const std::string& path, const Mesh& mesh) {
     std::ofstream ofs(path);
     if (!ofs) {
@@ -96,6 +209,49 @@ void SaveObjMesh(const std::string& path, const Mesh& mesh) {
         ofs << "f " << int(mesh.faces.at(i, 0, 0)) + 1 << ' '
             << int(mesh.faces.at(i, 0, 1)) + 1 << ' '
             << int(mesh.faces.at(i, 0, 2)) + 1 << '\n';
+    }
+}
+
+void SaveTexturedObjMesh(const std::string& path, const Mesh& mesh,
+                         const std::string& texture_filename) {
+    std::ofstream ofs(path);
+    if (!ofs) {
+        return;
+    }
+    // Companion .mtl (same stem as the OBJ) referencing the texture
+    std::string mtl_path = path;
+    const size_t dot = mtl_path.find_last_of('.');
+    if (dot != std::string::npos) {
+        mtl_path = mtl_path.substr(0, dot);
+    }
+    mtl_path += ".mtl";
+    std::string mtl_name = mtl_path;
+    if (const size_t slash = mtl_name.find_last_of("/\\");
+        slash != std::string::npos) {
+        mtl_name = mtl_name.substr(slash + 1);
+    }
+    if (std::ofstream mtl(mtl_path); mtl) {
+        mtl << "newmtl material0\n"
+            << "Ka 0 0 0\nKd 1 1 1\nd 1\nillum 1\n"
+            << "map_Kd " << texture_filename << '\n';
+    }
+
+    ofs << "mtllib " << mtl_name << "\nusemtl material0\n";
+    for (uint32_t i = 0; i < mesh.numVertices(); i++) {
+        ofs << "v " << mesh.pos.at(i, 0, 0) << ' ' << mesh.pos.at(i, 0, 1)
+            << ' ' << mesh.pos.at(i, 0, 2) << '\n';
+    }
+    for (uint32_t i = 0; i < mesh.numVertices(); i++) {
+        // OBJ/GL sampler origin is bottom-left; dressi uv is top-left.
+        ofs << "vt " << mesh.uv.at(i, 0, 0) << ' '
+            << 1.f - mesh.uv.at(i, 0, 1) << '\n';
+    }
+    for (uint32_t i = 0; i < mesh.numFaces(); i++) {
+        const int a = int(mesh.faces.at(i, 0, 0)) + 1;
+        const int b = int(mesh.faces.at(i, 0, 1)) + 1;
+        const int c = int(mesh.faces.at(i, 0, 2)) + 1;
+        ofs << "f " << a << '/' << a << ' ' << b << '/' << b << ' ' << c
+            << '/' << c << '\n';
     }
 }
 

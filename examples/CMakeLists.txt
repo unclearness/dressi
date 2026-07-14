@@ -10,6 +10,7 @@ add_library(dressi_examples_core STATIC
     image_fitting/run.cpp
     texture_optimization/run.cpp
     silhouette_optimization/run.cpp
+    shape_texture_optimization/run.cpp
     pbr_shading/run.cpp
     pbr_material_optimization/run.cpp
     pbr_envmap_optimization/run.cpp)
@@ -28,6 +29,7 @@ if(NOT ANDROID)
         PUBLIC dressi_examples_core dressi_glad glfw)
 
     foreach(_tgt image_fitting texture_optimization silhouette_optimization
+            shape_texture_optimization
             pbr_shading pbr_material_optimization pbr_envmap_optimization)
         add_executable(${_tgt} ${_tgt}/main.cpp)
         target_link_libraries(${_tgt} PRIVATE dressi_examples_desktop)

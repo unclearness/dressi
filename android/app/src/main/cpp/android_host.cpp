@@ -45,12 +45,27 @@ void SurfaceState::setSurface(ANativeWindow* window) {
             }
             ANativeWindow_unlockAndPost(m_window);
         }
+        // Restore the selected stream's last frame onto the fresh surface
+        // (e.g. after the SurfaceView is recreated post-run), so switching
+        // back does not leave the view black until the next blit.
+        if (m_selected >= 0 && size_t(m_selected) < m_frames.size() &&
+            m_frames[size_t(m_selected)].width != 0) {
+            drawLocked(m_frames[size_t(m_selected)]);
+        }
     }
 }
 
 void SurfaceState::selectStream(int index) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_selected = index;
+    // Immediately show the newly selected stream's cached frame. Without this
+    // the surface stays on the previous stream until the next update() -- and
+    // once the optimization has finished there are no more update() calls, so
+    // the stream buttons would appear dead.
+    if (m_window && index >= 0 && size_t(index) < m_frames.size() &&
+        m_frames[size_t(index)].width != 0) {
+        drawLocked(m_frames[size_t(index)]);
+    }
 }
 
 int SurfaceState::registerStream(const std::string& title) {
@@ -60,6 +75,14 @@ int SurfaceState::registerStream(const std::string& title) {
         std::lock_guard<std::mutex> lock(m_mutex);
         id = int(m_titles.size());
         m_titles.push_back(title);
+        m_frames.emplace_back();  // empty until this stream first blits
+        // Convention: examples register the ground-truth target first and the
+        // OPTIMIZED result second. Default the view to that optimized stream
+        // (the thing being optimized is what the user wants to watch); the UI
+        // reflects and can override this via selectStream.
+        if (id == 1) {
+            m_selected = 1;
+        }
         titles = m_titles;
     }
     NotifyStreamsChanged(titles);
@@ -70,6 +93,7 @@ void SurfaceState::clearStreams() {
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_titles.clear();
+        m_frames.clear();
         m_selected = 0;
     }
     NotifyStreamsChanged({});
@@ -77,13 +101,25 @@ void SurfaceState::clearStreams() {
 
 bool SurfaceState::blit(int stream_id, const dressi::CpuImage& img) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (!m_window || stream_id != m_selected || img.width == 0 ||
-        img.height == 0) {
+    if (img.width == 0 || img.height == 0) {
+        return true;
+    }
+    // Cache every stream's latest frame so selectStream (and a post-run
+    // surface re-attach) can redraw it after the example loop has stopped.
+    if (stream_id >= 0 && size_t(stream_id) < m_frames.size()) {
+        m_frames[size_t(stream_id)] = img;
+    }
+    if (!m_window || stream_id != m_selected) {
         return true;  // stream not visible; keep the example running
     }
+    drawLocked(img);
+    return true;
+}
+
+void SurfaceState::drawLocked(const dressi::CpuImage& img) {
     ANativeWindow_Buffer buf;
     if (ANativeWindow_lock(m_window, &buf, nullptr) != 0) {
-        return true;
+        return;
     }
     auto* pixels = static_cast<uint32_t*>(buf.bits);
     const uint32_t bw = uint32_t(buf.width), bh = uint32_t(buf.height);
@@ -124,7 +160,6 @@ bool SurfaceState::blit(int stream_id, const dressi::CpuImage& img) {
         }
     }
     ANativeWindow_unlockAndPost(m_window);
-    return true;
 }
 
 namespace {

@@ -4,6 +4,7 @@
 #include "../pbr_envmap_optimization/run.h"
 #include "../pbr_material_optimization/run.h"
 #include "../pbr_shading/run.h"
+#include "../shape_texture_optimization/run.h"
 #include "../silhouette_optimization/run.h"
 #include "../texture_optimization/run.h"
 
@@ -14,6 +15,7 @@ const std::vector<ExampleInfo>& GetExampleRegistry() {
             {"image_fitting", &RunImageFitting, false},
             {"texture_optimization", &RunTextureOptimization, false},
             {"silhouette_optimization", &RunSilhouetteOptimization, true},
+            {"shape_texture_optimization", &RunShapeTextureOptimization, true},
             {"pbr_shading", &RunPbrShading, false},
             {"pbr_material_optimization", &RunPbrMaterialOptimization, false},
             {"pbr_envmap_optimization", &RunPbrEnvmapOptimization, false},
