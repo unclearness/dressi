@@ -97,6 +97,7 @@ int dressi_examples::RunPbrEnvmapOptimization(
     uint32_t size = 192, env_w = 64, n_views = 4;
     int n_iters = 1500;
     int view_interval = 1;  // live-viewer refresh cadence (iters); 0 = off
+    int snapshot = 0;  // save pred view 0 + env every N iters (0 = off)
     float lr = 0.05f;
     // Spatial smoothness prior on the recovered env (0 = off). The 4-view
     // inverse is underdetermined: weakly observed texels (equirect poles +
@@ -125,6 +126,8 @@ int dressi_examples::RunPbrEnvmapOptimization(
             n_iters = std::stoi(arg.substr(8));
         } else if (arg.rfind("--view-interval=", 0) == 0) {
             view_interval = std::stoi(arg.substr(16));
+        } else if (arg.rfind("--snapshot=", 0) == 0) {
+            snapshot = std::stoi(arg.substr(11));
         } else if (arg.rfind("--lr=", 0) == 0) {
             lr = std::stof(arg.substr(5));
         } else if (arg.rfind("--env-reg=", 0) == 0) {
@@ -407,6 +410,14 @@ int dressi_examples::RunPbrEnvmapOptimization(
                 targets.push_back(ad.recvImg(view.target));
             }
             target_tile = TileImages(targets, tile_cols);
+        }
+        // Progress snapshots for the README GIFs (render + recovered env)
+        if (snapshot > 0 && (iter % snapshot == 0 || iter == n_iters - 1)) {
+            SaveImagePng(fmt::format("{}/snap_{:04d}.png", out_dir, iter),
+                         ad.recvImg(views[0].pred));
+            SaveImagePng(
+                    fmt::format("{}/snap_env_{:04d}.png", out_dir, iter),
+                    Upscale(TonemapForView(ad.recvImg(env_opt)), env_up));
         }
         if (viewer_open && view_interval > 0 && iter % view_interval == 0) {
             std::vector<CpuImage> preds;

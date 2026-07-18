@@ -61,6 +61,7 @@ struct Options {
     bool single_view = false;  // one (cycled) camera per iteration
     bool no_view = false;      // skip the live viewer (clean benchmarking)
     int view_interval = 1;     // live-viewer refresh cadence (iters); 0 = off
+    int snapshot = 0;  // save pred view 0 every N iters (0 = off; for GIFs)
     // Regularizer weights relative to the data-gradient RMS; negative =
     // per-technique default (hardsoftras: 0.15/0.4; aa: 0.5/0.5)
     float laplacian = -1.f;
@@ -105,6 +106,8 @@ Options ParseArgs(const std::vector<std::string>& args) {
             opt.no_view = value == "1" || value == "true";
         } else if (key == "--view-interval") {
             opt.view_interval = std::stoi(value);
+        } else if (key == "--snapshot") {
+            opt.snapshot = std::stoi(value);
         } else if (key == "--lr") {
             opt.lr = std::stof(value);
         } else if (key == "--laplacian") {
@@ -594,6 +597,12 @@ int dressi_examples::RunSilhouetteOptimization(
             SaveImagePng(out_dir + "/targets.png", target_tile);
             SaveImagePng(out_dir + "/pred_first.png",
                          TileImages(prds, tile_cols));
+        }
+        // Progress snapshots for the README GIFs
+        if (opt.snapshot > 0 &&
+            (iter % opt.snapshot == 0 || iter == opt.n_iters - 1)) {
+            SaveImagePng(fmt::format("{}/snap_{:04d}.png", out_dir, iter),
+                         ad.recvImg(preds[0]));
         }
         if (viewer_open && view_interval > 0 && iter % view_interval == 0) {
             const auto tv0 = Clock::now();

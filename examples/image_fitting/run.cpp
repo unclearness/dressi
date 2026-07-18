@@ -13,6 +13,7 @@
 #include <cmath>
 #include <filesystem>
 
+#include "../common/asset_utils.h"
 #include "../common/bench.h"
 #include "dressi/dressi.h"
 
@@ -22,11 +23,18 @@ int dressi_examples::RunImageFitting(const std::vector<std::string>& args,
                                      ExampleHost& host) try {
     spdlog::cfg::load_env_levels();  // e.g. SPDLOG_LEVEL=debug for timings
     std::string out_dir = "imgfit_out";  // holds only bench.json
+    int snapshot = 0;  // save the tonemapped param every N iters (0 = off)
+    int view_interval = 1;  // live-viewer refresh cadence (iters); 0 = off
     for (const std::string& arg : args) {
         if (arg.rfind("--out-dir=", 0) == 0) {
             out_dir = arg.substr(10);
+        } else if (arg.rfind("--snapshot=", 0) == 0) {
+            snapshot = std::stoi(arg.substr(11));
+        } else if (arg.rfind("--view-interval=", 0) == 0) {
+            view_interval = std::stoi(arg.substr(16));
         }
     }
+    std::filesystem::create_directories(out_dir);
     const uint32_t W = 64, H = 64;
 
     // Create top variables of the computational graph
@@ -71,6 +79,19 @@ int dressi_examples::RunImageFitting(const std::vector<std::string>& args,
     dressi_ad.sendImg(param, init_img);
     dressi_ad.sendImg(target, target_img);
 
+    // Live view: the evolving tonemapped parameter next to the target
+    // (display cost is excluded from the timed section)
+    auto viewer = host.makeViewer(512, 256,
+                                  "image fitting (rendered | target)");
+    bool viewer_open = viewer->valid();
+    const auto tonemapped_param = [&]() {
+        CpuImage img = dressi_ad.recvImg(param);
+        for (float& v : img.data) {
+            v = v / (v + 1.f);
+        }
+        return img;
+    };
+
     // Optimization iterations (median steady-state timing for bench.json)
     using Clock = std::chrono::steady_clock;
     const int n_iters = 150;  // loss hits the 1e-6 noise floor by ~100 iters
@@ -94,6 +115,18 @@ int dressi_examples::RunImageFitting(const std::vector<std::string>& args,
         if (iter % 50 == 0 || iter == n_iters - 1) {
             spdlog::info("iter {:4d}  loss {:.6f}", iter,
                          dressi_ad.recvImg(loss).data[0]);
+        }
+        if (viewer_open && view_interval > 0 && iter % view_interval == 0) {
+            viewer->setTitle(fmt::format(
+                    "image fitting (rendered | target)  iter {}", iter));
+            viewer_open = viewer->update(
+                    TileImages({tonemapped_param(), target_img}, 2));
+        }
+        // Progress snapshots for the README GIFs (`rendered` is fused by
+        // RSP, so receive the parameter and tonemap on the CPU)
+        if (snapshot > 0 && (iter % snapshot == 0 || iter == n_iters - 1)) {
+            SaveImagePng(fmt::format("{}/snap_{:04d}.png", out_dir, iter),
+                         tonemapped_param());
         }
     }
 

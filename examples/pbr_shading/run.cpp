@@ -59,6 +59,7 @@ int dressi_examples::RunPbrShading(const std::vector<std::string>& args,
     uint32_t size = 512;
     int max_frames = 0;  // 0 = until the window is closed
     int view_interval = 1;  // live-viewer refresh cadence (frames); 0 = off
+    int snapshot = 0;  // save the frame every N frames (0 = off; for GIFs)
     for (const std::string& arg : args) {
         if (arg.rfind("--mesh=", 0) == 0) {
             mesh_path = arg.substr(7);
@@ -72,6 +73,8 @@ int dressi_examples::RunPbrShading(const std::vector<std::string>& args,
             max_frames = std::stoi(arg.substr(9));
         } else if (arg.rfind("--view-interval=", 0) == 0) {
             view_interval = std::stoi(arg.substr(16));
+        } else if (arg.rfind("--snapshot=", 0) == 0) {
+            snapshot = std::stoi(arg.substr(11));
         } else {
             mesh_path = arg;
         }
@@ -248,6 +251,12 @@ int dressi_examples::RunPbrShading(const std::vector<std::string>& args,
         }
         if (max_frames >= 4 && frame_idx % (max_frames / 4) == 0) {
             SaveImagePng(fmt::format("{}/frame_{:03d}.png", out_dir,
+                                     frame_idx),
+                         frame_img);
+        }
+        // Progress snapshots for the README GIFs (orbit frames)
+        if (snapshot > 0 && frame_idx % snapshot == 0) {
+            SaveImagePng(fmt::format("{}/snap_{:04d}.png", out_dir,
                                      frame_idx),
                          frame_img);
         }

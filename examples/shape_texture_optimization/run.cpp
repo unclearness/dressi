@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../common/asset_utils.h"
@@ -50,8 +51,8 @@ struct Options {
     std::string data_dir = "data/bunny";
     std::string out_dir = "shapetex_out";
     uint32_t n_views = 8;
-    int shape_iters = 200;
-    int texture_iters = 300;
+    int shape_iters = 150;
+    int texture_iters = 100;
     uint32_t stacks = 32;
     uint32_t slices = 64;
     uint32_t ico_level = 4;  // icosphere subdivision for the shape phase
@@ -59,6 +60,7 @@ struct Options {
     uint32_t texture_screen = 256;
     uint32_t samples = 8;  // stochastic AA backward samples per face
     int view_interval = 1;
+    int snapshot = 0;  // save pred view 0 every N iters (0 = off; for GIFs)
     bool no_view = false;
 };
 
@@ -94,6 +96,8 @@ Options ParseArgs(const std::vector<std::string>& args) {
             o.samples = uint32_t(std::stoul(value));
         } else if (key == "--view-interval") {
             o.view_interval = std::stoi(value);
+        } else if (key == "--snapshot") {
+            o.snapshot = std::stoi(value);
         } else if (key == "--no-view") {
             o.no_view = value.empty() || value == "1" || value == "true";
         } else if (a.rfind("--", 0) != 0) {
@@ -281,6 +285,13 @@ CpuImage OptimizeShape(const Mesh& bunny, const Mesh& sphere_w,
             target_tile = TileImages(tgts, tile_cols);
             SaveImagePng(opt.out_dir + "/phase1_targets.png", target_tile);
         }
+        // Progress snapshots for the README GIFs
+        if (opt.snapshot > 0 && (iter % opt.snapshot == 0 ||
+                                 iter == opt.shape_iters - 1)) {
+            SaveImagePng(
+                    fmt::format("{}/snap1_{:04d}.png", opt.out_dir, iter),
+                    ad.recvImg(preds[0]));
+        }
         if (viewer_open && opt.view_interval > 0 &&
             iter % opt.view_interval == 0) {
             std::vector<CpuImage> prds;
@@ -291,6 +302,14 @@ CpuImage OptimizeShape(const Mesh& bunny, const Mesh& sphere_w,
                     fmt::format("phase 1: silhouette  iter {}", iter));
             viewer_open = vw.pred->update(TileImages(prds, tile_cols)) &&
                           vw.target->update(target_tile);
+            // Hold the initial state (the undeformed sphere) on screen for a
+            // few seconds so recordings show where the optimization starts.
+            if (iter == 0 && viewer_open) {
+                for (int t = 0; t < 30 && !host.cancelled(); t++) {
+                    std::this_thread::sleep_for(
+                            std::chrono::milliseconds(100));
+                }
+            }
         }
         if (iter % 50 == 0 || iter == opt.shape_iters - 1) {
             const CpuImage li = ad.recvImg(loss);
@@ -455,6 +474,17 @@ void OptimizeTexture(const Mesh& bunny, const CpuImage& bunny_atlas,
             }
             target_tile = TileImages(tgts, tile_cols);
             SaveImagePng(opt.out_dir + "/phase2_targets.png", target_tile);
+        }
+        // Progress snapshots for the README GIFs (render + recovered atlas)
+        if (opt.snapshot > 0 && (iter % opt.snapshot == 0 ||
+                                 iter == opt.texture_iters - 1)) {
+            SaveImagePng(
+                    fmt::format("{}/snap2_{:04d}.png", opt.out_dir, iter),
+                    ad.recvImg(views[0].pred));
+            SaveImagePng(
+                    fmt::format("{}/snap2_tex_{:04d}.png", opt.out_dir,
+                                iter),
+                    ad.recvImg(tex));
         }
         if (viewer_open && opt.view_interval > 0 &&
             iter % opt.view_interval == 0) {

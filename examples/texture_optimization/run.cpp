@@ -52,6 +52,7 @@ int dressi_examples::RunTextureOptimization(
     uint32_t n_views = 6;
     int n_iters = 1500;  // 98.7% texel coverage (99.4% at 4000; jitter-limited)
     int view_interval = 1;  // live-viewer refresh cadence (iters); 0 = off
+    int snapshot = 0;  // save pred view 0 every N iters (0 = off; for GIFs)
     for (const std::string& arg : args) {
         if (arg.rfind("--data-dir=", 0) == 0) {
             data_dir = arg.substr(11);
@@ -63,6 +64,8 @@ int dressi_examples::RunTextureOptimization(
             n_iters = std::stoi(arg.substr(8));
         } else if (arg.rfind("--view-interval=", 0) == 0) {
             view_interval = std::stoi(arg.substr(16));
+        } else if (arg.rfind("--snapshot=", 0) == 0) {
+            snapshot = std::stoi(arg.substr(11));
         } else if (arg.rfind("--", 0) != 0) {
             data_dir = arg;  // positional data dir (back-compat)
         } else {
@@ -236,6 +239,16 @@ int dressi_examples::RunTextureOptimization(
             target_tile = TileImages(targets, tile_cols);
             SaveImagePng(out_dir + "/render_first_view0.png",
                          ad.recvImg(views[0].pred));
+        }
+
+        // Progress snapshots for the README GIFs (render + recovered atlas;
+        // the 1024^2 atlas is saved at 256^2 to keep the sequence small)
+        if (snapshot > 0 && (iter % snapshot == 0 || iter == n_iters - 1)) {
+            SaveImagePng(fmt::format("{}/snap_{:04d}.png", out_dir, iter),
+                         ad.recvImg(views[0].pred));
+            SaveImagePng(
+                    fmt::format("{}/snap_tex_{:04d}.png", out_dir, iter),
+                    DownsampleHalf(DownsampleHalf(ad.recvImg(tex))));
         }
 
         if (viewer_open && view_interval > 0 && iter % view_interval == 0) {

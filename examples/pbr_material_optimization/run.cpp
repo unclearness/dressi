@@ -71,6 +71,7 @@ int dressi_examples::RunPbrMaterialOptimization(
     uint32_t size = 256, tex_max = 512, n_views = 6;
     int n_iters = 1200;  // albedo PSNR ~20.7 dB (21.2 at 2000; slow log climb)
     int view_interval = 1;  // live-viewer refresh cadence (iters); 0 = off
+    int snapshot = 0;  // save pred view 0 every N iters (0 = off; for GIFs)
     float lr = 0.02f;
     for (const std::string& arg : args) {
         if (arg.rfind("--mesh=", 0) == 0) {
@@ -91,6 +92,8 @@ int dressi_examples::RunPbrMaterialOptimization(
             n_iters = std::stoi(arg.substr(8));
         } else if (arg.rfind("--view-interval=", 0) == 0) {
             view_interval = std::stoi(arg.substr(16));
+        } else if (arg.rfind("--snapshot=", 0) == 0) {
+            snapshot = std::stoi(arg.substr(11));
         } else if (arg.rfind("--lr=", 0) == 0) {
             lr = std::stof(arg.substr(5));
         }
@@ -368,6 +371,14 @@ int dressi_examples::RunPbrMaterialOptimization(
                 targets.push_back(ad.recvImg(view.target));
             }
             target_tile = TileImages(targets, tile_cols);
+        }
+        // Progress snapshots for the README GIFs (render + recovered atlas)
+        if (snapshot > 0 && (iter % snapshot == 0 || iter == n_iters - 1)) {
+            SaveImagePng(fmt::format("{}/snap_{:04d}.png", out_dir, iter),
+                         ad.recvImg(views[0].pred));
+            SaveImagePng(
+                    fmt::format("{}/snap_tex_{:04d}.png", out_dir, iter),
+                    DownsampleHalf(display_gamma(ad.recvImg(opt_tex))));
         }
         if (viewer_open && view_interval > 0 && iter % view_interval == 0) {
             std::vector<CpuImage> preds;
