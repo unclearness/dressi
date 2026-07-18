@@ -83,8 +83,9 @@ builds on the same engine.
   DRTK at every resolution on the paper's silhouette task, by baking the whole
   forward + backward + optimizer into pre-recorded command buffers with zero
   per-iteration host traffic.
-- **Runs on phones, unmodified.** All six examples run on Android with the same
-  parameters and results as desktop (see [README-android.md](README-android.md)).
+- **Runs on phones, unmodified.** Every example runs on Android with the
+  same parameters and results as desktop (see
+  [README-android.md](README-android.md)).
 - **PyTorch drop-in.** `dressi.torch` is an nvdiffrast-compatible API with no
   CUDA requirement.
 
@@ -141,7 +142,7 @@ ctest --preset linux-release
 
 ### Android
 
-`android/` is an Android Studio project bundling all six examples into one APK
+`android/` is an Android Studio project bundling all the examples into one APK
 (Kotlin UI + JNI, live view on a SurfaceView, on-device GLSL→SPIR-V). Every
 example completes with the same parameters and results as desktop. Build the
 **release** variant for meaningful timings (the debug native lib is
@@ -183,7 +184,8 @@ yourself for offline builds.
 
 ## Examples
 
-Six examples ship as native executables (and a Python port of two of them):
+The examples ship as native executables (plus Python ports of the
+silhouette and texture ones):
 
 ```sh
 # --- differentiable rendering core ---
@@ -192,6 +194,7 @@ Six examples ship as native executables (and a Python port of two of them):
 ./build/examples/Release/silhouette_optimization.exe data/bunny --technique=hardsoftras
 ./build/examples/Release/silhouette_optimization.exe data/bunny --technique=aa
 ./build/examples/Release/silhouette_optimization.exe --mesh=data/Avocado/glTF/Avocado.gltf
+./build/examples/Release/shape_texture_optimization.exe data/bunny   # shape, then texture
 
 # --- physically based shading / IBL ---
 ./build/examples/Release/pbr_shading.exe                         # DamagedHelmet viewer
@@ -289,7 +292,8 @@ crossing PCIe. In brief:
   paper's inverse-UV lookup (with Sobol-jittered sampling for full coverage).
 - **Vertex-position gradients.** `F::RasterizeSoft` (HardSoftRas, `--peels=K`)
   and `F::AntiAlias` (Dr.Hair screen-space AA) flow gradients to 3D positions;
-  the fully GPU-resident silhouette loop reaches IoU ~0.98 with zero
+  the fully GPU-resident silhouette loop reaches IoU ≈0.95 at the demo
+  defaults (≈0.98 with exact gathers and longer runs) with zero
   per-iteration CPU traffic.
 - **PyTorch bindings.** `dressi.torch` is an nvdiffrast drop-in backed by the
   Vulkan engine (no CUDA), reconciling eager ⇄ define-and-run with a
@@ -360,7 +364,8 @@ src/pack/         trivial & greedy (RSP) packers, reactive pruning
 src/vk/           headless Vulkan context, executor, CPU<->GPU transfer
 src/python/       nanobind module (dressi._C) + dressi.torch eager API
 examples/         image_fitting / texture_optimization / silhouette_optimization
-                  / pbr_shading / pbr_material_optimization / pbr_envmap_optimization
-android/          one-APK Android app (all six examples; Kotlin + JNI)
+                  / shape_texture_optimization / pbr_shading
+                  / pbr_material_optimization / pbr_envmap_optimization
+android/          one-APK Android app (all examples; Kotlin + JNI)
 tests/            GoogleTest suites (ctest labels: cpu / gpu) + tests/python
 ```

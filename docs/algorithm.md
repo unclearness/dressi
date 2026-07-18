@@ -104,7 +104,14 @@ no compute).
   whole iteration is GPU-resident: in-graph projections, soft geometry,
   uniform-Laplacian / normal-consistency regularizers (`F::VertexNeighborMean`,
   `F::NormalConsistencyFaceTerm` / `VertexGrad`), and Adam with GPU-resident
-  state — zero per-iteration CPU traffic. Mask IoU ~0.98 for both techniques.
+  state — zero per-iteration CPU traffic. Mask IoU ≈0.95 for both techniques at
+  the demo defaults (150 iters, stochastic backward samples); ≈0.98 with the
+  exact gathers and longer runs.
+- **`examples/shape_texture_optimization`.** Two-phase composite demo: AA
+  silhouette optimization deforms an icosphere toward the bunny (phase 1), the
+  fitted shape is transferred to a UV-unwrapped sphere, then its texture atlas is
+  recovered like `texture_optimization` but across two distinct meshes (phase 2).
+  No new ops — it composes the M2 + M3 machinery.
 
 ## Milestone 4 — PyTorch bindings (`dressi.torch`)
 

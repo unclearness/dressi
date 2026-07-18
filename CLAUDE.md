@@ -11,13 +11,14 @@ follow PyTorch's derivatives when unclear.
 ```sh
 cmake --preset msvc                  # VS 2022, x64; sets VULKAN_SDK env
 cmake --build --preset release
-ctest --preset release               # all 92 tests
+ctest --preset release               # all tests (labels: cpu / gpu)
 ctest --preset release -LE gpu       # CPU-only (no Vulkan device needed)
 ./build/tests/Release/dressi_tests_cpu.exe --gtest_filter=Backward.*
 ./build/examples/Release/texture_optimization.exe data/bunny
 ./build/examples/Release/silhouette_optimization.exe data/bunny --technique=hardsoftras
 ./build/examples/Release/silhouette_optimization.exe data/bunny --technique=aa
 ./build/examples/Release/silhouette_optimization.exe --mesh=data/Avocado/glTF/Avocado.gltf
+./build/examples/Release/shape_texture_optimization.exe data/bunny   # shape, then texture
 ./build/examples/Release/pbr_shading.exe                  # DamagedHelmet PBS viewer
 ./build/examples/Release/pbr_shading.exe --frames=60      # headless orbit + PNGs
 ```
@@ -42,7 +43,7 @@ ctest --preset release -LE gpu       # CPU-only (no Vulkan device needed)
 
 ## Android (see README-android.md)
 
-- `android/` is a Gradle/Kotlin app (one APK, all six examples; JNI →
+- `android/` is a Gradle/Kotlin app (one APK, all examples; JNI →
   `libdressi_examples.so`). Its `app/src/main/cpp/CMakeLists.txt`
   add_subdirectory's the repo root with `DRESSI_FETCH_DATA=OFF`.
   Pinned: NDK 28.2.13676358, SDK CMake 3.31.6, AGP 8.13.2, minSdk 29,
@@ -62,9 +63,12 @@ ctest --preset release -LE gpu       # CPU-only (no Vulkan device needed)
   `examples/common/example_registry.cpp`); desktop mains are thin
   DesktopHost wrappers, Android provides streams (one SurfaceView +
   `ANativeWindow_lock` CPU blit — no EGL, no second Vulkan context) and a
-  Stop flag polled per iteration. `silhouette_optimization` requires the
-  geometryShader feature (gl_PrimitiveID) — the app grays it out from the
-  startup caps probe.
+  Stop flag polled per iteration. `silhouette_optimization` and
+  `shape_texture_optimization` require the geometryShader feature
+  (gl_PrimitiveID) — the app grays them out from the startup caps probe.
+  With >= 2 viewer streams the app adds a synthetic "all" entry (default
+  selection) that tiles every stream's latest frame vertically on the one
+  surface.
 - Bench cross-check duty (same spirit as the Python rule): the Android
   refactor moved example mains into run.cpp — any example-loop change
   must re-verify the DESKTOP medians too.
@@ -100,12 +104,23 @@ report a raw mean-over-all-iters:
   workload, so the Python optimization examples use 10-iteration blocks
   after the warmup and report the median block-average time. Progress
   readbacks and printing stay between timed blocks.
-- **Cross-device records:** every example writes `bench.json` (GPU device,
-  host os/cpu/ram — phone model on Android, params, median steady-state
-  ms/iter, quality) into its `--out-dir` via `examples/common/bench.h`;
-  `scripts/bench_summary.py <dirs/files>` renders the Markdown comparison
-  table (Android: pull the files with
+- **Cross-device records:** every example except `shape_texture_optimization`
+  (two-phase demo, no single steady-state metric) writes `bench.json`
+  (GPU device, host os/cpu/ram — phone model on Android, params, median
+  steady-state ms/iter, quality) into its `--out-dir` via
+  `examples/common/bench.h`; `scripts/bench_summary.py <dirs/files>`
+  renders the Markdown comparison table (Android: pull the files with
   `adb shell run-as org.dressi.examples cat files/out/<example>/bench.json`).
+- **Disable the live viewer when benchmarking.** The display path perturbs
+  the measured execStep median even though it sits outside the timed
+  section (image_fitting: 0.063 ms with `--view-interval=0` vs ~0.21 ms
+  with its per-iter viewer on this box). Use `--view-interval=0` (and
+  silhouette's `--no-view=1`); the README table's image_fitting rows are
+  viewer-less numbers.
+- **README demo GIFs** regenerate via `scripts/make_readme_gifs.sh` from
+  `--snapshot=1 --view-interval=0` runs (every example has `--snapshot=N`
+  progress dumps); outputs land in git-ignored `out/gifs/` and are
+  uploaded to the wiki repo's `demo/` folder, which the README references.
 - **Warmup is recorded too, not just the median.** The same record carries
   `warmup_ms` (the one-time build/rebuild overhead = wall time of the
   excluded warmup iters minus what steady state would cost them; captures
@@ -151,7 +166,11 @@ inputs changed (reactive cache).
   `__rasterize_soft__ r=<px>`, `__rasterize_face_id__`,
   `__gather_dist_grad__`, `__antialias__`, `__antialias_bwd_img__`,
   `__antialias_bwd_vtx__`, `__col_sum__`, `__sum_all__`,
-  `__sum_partial__`, and the IBL set `__equirect_sample__`,
+  `__sum_partial__`, the mesh/lookup set `__screen_coord__`,
+  `__face_fetch__`/`__face_fetch_bwd__`,
+  `__lookup_faces__`/`__lookup_faces_bwd__`, `__pixel_fetch__`,
+  `__tile_fetch__`, `__soft_clip__`, `__vertex_neighbor_mean__`,
+  `__nc_face_term__`, `__nc_vertex_grad__`, and the IBL set `__equirect_sample__`,
   `__equirect_sample_bwd__ k=` (+ `__tile_sum__ th= n=`),
   `__sample_bilinear__`, `__gather_inv_uv_bilinear__`,
   `__irradiance_conv__`, `__irradiance_conv_bwd__`,

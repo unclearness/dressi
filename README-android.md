@@ -1,19 +1,23 @@
 # dressi on Android
 
-The `android/` directory is an Android Studio project bundling all six
+The `android/` directory is an Android Studio project bundling all the
 examples into one app (`org.dressi.examples`): pick an example, watch
-the live view (streams of what the desktop shows in GLFW windows), read the
-logs, stop anytime. The engine runs exactly the desktop code path —
-headless Vulkan compute + runtime GLSL→SPIR-V (glslang built from source
-for arm64).
+the live view (streams of what the desktop shows in GLFW windows, plus an
+"all" button that tiles every stream on the one screen), read the logs,
+stop anytime. The engine runs exactly the desktop code path — headless
+Vulkan compute + runtime GLSL→SPIR-V (glslang built from source for
+arm64).
 
-Verified devices: **Snapdragon 8 Gen 2 (Adreno 740)** and **Dimensity
-9500 (Mali-G1-Ultra MC12)** — all six examples run to completion on both,
-with the same parameters and results as the desktop builds. Measured
-per-example timings for both phones are in
+Verified devices: **Snapdragon 8 Gen 2** (Adreno 740, Xiaomi Pad 6S
+tablet), **Dimensity 9500** (Mali-G1-Ultra MC12, Xiaomi 17T Pro) and
+**Dimensity 9200+** (Mali-G715 MC11, Xiaomi 13T Pro) — the examples run
+to completion with the same parameters and results as the desktop builds
+(`shape_texture_optimization`, added later, verified on the Dimensity
+9500). Measured per-example timings are in
 [docs/benchmarks.md](docs/benchmarks.md).
-`silhouette_optimization` additionally needs the `geometryShader` feature
-(checked at startup and grayed out if absent; present on both devices).
+`silhouette_optimization` and `shape_texture_optimization` additionally
+need the `geometryShader` feature (checked at startup and grayed out if
+absent; present on all three devices).
 
 ## Prerequisites (one-time)
 
@@ -75,21 +79,23 @@ files only disable the affected examples at runtime.
   adb shell run-as org.dressi.examples ls files/out
   adb shell "run-as org.dressi.examples cat files/out/texture_optimization/recovered_texture.png" > recovered.png
   ```
-- The app runs the examples with the desktop-default parameters (only
-  the data/output paths differ) — full optimization runs take minutes on
-  a phone (e.g. ~5 min texture_optimization, ~15 s silhouette on an
-  Adreno 740). Shorten runs by editing `MainActivity.defaultArgs`; a
+- The app runs the examples with the desktop-default parameters (only the
+  data/output paths differ; `pbr_shading` additionally gets `--frames=200`
+  so its interactive orbit self-terminates) — full optimization runs take
+  minutes on a phone (e.g. ~5 min texture_optimization, ~15 s silhouette
+  on an Adreno 740). Shorten runs by editing `MainActivity.defaultArgs`; a
   quality-gate exit code 1 on a shortened run means "converged less than
   the desktop gate", not an error.
 
 ## Cross-device benchmarking
 
-Every example writes a `bench.json` into its output directory on every
-run — desktop and Android alike: GPU device name, host info (OS, CPU /
-SoC, RAM; on Android also the phone model), the parameters, the median
-steady-state ms/iter (warmup excluded), and the example's quality
-metric (IoU / accuracy / PSNR / FPS). To build a comparison table
-across machines/phones:
+Every example except `shape_texture_optimization` (a two-phase demo with
+no single steady-state metric) writes a `bench.json` into its output
+directory on every run — desktop and Android alike: GPU device name, host
+info (OS, CPU / SoC, RAM; on Android also the phone model), the
+parameters, the median steady-state ms/iter (warmup excluded), and the
+example's quality metric (IoU / accuracy / PSNR / FPS). To build a
+comparison table across machines/phones:
 
 All `adb`/pull commands below run on the **host PC**, not on the phone —
 they drive the device over USB. On Windows run them in **Git Bash**
