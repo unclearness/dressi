@@ -48,8 +48,10 @@ void SurfaceState::setSurface(ANativeWindow* window) {
         // Restore the selected stream's last frame onto the fresh surface
         // (e.g. after the SurfaceView is recreated post-run), so switching
         // back does not leave the view black until the next blit.
-        if (m_selected >= 0 && size_t(m_selected) < m_frames.size() &&
-            m_frames[size_t(m_selected)].width != 0) {
+        if (m_selected == kAllStream) {
+            drawAllLocked();
+        } else if (m_selected >= 0 && size_t(m_selected) < m_frames.size() &&
+                   m_frames[size_t(m_selected)].width != 0) {
             drawLocked(m_frames[size_t(m_selected)]);
         }
     }
@@ -57,6 +59,16 @@ void SurfaceState::setSurface(ANativeWindow* window) {
 
 void SurfaceState::selectStream(int index) {
     std::lock_guard<std::mutex> lock(m_mutex);
+    // The UI's stream list ends with the synthetic "all" entry (see
+    // registerStream); its index is the number of real streams.
+    if (index >= 0 && size_t(index) == m_titles.size() &&
+        m_titles.size() >= 2) {
+        m_selected = kAllStream;
+        if (m_window) {
+            drawAllLocked();
+        }
+        return;
+    }
     m_selected = index;
     // Immediately show the newly selected stream's cached frame. Without this
     // the surface stays on the previous stream until the next update() -- and
@@ -76,14 +88,19 @@ int SurfaceState::registerStream(const std::string& title) {
         id = int(m_titles.size());
         m_titles.push_back(title);
         m_frames.emplace_back();  // empty until this stream first blits
-        // Convention: examples register the ground-truth target first and the
-        // OPTIMIZED result second. Default the view to that optimized stream
-        // (the thing being optimized is what the user wants to watch); the UI
-        // reflects and can override this via selectStream.
+        // Default to the synthetic "all" (tiled) view as soon as a second
+        // stream exists; the UI mirrors this (it selects the last entry of
+        // the notified titles) and can override it via selectStream.
         if (id == 1) {
-            m_selected = 1;
+            m_selected = kAllStream;
         }
         titles = m_titles;
+    }
+    // With >= 2 streams the UI also gets a synthetic "all" entry that tiles
+    // every stream on the one surface (selectStream maps its index, which
+    // equals the real-stream count, to kAllStream).
+    if (titles.size() >= 2) {
+        titles.push_back("all");
     }
     NotifyStreamsChanged(titles);
     return id;
@@ -109,11 +126,87 @@ bool SurfaceState::blit(int stream_id, const dressi::CpuImage& img) {
     if (stream_id >= 0 && size_t(stream_id) < m_frames.size()) {
         m_frames[size_t(stream_id)] = img;
     }
-    if (!m_window || stream_id != m_selected) {
+    if (!m_window) {
+        return true;
+    }
+    if (m_selected == kAllStream) {
+        drawAllLocked();  // any stream's new frame refreshes the composite
+        return true;
+    }
+    if (stream_id != m_selected) {
         return true;  // stream not visible; keep the example running
     }
     drawLocked(img);
     return true;
+}
+
+void SurfaceState::drawAllLocked() {
+    // Collect the streams that have blitted at least once, in registration
+    // order (= the order of the UI buttons).
+    std::vector<const dressi::CpuImage*> frames;
+    for (const dressi::CpuImage& f : m_frames) {
+        if (f.width != 0 && f.height != 0) {
+            frames.push_back(&f);
+        }
+    }
+    if (frames.empty()) {
+        return;
+    }
+    if (frames.size() == 1) {
+        drawLocked(*frames.front());
+        return;
+    }
+    // Vertical stack (portrait-friendly): every frame nearest-scaled to the
+    // widest stream's width, aspect preserved, with a thin black separator.
+    constexpr uint32_t kGap = 2;
+    uint32_t canvas_w = 0;
+    for (const dressi::CpuImage* f : frames) {
+        canvas_w = std::max(canvas_w, f->width);
+    }
+    std::vector<uint32_t> row_h;
+    uint32_t canvas_h = kGap * uint32_t(frames.size() - 1);
+    for (const dressi::CpuImage* f : frames) {
+        row_h.push_back(std::max(
+                1u, uint32_t(uint64_t(f->height) * canvas_w / f->width)));
+        canvas_h += row_h.back();
+    }
+    if (m_all_canvas.width != canvas_w || m_all_canvas.height != canvas_h ||
+        m_all_canvas.channels != 3) {
+        m_all_canvas = dressi::CpuImage(canvas_w, canvas_h, 3, 0.f);
+    }
+    uint32_t oy = 0;
+    for (size_t i = 0; i < frames.size(); i++) {
+        const dressi::CpuImage& f = *frames[i];
+        const bool rgb = f.channels >= 3;
+        for (uint32_t y = 0; y < row_h[i]; y++) {
+            const uint32_t sy = std::min(
+                    f.height - 1, uint32_t(uint64_t(y) * f.height / row_h[i]));
+            for (uint32_t x = 0; x < canvas_w; x++) {
+                const uint32_t sx = std::min(
+                        f.width - 1,
+                        uint32_t(uint64_t(x) * f.width / canvas_w));
+                const size_t p =
+                        (size_t(sy) * f.width + sx) * f.channels;
+                m_all_canvas.at(x, oy + y, 0) = f.data[p];
+                m_all_canvas.at(x, oy + y, 1) = rgb ? f.data[p + 1]
+                                                    : f.data[p];
+                m_all_canvas.at(x, oy + y, 2) = rgb ? f.data[p + 2]
+                                                    : f.data[p];
+            }
+        }
+        oy += row_h[i];
+        if (i + 1 < frames.size()) {
+            for (uint32_t y = 0; y < kGap; y++) {
+                for (uint32_t x = 0; x < canvas_w; x++) {
+                    m_all_canvas.at(x, oy + y, 0) = 0.f;
+                    m_all_canvas.at(x, oy + y, 1) = 0.f;
+                    m_all_canvas.at(x, oy + y, 2) = 0.f;
+                }
+            }
+            oy += kGap;
+        }
+    }
+    drawLocked(m_all_canvas);
 }
 
 void SurfaceState::drawLocked(const dressi::CpuImage& img) {

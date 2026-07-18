@@ -332,14 +332,23 @@ class MainActivity : Activity(), NativeBridge.Listener {
         runOnUiThread {
             streamBar.removeAllViews()
             streamButtons.clear()
-            // Default to the optimized stream (index 1: examples register the
-            // GT target first, the optimized result second); mirrors the
-            // native default in AndroidHost::registerStream.
-            selectedStream = if (titles.size > 1) 1 else 0
+            // Default to the last entry: with >= 2 streams that is the
+            // synthetic "all" (tiled) view the native side appends; with one
+            // stream it is just that stream. Mirrors the native default in
+            // SurfaceState::registerStream.
+            selectedStream = titles.size - 1
+            val hPad = (10 * resources.displayMetrics.density).toInt()
             titles.forEachIndexed { i, title ->
                 val btn = Button(this).apply {
                     text = title
                     textSize = 11f
+                    // Compact: drop the 88dp Button min-width, the ALL-CAPS
+                    // widening, and most of the horizontal padding so all
+                    // four shape_texture streams fit without scrolling.
+                    isAllCaps = false
+                    minWidth = 0
+                    minimumWidth = 0
+                    setPadding(hPad, paddingTop, hPad, paddingBottom)
                     setOnClickListener { selectStreamButton(i) }
                 }
                 styleStreamButton(btn, i == selectedStream)

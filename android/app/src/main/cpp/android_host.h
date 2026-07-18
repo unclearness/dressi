@@ -22,12 +22,18 @@ void NotifyStreamsChanged(const std::vector<std::string>& titles);
 // stream on the SurfaceView). All access is serialized by one mutex, so
 // surface teardown (surfaceDestroyed) blocks until an in-flight blit is
 // done, as the Android Surface contract requires.
+//
+// Besides the per-stream views, a synthetic "all" entry (appended after the
+// real stream titles once there are >= 2 of them) tiles every stream's
+// latest frame vertically on the single surface — e.g. shape_texture's
+// target / prediction / recovered-atlas in one screen for recording.
 class SurfaceState {
 public:
     static SurfaceState& instance();
 
     // Takes ownership of an already-acquired window (or nullptr to detach).
     void setSurface(ANativeWindow* window);
+    // index == number of real streams selects the synthetic "all" view.
     void selectStream(int index);
 
     int registerStream(const std::string& title);  // -> stream id
@@ -45,6 +51,13 @@ private:
     // Posts an already-RGBA-convertible float image to the current window.
     // Caller must hold m_mutex and guarantee m_window != nullptr.
     void drawLocked(const dressi::CpuImage& img);
+    // Tiles every stream's cached frame vertically (streams that have not
+    // blitted yet are skipped) and posts the composite. Same caller
+    // contract as drawLocked.
+    void drawAllLocked();
+
+    // m_selected value for the synthetic "all" (tiled) view.
+    static constexpr int kAllStream = -2;
 
     std::mutex m_mutex;
     ANativeWindow* m_window = nullptr;
@@ -53,6 +66,7 @@ private:
     // Latest frame per stream id (parallel to m_titles); empty until a stream
     // first blits. Lets selectStream / surface re-attach redraw a finished run.
     std::vector<dressi::CpuImage> m_frames;
+    dressi::CpuImage m_all_canvas;  // reused scratch for drawAllLocked
 };
 
 class AndroidHost : public dressi_examples::ExampleHost {
