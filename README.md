@@ -247,7 +247,7 @@ integrated GPU, down to phones — to the **same quality**. Median ms/iter
 | silhouette (aa) 128px | 1.21 | 3.34 | 21.6 | 11.5 | 21.2 | IoU 0.95 |
 | silhouette (hardsoftras) 128px | 2.16 | 9.96 | 23.7 | 32.5 | 36.6 | IoU 0.95 |
 | pbr_material 256px | 2.73 | 17.9 | 55.2 | 40.9 | 47.0 | PSNR 20.6 dB |
-| pbr_envmap 192px | 8.53 | 105 | 304 | 181 | 200 | PSNR 18.2 dB |
+| pbr_envmap 192px | 8.53 | 105 | 304 | 181 | 200 | PSNR 18.1 dB |
 | pbr_shading 512px | 677 FPS | 116 FPS | 56 FPS | 19 FPS | 42 FPS | — |
 
 Quality is device-independent (validated across all 8 devices). Verified on
@@ -297,7 +297,9 @@ crossing PCIe. In brief:
   Python.
 - **PBR / IBL.** Split-sum Cook-Torrance shading with material and
   environment-map optimization; all equirectangular, with exact-transpose
-  backwards for the environment ops.
+  backwards for the environment ops. The environment is recovered from the
+  object's shading and reflections alone (foreground-masked loss — the
+  metallic helmet constrains almost the whole sphere).
 
 Full details — every op, the packing / rematerialization passes, the WIDE gather
 backwards, the PyTorch engine cache, and known deviations from the paper — are

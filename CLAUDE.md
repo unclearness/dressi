@@ -294,7 +294,11 @@ inputs changed (reactive cache).
   size — a 128x64 prefilter of a 64x32 env holds no information but
   quadruples the screen-gradient gather. PrefilterEnv/BrdfIntegrationLut
   remain forward-only. AvgPool2x2 chains are differentiable, so pooled
-  sources propagate.
+  sources propagate. The example's DEFAULT loss is foreground-masked
+  (`--fg-only=1`, gbuf coverage * diff): the env is recovered through the
+  helmet's shading/reflections only — 18.11 dB vs 18.26 with the direct
+  background observation (`--fg-only=0`); ms/iter unchanged (the bg
+  branch still renders, only the loss mask differs).
 - glTF UV convention: `LoadGltfScene` does NOT flip V (glTF is top-left
   origin, matching image row 0); the older `LoadGltfMesh` keeps its 1-v
   flip (OBJ-ism) for compatibility with existing examples.

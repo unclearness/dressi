@@ -150,14 +150,17 @@ examples:
 - **`pbr_material_optimization`.** Albedo recovery via `F::TextureBilinear`'s
   tent-weighted inverse-UV gather (accumulates every contributing pixel, so
   stable steps are ~Σw² smaller than the nearest gather's).
-- **`pbr_envmap_optimization`.** HDR environment recovery from background +
-  diffuse (and, with the differentiable prefilter, specular) paths.
-  `F::EquirectSample` / `F::IrradianceConv` / `F::PrefilterConv` are
+- **`pbr_envmap_optimization`.** HDR environment recovery through the
+  object's diffuse shading and (with the differentiable prefilter) specular
+  reflections — the loss is masked to the helmet's coverage by default
+  (`--fg-only=0` adds the direct background observation; it buys only
+  ~0.15 dB because the metallic helmet already constrains almost the whole
+  sphere). `F::EquirectSample` / `F::IrradianceConv` / `F::PrefilterConv` are
   deterministic linear maps with **exact transposes** (no atomics); the equirect
   transpose is WIDE-split into `{map_w, map_h·K}` band partials + `__tile_sum__`.
   A `--env-reg` smoothness prior resolves the underdetermined-inverse speckle
   (the `Max(env,0)` clamp otherwise rectifies null-space oscillation into black
-  specks); env PSNR 16.4 → 18.3 dB.
+  specks); env PSNR 16.4 → 18.3 dB (background-inclusive numbers).
 
 ## Known deviations from the paper (intentional)
 

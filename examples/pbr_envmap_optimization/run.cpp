@@ -2,20 +2,24 @@
 // (small) equirectangular HDR env map from rendered images while geometry,
 // materials and the light stay at ground truth. The forward shader is
 // exactly the viewer's; per view the G-buffer is rasterized once and shaded
-// twice (GT env maps -> target, optimized env -> pred).
+// twice (GT env maps -> target, optimized env -> pred). By default the loss
+// is masked to the helmet's coverage (--fg-only=1): the env is observed
+// only THROUGH the object's shading and reflections — the pure
+// inverse-rendering setting (18.11 dB vs 18.26 with background pixels).
 //
 // Gradient paths into the env leaf (the paper has no recipe here; this is
 // the documented Dressi-style solution):
-//   - background pixels: EquirectSample(env, view_ray) -> exact bilinear
-//     transpose (each env texel scans the screen; O(env * pixels), which is
-//     why the OPTIMIZED env is a small leaf, 64x32 by default)
 //   - diffuse IBL: EquirectSample(irr, n) -> transpose -> IrradianceConv
 //     transpose (exact: the conv is a deterministic linear map) -> AvgPool
 //     backward -> env
 //   - specular IBL: the deterministic F::PrefilterConv chain (GGX-NDF
 //     convolution, exact transpose) — the helmet is mostly metal, so the
-//     glossy reflections constrain large parts of the sphere that the
-//     background rays never see
+//     glossy reflections constrain almost the whole sphere
+//   - background pixels (--fg-only=0 only): EquirectSample(env, view_ray)
+//     -> exact bilinear transpose (each env texel scans the screen;
+//     O(env * pixels), which is why the OPTIMIZED env is a small leaf,
+//     64x32 by default — the transpose stage exists regardless because the
+//     background is still rendered, only the loss mask changes)
 // Because the env leaf is dirty every iteration, the IBL precompute of the
 // optimized branch is NOT pruned (it re-runs per iter); the GT branch stays
 // static and is pruned as usual.
@@ -109,6 +113,13 @@ int dressi_examples::RunPbrEnvmapOptimization(
     // --clamp=0 is a diagnostic: without it the underconstrained texels
     // random-walk around their init instead of piling up at black.
     bool clamp_nonneg = true;
+    // Restrict the loss to helmet pixels (coverage mask): the env is then
+    // observed only through the object's shading/reflections, never
+    // directly via background rays — the pure inverse-rendering setting.
+    // Costs only ~0.15 dB env PSNR (18.11 vs 18.26) because the metallic
+    // helmet's reflections constrain almost the whole sphere; --fg-only=0
+    // restores the direct background observation for comparison.
+    bool fg_only = true;
     for (const std::string& arg : args) {
         if (arg.rfind("--mesh=", 0) == 0) {
             mesh_path = arg.substr(7);
@@ -134,6 +145,8 @@ int dressi_examples::RunPbrEnvmapOptimization(
             env_reg = std::stof(arg.substr(10));
         } else if (arg.rfind("--clamp=", 0) == 0) {
             clamp_nonneg = std::stoi(arg.substr(8)) != 0;
+        } else if (arg.rfind("--fg-only=", 0) == 0) {
+            fg_only = std::stoi(arg.substr(10)) != 0;
         }
     }
     const ImgSize screen = {size, size};
@@ -235,6 +248,9 @@ int dressi_examples::RunPbrEnvmapOptimization(
         view.target = target.ldr;
         view.pred = pred.ldr;
         Variable diff = F::StopGradient(target.mapped) - pred.mapped;
+        if (fg_only) {
+            diff = pred.mask * diff;
+        }
         view_losses.push_back(F::Mean(diff * diff));
     }
     Variable loss = F::SumPixelWise(view_losses);

@@ -92,7 +92,7 @@ ops → substages → Vulkan render passes:
 | | Mali-G1-Ultra (phone) | 40.891 | 7667 (3336) | 3593→125→49 | PSNR 20.65 dB |
 | | Mali-G715 (phone) | 46.994 | 7875 (3632) | 3593→125→49 | PSNR 20.65 dB |
 | | llvmpipe (CPU) | 117.7 | 2098 (1353) | 3593→74→42 | PSNR 20.48 dB |
-| **pbr_envmap_optimization**<br>192px env64 4v 1500it | RTX PRO 6000 Blackwell | 8.532 | 1980 (1642) | 2436→43→36 | PSNR 18.26 dB |
+| **pbr_envmap_optimization**²<br>192px env64 4v 1500it | RTX PRO 6000 Blackwell | 8.532 | 1980 (1642) | 2436→43→36 | PSNR 18.26 dB |
 | | RTX 6000 Ada | **8.193** | 904 (777) | 2436→43→36 | PSNR 18.26 dB |
 | | RTX 3090 | 14.012 | 6494 (4582) | 2436→43→36 | PSNR 18.26 dB |
 | | Iris Xe (iGPU) | 105.30 | 833 (792) | 2436→54→38 | PSNR 18.26 dB |
@@ -113,6 +113,12 @@ ops → substages → Vulkan render passes:
 200-frame orbit (vs desktop headless 60) so it self-terminates and emits
 `bench.json`. The metric is exec+readback per frame, so the frame budget does
 not change the median.
+
+² measured with the background-inclusive loss (now `--fg-only=0`). The
+current default masks the loss to the helmet's coverage — the env is
+observed only through the object's shading/reflections — and reaches
+18.11 dB on the RTX PRO 6000 at an unchanged ms/iter (the background
+branch still renders; only the loss mask differs).
 
 Observations:
 
