@@ -15,11 +15,13 @@ source) → MoltenVK → Metal. Requires iOS 16+ on arm64.
 
 | target | tests | examples |
 | --- | --- | --- |
+| iPhone 12 Pro (A14, iOS 18.7) | 132/132 | all 8 entries, default parameters |
 | iOS Simulator | 132/132 | 6 of 8 entries; see below |
-| Device | not run yet | not run yet |
 
-Device builds and signing work, but no install has been verified: the test
-iPhone was at the free-profile limit of three apps.
+Median steady-state on the iPhone 12 Pro: image_fitting 2.16 ms/iter,
+texture_optimization 57.3, silhouette (hardsoftras) 29.2, silhouette (aa) 32.2,
+pbr_shading 13.3 ms/frame (75 FPS), pbr_material_optimization 57.3,
+pbr_envmap_optimization 412. Quality matches the desktop builds.
 
 In the simulator `silhouette_optimization_aa` and `shape_texture_optimization`
 stop with "image extent exceeds maxImageDimension2D". Simulator Metal caps
@@ -74,12 +76,16 @@ can be changed with `-DDRESSI_IOS_BUNDLE_PREFIX=<prefix>`.
 ## Unattended runs
 
 DressiExamples takes launch arguments: `--run=<entry>` runs one list entry and
-exits with its code, `--run-all` runs them all. Everything after `--` goes to
-the example, e.g. `--run=silhouette_optimization_aa -- --iters=50`. DressiTests
+exits with its code, `--run-all` runs them all. Any other `--option` goes to
+the example, e.g. `--run=silhouette_optimization_aa --iters=50`. DressiTests
 takes the usual `--gtest_*` flags and writes `Documents/gtest.xml`.
 
 ## Platform notes
 
+- Every stage writes a GPU timestamp on iOS. Without them
+  `pbr_envmap_optimization` dies with "GPU Hang Error" although its frame takes
+  only about 300 ms and no pass over about 100 ms. Why this helps is inferred,
+  not established. It costs about 1 ms on the shortest frames.
 - The app stops a running example when it goes to the background: iOS forbids
   GPU work there.
 - Examples and tests run on 64 MiB-stack threads; the 512 KiB default for

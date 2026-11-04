@@ -14,11 +14,11 @@ Environment: Apple M5 Pro, macOS 26.6.2, Xcode 27.2, Vulkan SDK 1.4.350.0
 | --- | --- | --- |
 | macOS | 133/133 (ctest, incl. 20 pytest) | all 7, plus python examples |
 | iOS Simulator | 132/132 | 6 of 8 app entries |
-| iPhone 12 Pro (A14) | build + sign only | build + sign only |
+| iPhone 12 Pro (A14, iOS 18.7) | 132/132 | all 8 entries, default parameters |
 
-The device was not run: the free developer profile allows three apps and the
-phone holds three others (`cross3dgs`, `.e2e`, `.sfmbench`). They were left
-alone. Removing one, or a paid account, unblocks it.
+Device runs needed a free-profile slot: `org.unclearness.cross3dgs.sfmbench` was
+removed with the user's approval, its unused-since-October choice confirmed by
+container timestamps. Its Documents (1.7 GB) were copied off first.
 
 Simulator failures: `silhouette_optimization_aa` and
 `shape_texture_optimization` hit its 8192 texture cap (`{V, max_deg}` adjacency
@@ -47,6 +47,19 @@ Avocado (IoU 0.9827).
   40 bytes ... supports 32". Vulkan has no such limit; added
   `max_color_bytes_per_pixel` to the packer.
 - Simulator's real texture limit (8192) is below what MoltenVK reports.
+- iPhone: `pbr_envmap_optimization` died with `kIOGPUCommandBufferCallbackErrorHang`
+  about 5 s after iter 0, every run at 192 px with 2+ views. Not throughput: a
+  frame is about 300 ms, the longest pass about 100 ms, and it ran fine under
+  `SPDLOG_LEVEL=debug`. The debug-only per-stage timestamps were the difference;
+  always writing them on iOS fixes it (`stage_timestamps`). That they matter
+  because they break up the Metal work for the GPU watchdog is an inference.
+  Costs about 1 ms on the shortest frames (image_fitting 1.11 -> 2.16 ms/iter,
+  pbr_shading 11.8 -> 13.3 ms/frame).
+- App bugs found on the device: an unattended run did not set `g_running`, so a
+  tap on the list started a second run and `Streams::reset()` pulled state from
+  under the first (crash in `IosViewer::update`). `devicectl` also swallows
+  `--`, silently dropping example arguments; any other `--option` now passes
+  through.
 
 ## Decisions
 
@@ -79,6 +92,10 @@ Median steady-state ms/iter, Apple M5 Pro, viewer off, final configuration.
 | pbr_material_optimization | 4.627 | PSNR 20.65 dB |
 | pbr_envmap_optimization | 45.73 | PSNR 18.11 dB |
 
+iPhone 12 Pro: image_fitting 2.16, texture 57.3, silhouette hardsoftras 29.2,
+aa 32.2, pbr_shading 13.3 (75 FPS), pbr_material 57.3 (20.65 dB), pbr_envmap 412
+(18.11 dB), IoU 0.9502 / 0.9520, shape IoU 0.9672.
+
 Simulator: pbr_material 14.0, pbr_envmap 49.7, pbr_shading 1.64 ms.
 Python on macOS: `dressi_native_bench.py` 0.471 ms @512^2, eager
 `dressi_torch_bench.py` 1.780 ms @512^2. Not cross-checked against the C++
@@ -86,12 +103,15 @@ Avocado path at matching settings.
 
 ## Open issues
 
-- iPhone runs (tests, all examples, A14 budget of 64 B) unverified.
+- The iOS GPU hang is worked around with timestamps, not explained. Splitting
+  a frame across several submits may be the proper fix, and would drop the
+  timestamp cost. Only A14 was tested.
 - The MoltenVK mix bug is worked around, not reported or understood at the
   source level. Enabling argument buffers again needs that fix.
 - GLFW viewer ran without error on macOS, but screen capture permission was
   missing, so the window contents were not checked by eye.
-- The iOS app UI was only exercised through `--run` / `--run-all`.
+- The iOS app UI (list, streams, Stop, background cancel) was not checked; runs
+  went through `--run` / `--run-all`.
 - `{V, max_deg}` tiling would let the two simulator failures run.
 - Windows, Linux and Android were not rebuilt here; `VarMap` and the packer
   changes touch all of them.

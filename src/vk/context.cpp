@@ -49,6 +49,7 @@ VkContextPtr CreateVkContext(bool debug_enable) {
     const auto props = vkw::GetPhysicalProperties(ctx->physical_device);
     const MetalLimits metal = QueryMetalLimits(props->deviceName.data());
     ctx->max_color_bytes_per_pixel = metal.max_color_bytes_per_pixel;
+    ctx->stage_timestamps = metal.stage_timestamps;
     ctx->limits.maxImageDimension2D = std::min(
             ctx->limits.maxImageDimension2D, metal.max_image_dimension_2d);
 #endif

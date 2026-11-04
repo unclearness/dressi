@@ -3,7 +3,7 @@
 // Documents/out/<example>/. Launch arguments for unattended runs:
 //   --run=<entry>   run one list entry, then exit with its code
 //   --run-all       run every entry in turn, exit non-zero if any failed
-// and everything after `--` is appended to the example's own arguments.
+// and any other --option is appended to the example's own arguments.
 #import <UIKit/UIKit.h>
 #include <spdlog/sinks/callback_sink.h>
 #include <spdlog/sinks/stdout_sinks.h>
@@ -432,6 +432,7 @@ void StartRunner(void (^body)(void)) {
 - (void)runUnattended:(const std::vector<Entry>&)entries
                 extra:(const std::vector<std::string>&)extra {
     UIApplication.sharedApplication.idleTimerDisabled = YES;
+    g_running = true;  // keeps the list from starting a second run
     const std::vector<Entry> todo = entries;
     const std::vector<std::string> args = extra;
     StartRunner(^{
@@ -466,15 +467,10 @@ void StartRunner(void (^body)(void)) {
 
     std::vector<Entry> todo;
     std::vector<std::string> extra;
-    bool in_extra = false;
     const auto entries = MakeEntries();
     for (NSString* a in NSProcessInfo.processInfo.arguments) {
         const std::string arg = a.UTF8String;
-        if (in_extra) {
-            extra.push_back(arg);
-        } else if (arg == "--") {
-            in_extra = true;
-        } else if (arg == "--run-all") {
+        if (arg == "--run-all") {
             todo = entries;
         } else if (arg.rfind("--run=", 0) == 0) {
             for (const auto& e : entries) {
@@ -482,6 +478,8 @@ void StartRunner(void (^body)(void)) {
                     todo.push_back(e);
                 }
             }
+        } else if (arg.rfind("--", 0) == 0 && arg != "--") {
+            extra.push_back(arg);
         }
     }
     if (!todo.empty()) {

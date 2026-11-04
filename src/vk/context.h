@@ -13,6 +13,7 @@ namespace dressi {
 struct MetalLimits {
     uint32_t max_color_bytes_per_pixel = UINT32_MAX;
     uint32_t max_image_dimension_2d = UINT32_MAX;
+    bool stage_timestamps = false;
 };
 #if defined(__APPLE__)
 MetalLimits QueryMetalLimits(const std::string& device_name);  // metal_limits.mm
@@ -28,6 +29,10 @@ struct VkContext {
     vk::PhysicalDeviceLimits limits;
     // Sum of a pass's color attachment texel sizes; see PackingLimits
     uint32_t max_color_bytes_per_pixel = UINT32_MAX;
+    // Write a timestamp after every stage even without debug logging. On iOS
+    // a long frame otherwise trips the GPU watchdog ("GPU Hang Error"), though
+    // no single pass is slow (pbr_envmap_optimization: 2+ views, 300 ms/frame).
+    bool stage_timestamps = false;
     std::unique_ptr<vkw::GLSLCompiler> glsl_compiler;
 
     // Persistent transfer staging, grown on demand (every transfer is a

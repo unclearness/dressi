@@ -226,9 +226,10 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
     const auto& cmd = plan.cmd_pack->cmd_bufs[0];
     vkw::BeginCommand(cmd, /*one_time_submit=*/false);
 
-    // Per-stage GPU timestamps (debug logging only). Interval k =
-    // ts[k+1]-ts[k] and is described by ts_labels[k].
-    const bool ts_enabled = spdlog::should_log(spdlog::level::debug) &&
+    // Per-stage GPU timestamps (debug logging, or see stage_timestamps).
+    // Interval k = ts[k+1]-ts[k] and is described by ts_labels[k].
+    const bool ts_enabled = (spdlog::should_log(spdlog::level::debug) ||
+                             ctx.stage_timestamps) &&
                             ctx.limits.timestampComputeAndGraphics;
     uint32_t ts_next = 0;
     const auto ts_mark = [&](std::string label) {
@@ -924,7 +925,8 @@ namespace {
 
 // Reads back and reports the per-stage GPU timestamps (debug logging only)
 void CollectTimestamps(const VkContext& ctx, GpuPlan& plan) {
-    if (!plan.ts_pool || plan.ts_labels.empty()) {
+    if (!plan.ts_pool || plan.ts_labels.empty() ||
+        !spdlog::should_log(spdlog::level::debug)) {
         return;
     }
     const uint32_t n = uint32_t(plan.ts_labels.size()) + 1;

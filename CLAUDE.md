@@ -98,6 +98,9 @@ macOS: `cmake --preset macos`, `cmake --build --preset macos-release`,
   (`src/vk/metal_limits.mm`): color attachment bytes per pixel, and the
   simulator's 8192 texture cap. No per-platform constants; the executor asserts
   them, since Metal corrupts or aborts past them rather than failing.
+- iOS writes a GPU timestamp after every stage (`stage_timestamps`): without
+  them long frames die with "GPU Hang Error" although no pass is slow. Keep it
+  unless the frame is split some other way.
 - `ios/` needs the Xcode generator for signing; iOS tests are one app
   (`DressiTests`) because a bare binary cannot run there. Launch arguments
   `--run=` / `--run-all` drive the examples app unattended.

@@ -10,6 +10,9 @@ namespace dressi {
 
 MetalLimits QueryMetalLimits(const std::string& device_name) {
     MetalLimits limits;
+#if TARGET_OS_IPHONE
+    limits.stage_timestamps = true;
+#endif
     @autoreleasepool {
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
 #if !TARGET_OS_IPHONE
