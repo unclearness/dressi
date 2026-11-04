@@ -9,6 +9,8 @@
 
 #include <vector>
 
+#include "dressi/dressi_ad.h"
+
 namespace {
 
 struct VkCtx {
@@ -21,6 +23,7 @@ struct VkCtx {
 
 VkCtx CreateHeadlessContext() {
     VkCtx ctx;
+    dressi::PrepareVulkanLoaderEnv();
     ctx.instance = vkw::CreateInstance("dressi_smoke", 1, "dressi", 1,
                                        /*debug_enable=*/false,
                                        /*surface_enable=*/false);

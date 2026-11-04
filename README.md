@@ -92,7 +92,7 @@ builds on the same engine.
 ## Contents
 
 - [Building](#building) — [Windows](#windows), [Linux](#linux),
-  [Android](#android), [PyTorch bindings](#pytorch-bindings-dressitorch)
+  [macOS](#macos), [iOS](#ios), [Android](#android), [PyTorch bindings](#pytorch-bindings-dressitorch)
 - [Examples](#examples)
 - [Performance](#performance) · full tables in [docs/benchmarks.md](docs/benchmarks.md)
 - [How it works](#how-it-works) · details in [docs/algorithm.md](docs/algorithm.md)
@@ -139,6 +139,23 @@ cmake --build --preset linux-release
 ctest --preset linux-release
 ./build/examples/image_fitting
 ```
+
+### macOS
+
+Runs on MoltenVK. Install the [Vulkan SDK](https://vulkan.lunarg.com/) (found
+under `~/VulkanSDK/<ver>/macOS` even if `setup-env.sh` was not sourced):
+
+```sh
+cmake --preset macos
+cmake --build --preset macos-release
+ctest --preset macos-release
+./build/examples/texture_optimization data/bunny
+```
+
+### iOS
+
+`ios/` builds an examples app and a test host app with static MoltenVK. Status,
+simulator and device steps: **[README-ios.md](README-ios.md)**.
 
 ### Android
 
@@ -367,5 +384,6 @@ examples/         image_fitting / texture_optimization / silhouette_optimization
                   / shape_texture_optimization / pbr_shading
                   / pbr_material_optimization / pbr_envmap_optimization
 android/          one-APK Android app (all examples; Kotlin + JNI)
+ios/              iOS examples app + gtest host (UIKit, static MoltenVK)
 tests/            GoogleTest suites (ctest labels: cpu / gpu) + tests/python
 ```

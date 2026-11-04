@@ -34,7 +34,8 @@ struct ExampleInfo {
     const char* name;
     RunFn run;
     // True for examples using F::RasterizeFaceId (gl_PrimitiveID needs the
-    // geometryShader device feature, absent on some mobile GPUs).
+    // geometryShader device feature, absent on some mobile GPUs). MoltenVK
+    // reports it absent yet gl_PrimitiveID works, so iOS ignores this.
     bool needs_geometry_shader;
 };
 

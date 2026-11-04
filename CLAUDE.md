@@ -23,6 +23,9 @@ ctest --preset release -LE gpu       # CPU-only (no Vulkan device needed)
 ./build/examples/Release/pbr_shading.exe --frames=60      # headless orbit + PNGs
 ```
 
+macOS: `cmake --preset macos`, `cmake --build --preset macos-release`,
+`ctest --preset macos-release`; binaries lack the `Release/` level and `.exe`.
+
 - Datasets live in `data/` (git-ignored — large/licensed) and are downloaded
   at configure time by `cmake/FetchAssets.cmake` (bunny zip + Avocado glTF +
   the PBS env-map EXR; hash-verified, skipped once present). Avocado is copied
@@ -78,6 +81,29 @@ ctest --preset release -LE gpu       # CPU-only (no Vulkan device needed)
   data/suburban_garden_512.exr 512`); extracted to filesDir on first
   launch, outputs in `files/out/<example>/` (adb: `run-as
   org.dressi.examples`).
+
+## Apple (macOS / iOS, see README-ios.md)
+
+- MoltenVK everywhere. macOS goes through the SDK loader;
+  `PrepareVulkanLoaderEnv()` points it at the compiled-in SDK's ICD manifest
+  unless the environment chose. iOS links `MoltenVK.xcframework` statically
+  (`VKW_STATIC_VULKAN`, no GLFW: `VKW_NO_WINDOW`), and shares the Android branch
+  for the source-built SPIR-V stack (`DRESSI_MOBILE`).
+- `PrepareVulkanLoaderEnv()` also sets
+  `MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=0`. Do NOT remove it: MoltenVK misreads
+  shaders mixing input attachments with argument-buffer descriptors, which is
+  what RSP fusion produces. Symptoms: aligned 8x8 NaN blocks on macOS, wrong
+  values on the simulator, Naive unaffected.
+- Limits Vulkan does not report come from the MTLDevice GPU family at runtime
+  (`src/vk/metal_limits.mm`): color attachment bytes per pixel, and the
+  simulator's 8192 texture cap. No per-platform constants; the executor asserts
+  them, since Metal corrupts or aborts past them rather than failing.
+- `ios/` needs the Xcode generator for signing; iOS tests are one app
+  (`DressiTests`) because a bare binary cannot run there. Launch arguments
+  `--run=` / `--run-all` drive the examples app unattended.
+- Map/set of `Variable`/`Function` must use `VarMap` / `VarSet` /
+  `FunctionLess`: libc++ turns `std::less<Key>` into `std::less<void>`, so a
+  `std::less` specialization is silently bypassed.
 
 ## Benchmarking (how README / perf numbers are produced)
 
@@ -205,7 +231,7 @@ inputs changed (reactive cache).
 - Public headers in `include/dressi/` mirror Appendix A names; internal
   code includes `"core/..."` etc. relative to `src/`.
 - `operator<` on `Variable` builds comparison graphs (appendix semantics:
-  `0.f < x`); map ordering uses a `std::less` specialization by node id.
+  `0.f < x`); map ordering uses `VariableLess` by node id (`VarMap`/`VarSet`).
 - Component-wise ops rely on default inference (`infer == nullptr`); codegen
   uses that to decide GLSL scalar→vector promotion (`pow()` etc. do not
   broadcast scalars).

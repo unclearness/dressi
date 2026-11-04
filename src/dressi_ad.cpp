@@ -34,7 +34,7 @@ struct DressiAD::Impl {
     Variables updated_vars;       // optimizer outputs
     Functions all_funcs;          // full computational graph, topo order
     Variables leaf_vars;          // variables without creators (data inputs)
-    std::map<Variable, Variable> upd_inp_map;  // updated -> input copy-back
+    VarMap<Variable> upd_inp_map;  // updated -> input copy-back
     SubStages substages;
     Stages stages;
 
@@ -47,7 +47,7 @@ struct DressiAD::Impl {
 
     GpuPlan plan;
     bool plan_valid = false;
-    std::map<Variable, CpuImage> pending_sends;
+    VarMap<CpuImage> pending_sends;
     // Image uploads to fuse into the next execute's single submit (the
     // eager binding path; borrowed views valid for the execStep call)
     std::vector<std::pair<Variable, CpuImageView>> batch_uploads;
@@ -124,12 +124,16 @@ struct DressiAD::Impl {
         limits.max_input_attachments =
                 std::min(16u, dl.maxPerStageDescriptorInputAttachments);
         limits.max_output_attachments = std::min(8u, dl.maxColorAttachments);
+        // Sampled reads bind combined image samplers, which count against
+        // both limits (Metal has only 16 sampler slots).
         limits.max_sampled_images =
-                std::min(32u, dl.maxPerStageDescriptorSampledImages);
+                std::min({32u, dl.maxPerStageDescriptorSampledImages,
+                          dl.maxPerStageDescriptorSamplers});
         // A render pass has no hard Vulkan cap on total attachments; a big
         // budget lets long same-pixel chains stay in one render pass as
         // chained subpasses (ByRegion deps) instead of separate passes
         limits.max_stage_attachments = 64;
+        limits.max_color_bytes_per_pixel = ctx->max_color_bytes_per_pixel;
         return limits;
     }
 };

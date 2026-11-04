@@ -13,7 +13,8 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 import dressi.torch as dr  # noqa: E402
 
-GLTF = r"E:\Dev\dressi2\data\glTF-Sample-Models-main\glTF-Sample-Models-main\2.0\Avocado\glTF\Avocado.gltf"
+GLTF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                    "data", "Avocado", "glTF", "Avocado.gltf")
 
 COMP_SIZE = {5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4}
 COMP_NP = {5121: np.uint8, 5123: np.uint16, 5125: np.uint32, 5126: np.float32}

@@ -31,13 +31,15 @@ elseif(WIN32)
         endif()
     endforeach()
 else()
-    # Linux/macOS: the LunarG tarball extracts to <dir>/<version>/x86_64 and its
-    # setup-env.sh sets VULKAN_SDK to that x86_64 dir. If it was never sourced,
-    # discover the newest SDK under the conventional install roots.
+    # Linux: the LunarG tarball extracts to <dir>/<version>/x86_64 and its
+    # setup-env.sh sets VULKAN_SDK to that x86_64 dir. macOS: the installer
+    # uses ~/VulkanSDK/<version>/macOS the same way. If setup-env.sh was never
+    # sourced, discover the newest SDK under the conventional install roots.
     set(_dressi_sdk_root "")
     file(GLOB _dressi_sdk_candidates
         "$ENV{HOME}/vulkan/*/x86_64"
         "$ENV{HOME}/VulkanSDK/*/x86_64"
+        "$ENV{HOME}/VulkanSDK/*/macOS"
         "/opt/vulkan/*/x86_64")
     foreach(_cand IN LISTS _dressi_sdk_candidates)
         if(IS_DIRECTORY "${_cand}" AND EXISTS "${_cand}/include/vulkan/vulkan.h")
@@ -70,7 +72,8 @@ if(NOT _dressi_sdk_root OR NOT DRESSI_VULKAN_SDK_INCLUDE OR NOT DRESSI_VULKAN_SD
         "Vulkan SDK not found. Install it or set -DDRESSI_VULKAN_SDK_DIR=<path>.\n"
         "  Windows: the LunarG installer under C:/VulkanSDK/<ver>.\n"
         "  Linux:   the LunarG tarball; point at its x86_64 dir (e.g.\n"
-        "           ~/vulkan/<ver>/x86_64) or source its setup-env.sh first.")
+        "           ~/vulkan/<ver>/x86_64) or source its setup-env.sh first.\n"
+        "  macOS:   the LunarG installer under ~/VulkanSDK/<ver>/macOS.")
 endif()
 
 set(ENV{VULKAN_SDK} "${_dressi_sdk_root}")

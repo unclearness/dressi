@@ -15,8 +15,15 @@ struct PackingLimits {
     uint32_t max_input_attachments = 8;
     uint32_t max_output_attachments = 8;
     uint32_t max_sampled_images = 32;
+    // Sum of a substage's color attachment texel sizes. Apple GPUs hold them
+    // in tile memory; Vulkan has no limit that reports this.
+    uint32_t max_color_bytes_per_pixel = UINT32_MAX;
     uint32_t max_stage_attachments = 16;  // per render pass, all kinds
 };
+
+// Bytes of tile memory a substage's color attachments take per pixel; 0 for
+// COMP, whose storage images do not live there.
+uint32_t ColorBytesPerPixel(const SubStage& ss);
 
 // Greedy substage packing (Appendix A "Substage Packing"): packs `funcs`
 // back-to-front with a greedy edge-count heuristic under `limits`.

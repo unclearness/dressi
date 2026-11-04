@@ -1,6 +1,6 @@
 # All example logic lives in dressi_examples_core (portable: desktop +
-# Android). Desktop adds the GLFW live viewer + thin main() executables;
-# the Android app links the core and provides its own host/viewer (JNI).
+# Android + iOS). Desktop adds the GLFW live viewer + thin main() executables;
+# the mobile apps link the core and provide their own host/viewer.
 add_library(dressi_examples_core STATIC
     common/asset_utils.cpp
     common/bench.cpp
@@ -21,7 +21,7 @@ if(MSVC)
                                                         /utf-8)
 endif()
 
-if(NOT ANDROID)
+if(NOT DRESSI_MOBILE)
     add_library(dressi_examples_desktop STATIC
         common/vk_viewer.cpp
         common/desktop_host.cpp)
