@@ -310,7 +310,7 @@ Median ms/iter (default parameters):
 | silhouette (hardsoftras) 128px | 2.16 | 6.42 | 9.96 | 23.7 | 32.5 | 36.6 | 28.9 | IoU 0.95 |
 | pbr_material 256px | 2.73 | 4.11 | 17.9 | 55.2 | 40.9 | 47.0 | 57.4 | PSNR 20.6 dB |
 | pbr_envmap 192px | 8.53 | 45.8 | 105 | 304 | 181 | 200 | 362 | PSNR 18.1 dB |
-| pbr_shading 512px | 677 FPS | 1177 FPS | 116 FPS | 56 FPS | 19 FPS | 42 FPS | 74 FPS | — |
+| pbr_shading 512px (viewer on) | 677 FPS | 583 FPS | 116 FPS | 56 FPS | 19 FPS | 42 FPS | 86 FPS | — |
 
 Quality is device-independent (validated across all 10 devices). Verified on
 three discrete NVIDIA GPUs, the Intel iGPU, Apple M5 Pro, three phones
@@ -318,8 +318,10 @@ three discrete NVIDIA GPUs, the Intel iGPU, Apple M5 Pro, three phones
 Xiaomi 13T Pro; A14, iPhone 12 Pro), a tablet (Snapdragon 8 Gen 2 / Adreno 740,
 Xiaomi Pad 6S), and CPU software Vulkan (llvmpipe). The Apple columns run on
 MoltenVK with its Metal argument buffers disabled, and iOS also writes a GPU
-timestamp after every stage; both are workarounds that cost some speed. The full
-10-device table, warmup and packing columns are in
+timestamp after every stage; both are workarounds that cost some speed.
+`pbr_shading` rows keep the live viewer on, as the older rows were recorded, and
+it matters: the M5 Pro reaches about 1200 FPS with it off. The full 10-device
+table, warmup and packing columns are in
 **[docs/benchmarks.md](docs/benchmarks.md)**.
 
 ### vs the paper, nvdiffrast, and DRTK

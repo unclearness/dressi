@@ -37,11 +37,31 @@ Median ms/iter:
 | silhouette (hardsoftras) | 6.418 | 28.88 | IoU 0.9507 / 0.9502 |
 | pbr_material | 4.107 | 57.41 | 20.65 dB |
 | pbr_envmap | 45.78 | 362.0 | 18.11 dB |
-| pbr_shading | 0.850 (1177 FPS) | 13.45 (74 FPS) | |
+| pbr_shading, viewer off | 0.81 (about 1200 FPS) | 13.45 (74 FPS) | |
+| pbr_shading, viewer on | 1.714 (583 FPS) | 11.67 (86 FPS) | |
 
 C++ vs Python cross-check, M5 Pro, 256 / 512 / 1024: C++ aa 0.44 / 0.48 / 0.59;
 native fused 0.42 / 0.46 / 0.54 in its fast mode, 0.61 / 0.69 / 0.87 in its slow
 mode. Within noise in the same mode, closing the open item from the previous log.
+
+## Correction: pbr_shading looked faster than NVIDIA
+
+The first version of the tables showed the M5 Pro at 1177 FPS against 677 / 961
+for the RTX cards. It was a condition mismatch, spotted by the user. The older
+rows were recorded by `run_benches` with `--frames=60` only (log/202607131450),
+which leaves the viewer on, while the Apple rows had `--view-interval=0`. Five
+interleaved runs on the M5 Pro: viewer on 1.714 ms, off 0.812 ms. The tables now
+use viewer-on rows, with the off figures in a footnote.
+
+The Mac figure itself was checked and is real: frames render correctly, 1000
+frames reproduce 0.81 ms, and GPU timestamps put about 1 ms in the one fused
+194-function pass (inflated by the timestamps themselves). The viewer's effect
+has no known mechanism and goes the other way on the iPhone, where viewer on is
+faster: 11.67 vs 13.45 ms. The remaining lead over the RTX 3090 (583 vs 339 FPS)
+is attributed to host and transfer cost, without an NVIDIA breakdown to prove it.
+
+A14 viewer-on, one run, for comparison with the Android rows: image_fitting 2.55,
+aa 32.6, hardsoftras 30.3, texture 62.2, pbr_material 55.2.
 
 ## Findings
 
@@ -63,6 +83,8 @@ mode. Within noise in the same mode, closing the open item from the previous log
 ## Open issues
 
 - Two-mode timing on M5 Pro is unexplained.
+- `pbr_shading` should be measured again on NVIDIA and Android with the viewer
+  off; until then the table stays viewer-on.
 - nvdiffrast and DRTK have no Apple figures: CUDA only.
 - HardSoftRas at high resolution on iPhone would need a smaller memory footprint.
 - Windows, Linux and Android remain unrebuilt from the previous log.

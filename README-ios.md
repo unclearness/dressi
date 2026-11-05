@@ -21,7 +21,7 @@ source) → MoltenVK → Metal. Requires iOS 16+ on arm64.
 Median steady-state on the iPhone 12 Pro: image_fitting 2.4 ms/iter,
 texture_optimization 52.1, silhouette (hardsoftras) 28.9, silhouette (aa) 32.5,
 pbr_shading 13.4 ms/frame (74 FPS), pbr_material_optimization 57.4,
-pbr_envmap_optimization 362. Quality matches the desktop builds. The other
+pbr_envmap_optimization 362, all with the viewer off. Quality matches the desktop builds. The other
 devices and the Avocado resolution sweep are in
 [docs/benchmarks.md](docs/benchmarks.md).
 

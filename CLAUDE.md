@@ -145,6 +145,10 @@ report a raw mean-over-all-iters:
   pulls `bench.json` after exit 0: a failed run leaves the previous one in the
   container). Sub-millisecond runs on M5 Pro have two speed modes, so compare
   C++ and Python within one mode; the cause is unknown.
+- **`pbr_shading` table rows are viewer-ON** (older batch runs and the Android
+  app never turned it off); `run_benches` now does, so its output does not
+  compare with them. M5 Pro: 583 FPS on, ~1200 off. Keep conditions equal
+  before comparing devices.
 - **Disable the live viewer when benchmarking.** The display path perturbs
   the measured execStep median even though it sits outside the timed
   section (image_fitting: 0.063 ms with `--view-interval=0` vs ~0.21 ms

@@ -119,17 +119,23 @@ ops → substages → Vulkan render passes:
 | | RTX 6000 Ada | **1.040** (961 FPS) | 538 (526) | 286→5→5 | 961 FPS |
 | | RTX 3090 | 2.948 (339 FPS) | 789 (764) | 286→5→5 | 339 FPS |
 | | Iris Xe (iGPU) | 8.660 (116 FPS) | 702 (654) | 286→11→5 | 116 FPS |
-| | Apple M5 Pro | 0.850 (1177 FPS) | 201 (172) | 286→5→5 | 1177 FPS |
+| | Apple M5 Pro | 1.714 (583 FPS) | 179 (173) | 286→5→5 | 583 FPS |
 | | Adreno 740 (tablet) | 17.717 (56 FPS) | 825 (638) | 286→11→5 | 56 FPS |
 | | Mali-G1-Ultra (phone) | 53.746 (19 FPS) | 779 (671) | 286→10→5 | 19 FPS |
 | | Mali-G715 (phone) | 24.044 (42 FPS) | 1206 (973) | 286→10→5 | 42 FPS |
-| | Apple A14 (iPhone) | 13.45 (74 FPS) | 359 (398) | 286→5→5 | 74 FPS |
+| | Apple A14 (iPhone) | 11.67 (86 FPS) | 360 (377) | 286→5→5 | 86 FPS |
 | | llvmpipe (CPU) | 11.97 (84 FPS) | 894 (719) | 286→5→5 | 84 FPS |
 
 ¹ `pbr_shading` is an interactive viewer; on Android and iOS it runs a
 deterministic 200-frame orbit (vs desktop headless 60) so it self-terminates and emits
 `bench.json`. The metric is exec+readback per frame, so the frame budget does
-not change the median.
+not change the median. **All rows have the live viewer on:** the batch script
+that recorded the older desktop rows did not turn it off, and the Android app
+leaves it on. It sits outside the timed section but still moves the result, in
+either direction. With it off, the M5 Pro goes from 583 to about 1200 FPS
+(0.74–1.05 ms over 8 runs) and the A14 from 86 to 74 FPS. `run_benches` now turns
+it off, so new runs of that script do not compare with this table until the
+other rows are measured again.
 
 ² measured with the background-inclusive loss (now `--fg-only=0`). The
 current default masks the loss to the helmet's coverage — the env is
@@ -145,12 +151,15 @@ iterations and the estimate clamps to zero. The parenthesized first build is
 still valid.
 
 Apple figures are the median of three runs on the M5 Pro and the mean of two
-runs on the A14, with 90 s rests between examples on the phone. They include two
+runs on the A14, with 90 s rests between examples on the phone (`pbr_shading`:
+five and three runs). The A14 rows other than `pbr_shading` have the viewer off,
+while the Android rows ran with the app's default live view. With the viewer on,
+the A14 moves by +20% on texture (62.2 ms), −4% on pbr_material (55.2 ms), and 0
+to +7% on image_fitting and silhouette. They include two
 workarounds: Metal argument buffers are off (about 20% on hardsoftras
 silhouette), and iOS writes a GPU timestamp after every stage (about 1 ms on the
 shortest frames). Short frames on the M5 Pro vary between runs: image_fitting
-0.26–0.33 ms, pbr_shading 948–1316 FPS. The cause was not investigated. The
-others stayed within 4%.
+0.26–0.33 ms. The cause was not investigated. The others stayed within 4%.
 
 Observations:
 
@@ -178,9 +187,13 @@ Observations:
   back.
 - **Apple Silicon sits between the iGPU and the discrete cards** on the heavy
   optimizers: M5 Pro is 1.5–5.4× behind the RTX PRO 6000 and 3.4–4.4× ahead of
-  Iris Xe on texture and pbr_material. On pbr_shading it matches the fastest
-  NVIDIA card (948–1316 FPS vs 961). The A14, a 2020 phone, is the fastest mobile
-  device on pbr_shading (74 FPS) and the slowest on pbr_envmap.
+  Iris Xe on texture and pbr_material. pbr_shading is the exception, ahead of the
+  RTX 3090 (583 vs 339 FPS). That row includes per-frame uploads and a 512²
+  readback, and the NVIDIA cards do not rank there as on the other rows (RTX 6000
+  Ada 961, RTX PRO 6000 677, RTX 3090 339 FPS), so it is probably limited by host
+  and transfer cost, where unified memory helps. No NVIDIA breakdown was taken to
+  confirm it, and it says nothing about raw GPU speed. The A14, a 2020 phone, is
+  the fastest mobile device on pbr_shading (86 FPS) and the slowest on pbr_envmap.
 
 ## vs the paper (Table 4)
 
