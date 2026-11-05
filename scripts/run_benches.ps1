@@ -58,7 +58,7 @@ Set-Location $repo
 $benches = @(
     @{ Label = 'image_fitting'
        Exe   = 'image_fitting'
-       Args  = @() }
+       Args  = @('--view-interval=0') }
 
     @{ Label = 'texture_optimization'
        Exe   = 'texture_optimization'
@@ -82,7 +82,7 @@ $benches = @(
 
     @{ Label = 'pbr_shading'
        Exe   = 'pbr_shading'
-       Args  = @('--frames=60') }
+       Args  = @('--frames=60', '--view-interval=0') }
 )
 
 if ($Only) {

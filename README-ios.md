@@ -18,10 +18,12 @@ source) → MoltenVK → Metal. Requires iOS 16+ on arm64.
 | iPhone 12 Pro (A14, iOS 18.7) | 132/132 | all 8 entries, default parameters |
 | iOS Simulator | 132/132 | 6 of 8 entries; see below |
 
-Median steady-state on the iPhone 12 Pro: image_fitting 2.16 ms/iter,
-texture_optimization 57.3, silhouette (hardsoftras) 29.2, silhouette (aa) 32.2,
-pbr_shading 13.3 ms/frame (75 FPS), pbr_material_optimization 57.3,
-pbr_envmap_optimization 412. Quality matches the desktop builds.
+Median steady-state on the iPhone 12 Pro: image_fitting 2.4 ms/iter,
+texture_optimization 52.1, silhouette (hardsoftras) 28.9, silhouette (aa) 32.5,
+pbr_shading 13.4 ms/frame (74 FPS), pbr_material_optimization 57.4,
+pbr_envmap_optimization 362. Quality matches the desktop builds. The other
+devices and the Avocado resolution sweep are in
+[docs/benchmarks.md](docs/benchmarks.md).
 
 In the simulator `silhouette_optimization_aa` and `shape_texture_optimization`
 stop with "image extent exceeds maxImageDimension2D". Simulator Metal caps
@@ -32,8 +34,9 @@ technique.
 
 ## Prerequisites (one-time)
 
-1. Xcode, and the [Vulkan SDK](https://vulkan.lunarg.com/) for macOS with its
-   iOS component (the `MoltenVK.xcframework` under `lib/`).
+1. Xcode (tested with 27.2), CMake, and the
+   [Vulkan SDK](https://vulkan.lunarg.com/) for macOS with its iOS component
+   (the `MoltenVK.xcframework` under `lib/`). Ninja is only needed for step 2.
 2. Datasets, via a macOS desktop configure, plus the small env map (the 97 MB
    4k EXR is not bundled):
    ```sh
@@ -70,8 +73,20 @@ xcrun devicectl device install app --device <udid> \
 xcrun devicectl device process launch --console --device <udid> org.dressi.tests
 ```
 
-A free developer account allows three apps on a device at a time. Bundle ids
-can be changed with `-DDRESSI_IOS_BUNDLE_PREFIX=<prefix>`.
+Before the first device build:
+
+- Sign in to your Apple ID under Xcode > Settings > Accounts. `<team id>` is the
+  10-character id of that team.
+- Enable Developer Mode on the device (Settings > Privacy & Security). With a
+  free account, also trust the certificate under Settings > General > VPN &
+  Device Management after the first install.
+- `<udid>` comes from `xcrun devicectl list devices`.
+
+A free developer account allows three apps on a device at a time, and their
+profiles expire after a week; reinstall to renew. Bundle ids can be changed with
+`-DDRESSI_IOS_BUNDLE_PREFIX=<prefix>`.
+
+Keep the device unlocked while launching from the command line.
 
 ## Unattended runs
 
@@ -79,6 +94,20 @@ DressiExamples takes launch arguments: `--run=<entry>` runs one list entry and
 exits with its code, `--run-all` runs them all. Any other `--option` goes to
 the example, e.g. `--run=silhouette_optimization_aa --iters=50`. DressiTests
 takes the usual `--gtest_*` flags and writes `Documents/gtest.xml`.
+
+## Benchmarks
+
+`scripts/run_ios_benches.py` runs every entry with the viewer off, rests between
+runs so the phone cools down, and pulls each `bench.json`:
+
+```sh
+python3 scripts/run_ios_benches.py --device <udid> --avocado
+python3 scripts/bench_summary.py bench_results/ios
+```
+
+The app exits between runs, so seeing the home screen is normal. Keep the phone
+unlocked and connected. Avocado HardSoftRas at K=3 from 2048² up, and at K=1 at
+4096², runs out of memory on a 6 GB iPhone and is reported as a failed run.
 
 ## Platform notes
 

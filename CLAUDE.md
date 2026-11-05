@@ -140,6 +140,11 @@ report a raw mean-over-all-iters:
   `examples/common/bench.h`; `scripts/bench_summary.py <dirs/files>`
   renders the Markdown comparison table (Android: pull the files with
   `adb shell run-as org.dressi.examples cat files/out/<example>/bench.json`).
+- **Apple:** `scripts/run_benches.sh -b build/examples` on macOS,
+  `scripts/run_ios_benches.py` on a device (viewer off, rests between runs, only
+  pulls `bench.json` after exit 0: a failed run leaves the previous one in the
+  container). Sub-millisecond runs on M5 Pro have two speed modes, so compare
+  C++ and Python within one mode; the cause is unknown.
 - **Disable the live viewer when benchmarking.** The display path perturbs
   the measured execStep median even though it sits outside the timed
   section (image_fitting: 0.063 ms with `--view-interval=0` vs ~0.21 ms

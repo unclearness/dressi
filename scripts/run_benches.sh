@@ -51,13 +51,13 @@ cd "$repo" || exit 1
 # Benchmark table: "label|exe|space-separated headless args". Each run appends
 # its own --out-dir=<out_root>/<label>. Edit here to add/change coverage.
 benches=(
-    "image_fitting|image_fitting|"
+    "image_fitting|image_fitting|--view-interval=0"
     "texture_optimization|texture_optimization|$data_dir/bunny --view-interval=0"
     "silhouette_hardsoftras|silhouette_optimization|$data_dir/bunny --technique=hardsoftras --no-view=1"
     "silhouette_aa|silhouette_optimization|$data_dir/bunny --technique=aa --no-view=1"
     "pbr_material_optimization|pbr_material_optimization|--view-interval=0"
     "pbr_envmap_optimization|pbr_envmap_optimization|--view-interval=0"
-    "pbr_shading|pbr_shading|--frames=60"
+    "pbr_shading|pbr_shading|--frames=60 --view-interval=0"
 )
 
 # Optional label filter (-n foo,bar keeps labels containing foo or bar).

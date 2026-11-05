@@ -5,6 +5,7 @@
 import json
 import os
 import sys
+import statistics
 import time
 
 import numpy as np
@@ -106,10 +107,12 @@ def main():
 
         for _ in range(n_warm):
             step()
-        t0 = time.perf_counter()
+        samples = []
         for _ in range(n_meas):
+            t0 = time.perf_counter()
             loss = step()
-        ms = (time.perf_counter() - t0) / n_meas * 1e3
+            samples.append(time.perf_counter() - t0)
+        ms = statistics.median(samples) * 1e3
         print(f"dressi.torch {res}x{res}: {ms:.3f} ms/iter"
               f"  (final loss {loss.item():.6f})")
 
