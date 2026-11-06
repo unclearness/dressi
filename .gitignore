@@ -24,6 +24,7 @@ CMakeUserPresets.json
 
 # Misc
 *.log
+.DS_Store
 Testing/
 
 # Python

@@ -29,7 +29,7 @@ its `--out-dir`; `scripts/bench_summary.py <dirs>` renders the comparison table.
 A figure means nothing without its condition. Two figures may be compared only
 if they match on viewer condition, timed scope, parameters, and build. The rules
 below apply to new measurements; [Current status](#current-status) lists where
-the harnesses and the published tables do not meet them yet.
+the published tables do not meet them yet.
 
 ### Viewer condition
 
@@ -38,13 +38,13 @@ it has meant both `none` and `idle`.
 
 | condition | viewer object | display update | selected by |
 | --- | --- | --- | --- |
-| `none` | not created | never | `--no-view=1` (silhouette and shape_texture only), or no display available |
+| `none` | not created | never | `--no-view=1`, or no display available |
 | `idle` | created | never | `--view-interval=0` |
 | `live` | created | every iteration | default (`--view-interval=1`) |
 
 - **`none` is the reference condition.** Cross-device tables use it.
-- `idle` is accepted only for examples that have no `--no-view`, and only until
-  they do. Whether `idle` differs from `none` has not been measured.
+- `idle` is not used for new figures. Older rows are `idle`, and whether it
+  differs from `none` has not been measured.
 - `live` compares only within one platform, because the display path differs:
   FIFO swapchain present on desktop, a CPU blit on Android, `UIImageView` on iOS.
   It moves the median in either direction (`pbr_shading`: M5 Pro 583 to about
@@ -101,8 +101,9 @@ inside the loop.
 - Laptops and tablets: record whether they ran on AC, USB, or battery.
 - Mobile: release build, app in the foreground, screen on and unlocked, no
   touches during the run.
-- Mobile: thermal status 0 before each run (`adb shell dumpsys thermalservice`),
-  and a 90 s rest between runs.
+- Mobile: a 90 s rest between runs.
+- Android: thermal status 0 before each run (`adb shell dumpsys thermalservice`).
+  `run_ios_benches.py` has no such check on iOS, so only the rest applies there.
 - Do not poll the device during a run with `uiautomator` or screen capture.
   Detect completion from logcat or from `bench.json` appearing.
 
@@ -143,24 +144,10 @@ values in one table.
 
 ### Current status
 
-Conditions the harnesses produce today:
-
-| harness | image_fitting | texture, material, envmap | silhouette | pbr_shading |
-| --- | --- | --- | --- | --- |
-| `run_benches` (Windows, Linux, macOS) | `idle` | `idle` | `none` | `idle` |
-| `run_ios_benches.py` | `idle` | `idle` | `idle` (Avocado sweep: `none`) | `idle` |
-| Android app | `live` | `live` | `live` | `live` |
-
-Not implemented yet:
-
-- `--no-view` in image_fitting, texture_optimization, pbr_material_optimization,
-  pbr_envmap_optimization, and pbr_shading.
-- A way to leave the viewer off in the Android app. It has no flag or headless
-  entry, so Android can only measure `live`.
-- `--no-view=1` in the main list of `run_ios_benches.py`.
-- `--frames=200` on desktop: `run_benches` still passes `--frames=60`.
-- The record keys above, and the table check in `bench_summary.py`.
-- A batch runner with 3 repetitions on desktop and Android.
+Every batch runner measures `none`, with 3 runs per benchmark:
+`run_benches` (Windows, Linux, macOS), `run_android_benches.py`, and
+`run_ios_benches.py`. The apps stay `live` when started by hand, unless the
+Android app's "No viewer" box is ticked.
 
 The [cross-device table](#cross-device--10-vulkan-devices) predates these rules
 and mixes conditions:
@@ -478,26 +465,71 @@ NVIDIA figures above predate that and are means.
 
 ## Reproduce
 
+Every runner writes `<out_root>/run<k>/<label>/bench.json`. Build from a clean
+commit: a modified tree records `-dirty` in `git_commit`.
+
 ```sh
-# desktop batch: runs the examples, writes bench.json into per-example dirs
-python scripts/run_benches.py
-python scripts/bench_summary.py bench_run bench_run_lvp   # lvp = llvmpipe
+# Windows, Linux
+python scripts/run_benches.py -o bench_results/<device>
 
 # llvmpipe (CPU software Vulkan): select the lavapipe ICD
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json python scripts/run_benches.py
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json python scripts/run_benches.py -o bench_results/llvmpipe
 
-# Android: run each example in the app (RELEASE build), then pull + aggregate
-scripts/pull_android_benches.sh  -o bench_results/<device>     # Git Bash / WSL
-scripts/pull_android_benches.ps1 -OutRoot bench_results/<device>  # PowerShell
-python scripts/bench_summary.py bench_results/<device>
+# Android: install the RELEASE build, keep the device awake and unlocked
+python scripts/run_android_benches.py -s <serial> -o bench_results/<device>
 
-# macOS: binaries have no Release/ level
-python3 scripts/run_benches.py -b build/examples
-
-# iOS: install DressiExamples, keep the device unlocked (about an hour)
-python3 scripts/run_ios_benches.py --device <udid> --avocado
-python3 scripts/bench_summary.py bench_results/ios
+# all: one table per example and condition
+python scripts/bench_summary.py bench_results
 ```
+
+### macOS
+
+Plug the Mac into AC power, quit other apps, and run from a clean checkout:
+
+```sh
+git fetch origin && git switch feat/moltenvk-macos-ios && git pull
+git submodule update --init --recursive
+git status --short                    # must print nothing
+cmake --preset macos                  # also downloads the datasets
+cmake --build --preset macos-release
+ctest --preset macos-release
+python3 scripts/run_benches.py -b build/examples -o bench_results/<device>
+python3 scripts/bench_summary.py bench_results/<device>
+```
+
+Binaries have no `Release/` level, hence `-b build/examples`.
+
+### iOS
+
+Do the macOS steps through `macos-release` first, plus the one-time
+`suburban_garden_512.exr` step and signing setup in
+[README-ios.md](../README-ios.md). Then rebuild and reinstall the app: a build
+from before `--no-view` existed takes that flag for a mesh path in
+`pbr_shading`.
+
+```sh
+cmake --preset ios-device -DDRESSI_IOS_TEAM=<team id>
+xcodebuild -project build-ios-device/dressi.xcodeproj \
+    -target DressiTests -target DressiExamples -configuration Release \
+    -sdk iphoneos -allowProvisioningUpdates
+xcrun devicectl device install app --device <udid> \
+    build-ios-device/ios/Release-iphoneos/DressiExamples.app
+python3 scripts/run_ios_benches.py --device <udid> -o bench_results/<device>
+python3 scripts/bench_summary.py bench_results/<device>
+```
+
+Keep the phone unlocked and connected. The app exits between runs, so the home
+screen is normal. Add `--avocado` for the
+[resolution sweep](#same-sweep-on-apple-devices), which takes much longer.
+
+### Check a result
+
+Before using a table, confirm these in `bench_summary.py`'s output:
+
+- The heading says `viewer: none`.
+- `runs` is 3. A failed run is missing from the row, not marked in it.
+- `commit` has no `-dirty`.
+- Quality matches the other devices.
 
 `bench_summary.py` needs a real Python (`.venv\Scripts\python` or `uv run
 python` on Windows — the bare `python` may hit the Store alias).

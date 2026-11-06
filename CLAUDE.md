@@ -153,8 +153,9 @@ report a raw mean-over-all-iters:
   ("Measurement conditions"): follow it, and state the viewer condition
   (`none` / `idle` / `live`) and timed scope with every figure.**
   `--view-interval=0` does NOT remove the viewer (`idle`: it is created, never
-  updated); only `--no-view=1` does (`none`, silhouette and shape_texture only).
-  The Android app can only measure `live`.
+  updated); only `--no-view=1` does (`none`). The batch runners all measure
+  `none`, 3 runs each: `run_benches`, `run_android_benches.py`,
+  `run_ios_benches.py`.
 - **Disable the live viewer when benchmarking.** The display path perturbs
   the measured execStep median even though it sits outside the timed
   section (image_fitting: 0.063 ms with `--view-interval=0` vs ~0.21 ms

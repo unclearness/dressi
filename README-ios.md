@@ -97,12 +97,15 @@ takes the usual `--gtest_*` flags and writes `Documents/gtest.xml`.
 
 ## Benchmarks
 
-`scripts/run_ios_benches.py` runs every entry with the viewer off, rests between
-runs so the phone cools down, and pulls each `bench.json`:
+`scripts/run_ios_benches.py` runs every entry three times with no viewer, rests
+between runs so the phone cools down, and pulls each `bench.json`. Rebuild and
+reinstall DressiExamples first: an older build takes `--no-view` for a mesh path
+in `pbr_shading`. Conditions and the full procedure are in
+[docs/benchmarks.md](docs/benchmarks.md#ios).
 
 ```sh
-python3 scripts/run_ios_benches.py --device <udid> --avocado
-python3 scripts/bench_summary.py bench_results/ios
+python3 scripts/run_ios_benches.py --device <udid> -o bench_results/<device>
+python3 scripts/bench_summary.py bench_results/<device>
 ```
 
 The app exits between runs, so seeing the home screen is normal. Keep the phone
