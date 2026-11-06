@@ -90,7 +90,7 @@ class Device:
 
     def logcat(self):
         """Follows dressi's log from now on; lines arrive on the queue."""
-        now = self.shell("date", "+%m-%d %H:%M:%S.000").strip()
+        now = self.shell("date '+%m-%d %H:%M:%S.000'").strip()
         proc = subprocess.Popen(self.base + ["logcat", "-T", now, "-s", "dressi"],
                                 stdout=subprocess.PIPE, text=True,
                                 errors="replace")
