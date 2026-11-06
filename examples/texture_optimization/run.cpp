@@ -52,6 +52,7 @@ int dressi_examples::RunTextureOptimization(
     uint32_t n_views = 6;
     int n_iters = 1500;  // 98.7% texel coverage (99.4% at 4000; jitter-limited)
     int view_interval = 1;  // live-viewer refresh cadence (iters); 0 = off
+    bool no_view = false;  // no viewer at all: the `none` benchmark condition
     int snapshot = 0;  // save pred view 0 every N iters (0 = off; for GIFs)
     for (const std::string& arg : args) {
         if (arg.rfind("--data-dir=", 0) == 0) {
@@ -62,6 +63,8 @@ int dressi_examples::RunTextureOptimization(
             n_views = uint32_t(std::stoul(arg.substr(8)));
         } else if (arg.rfind("--iters=", 0) == 0) {
             n_iters = std::stoi(arg.substr(8));
+        } else if (arg.rfind("--no-view", 0) == 0) {
+            no_view = arg != "--no-view=0";
         } else if (arg.rfind("--view-interval=", 0) == 0) {
             view_interval = std::stoi(arg.substr(16));
         } else if (arg.rfind("--snapshot=", 0) == 0) {
@@ -188,17 +191,21 @@ int dressi_examples::RunTextureOptimization(
     const uint32_t win_w = 256 * tile_cols;
     const uint32_t win_h = 256 * tile_rows;
     auto viewer_target =
-            host.makeViewer(win_w, win_h, "targets (GT, fixed views)");
-    auto viewer_pred = host.makeViewer(win_w, win_h, "optimized render");
+            MakeViewer(host, no_view,
+                       win_w, win_h, "targets (GT, fixed views)");
+    auto viewer_pred =
+            MakeViewer(host, no_view, win_w, win_h, "optimized render");
     auto viewer_tex =
-            host.makeViewer(512, 256, "texture atlas (GT | optimized)");
+            MakeViewer(host, no_view,
+                       512, 256, "texture atlas (GT | optimized)");
     // Fixed side-by-side layout (deterministic placement for recording)
     viewer_target->setPosition(80, 80);
     viewer_pred->setPosition(80 + int(win_w) + 16, 80);
     viewer_tex->setPosition(80, 80 + int(win_h) + 46);
     bool viewer_open = viewer_target->valid() && viewer_pred->valid() &&
                        viewer_tex->valid();
-    if (!viewer_open) {
+    const std::string viewer_cond = ViewerCondition(viewer_open, view_interval);
+    if (!viewer_open && !no_view) {
         spdlog::warn("live viewer unavailable; continuing headless");
     }
     CpuImage target_tile;
@@ -328,8 +335,7 @@ int dressi_examples::RunTextureOptimization(
                  median_ms, opt_warmup, warmup_ms, first_build_ms);
     {
         BenchRecord rec("texture_optimization", ad.getDeviceName());
-        rec.addPacking(ad.getFuncCount(), ad.getSubStageCount(),
-                       ad.getStageCount());
+        rec.addRun(ad, viewer_cond, "send+execStep");
         rec.add("screen", int64_t(screen.w));
         rec.add("views", int64_t(n_views));
         rec.add("iters", int64_t(n_iters));

@@ -25,6 +25,9 @@ vkw::ImagePackPtr CreateVarImage(const VkContext& ctx, const Variable& var) {
     DRESSI_CHECK(!(NeedsTiling(logical, max_dim) && var.getCreator()),
                  "image extent exceeds maxImageDimension2D and is not a static "
                  "leaf; computed images this large are unsupported on this GPU");
+    DRESSI_CHECK(size.w <= max_dim && size.h <= max_dim,
+                 "image extent exceeds maxImageDimension2D; only {N,1} tables "
+                 "fold into 2-D tiles");
     return vkw::CreateImagePack(
             ctx.physical_device, ctx.device, FormatOf(var.getVType()),
             {size.w, size.h}, 1,
@@ -40,7 +43,7 @@ vkw::ImagePackPtr CreateVarImage(const VkContext& ctx, const Variable& var) {
 }  // namespace
 
 GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
-                     const std::map<Variable, Variable>& upd_inp_map,
+                     const VarMap<Variable>& upd_inp_map,
                      GpuPlan prev_plan) {
     GpuPlan plan;
     // GPU-resident data survives rebuilds: cached images, geometry buffers,
@@ -100,8 +103,8 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
     // has one fragment per pixel, so no fragment reads another's write.
     // Pairs that do not satisfy the conditions keep the end-of-frame
     // copy-back.
-    std::map<Variable, Variable> aliased;    // updated -> input
-    std::map<Variable, Variable> alias_rev;  // input -> updated
+    VarMap<Variable> aliased;    // updated -> input
+    VarMap<Variable> alias_rev;  // input -> updated
     for (const auto& [upd, inp] : upd_inp_map) {
         int w_stage = -1;
         const SubStage* w_ss = nullptr;
@@ -163,6 +166,17 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
     };
     for (const auto& stage : stages) {
         for (const auto& ss : stage.substages) {
+            // The packers honor these; a driver may not fail cleanly past them
+            DRESSI_CHECK(ColorBytesPerPixel(ss) <=
+                                 ctx.max_color_bytes_per_pixel,
+                         "substage exceeds the color attachment bytes per "
+                         "pixel of this GPU");
+            const size_t n_samplers = ss.tex_vars.size() + ss.slt_vars.size() +
+                                      (ss.shader_type == COMP
+                                               ? ss.inp_vars.size()
+                                               : 0);
+            DRESSI_CHECK(n_samplers <= ctx.limits.maxPerStageDescriptorSamplers,
+                         "substage exceeds maxPerStageDescriptorSamplers");
             for (const auto& v : ss.slt_vars) {
                 ensure_img(v);
             }
@@ -212,9 +226,10 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
     const auto& cmd = plan.cmd_pack->cmd_bufs[0];
     vkw::BeginCommand(cmd, /*one_time_submit=*/false);
 
-    // Per-stage GPU timestamps (debug logging only). Interval k =
-    // ts[k+1]-ts[k] and is described by ts_labels[k].
-    const bool ts_enabled = spdlog::should_log(spdlog::level::debug) &&
+    // Per-stage GPU timestamps (debug logging, or see stage_timestamps).
+    // Interval k = ts[k+1]-ts[k] and is described by ts_labels[k].
+    const bool ts_enabled = (spdlog::should_log(spdlog::level::debug) ||
+                             ctx.stage_timestamps) &&
                             ctx.limits.timestampComputeAndGraphics;
     uint32_t ts_next = 0;
     const auto ts_mark = [&](std::string label) {
@@ -285,8 +300,8 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
     // cached values are ready now and copied at frame start)
     std::vector<Variables> uif_after_stage(stages.size());
     {
-        std::map<Variable, size_t> producer;
-        std::set<Variable> uif_all;
+        VarMap<size_t> producer;
+        VarSet uif_all;
         for (size_t si = 0; si < stages.size(); si++) {
             for (const auto& ss : stages[si].substages) {
                 for (const auto& v : ss.out_vars) {
@@ -618,7 +633,7 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
                      "unknown stage shader type");
 
         // Aliased updates written by this stage (input+color, one image)
-        std::map<Variable, Variable> stage_alias;  // updated -> input
+        VarMap<Variable> stage_alias;  // updated -> input
         for (const auto& ss : stage.substages) {
             for (const auto& v : ss.out_vars) {
                 if (auto it = aliased.find(v); it != aliased.end()) {
@@ -645,8 +660,8 @@ GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
 
         // Attachments: all substage outputs (written) plus external inputs
         // consumed as input attachments (loaded), stage-locally indexed
-        std::map<Variable, uint32_t> attach_idx;
-        std::map<Variable, size_t> writer_subpass;
+        VarMap<uint32_t> attach_idx;
+        VarMap<size_t> writer_subpass;
         std::vector<vkw::ImagePackPtr> attach_imgs;
         for (size_t ss_idx = 0; ss_idx < stage.substages.size(); ss_idx++) {
             for (const auto& v : stage.substages[ss_idx].out_vars) {
@@ -910,7 +925,8 @@ namespace {
 
 // Reads back and reports the per-stage GPU timestamps (debug logging only)
 void CollectTimestamps(const VkContext& ctx, GpuPlan& plan) {
-    if (!plan.ts_pool || plan.ts_labels.empty()) {
+    if (!plan.ts_pool || plan.ts_labels.empty() ||
+        !spdlog::should_log(spdlog::level::debug)) {
         return;
     }
     const uint32_t n = uint32_t(plan.ts_labels.size()) + 1;

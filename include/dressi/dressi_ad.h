@@ -15,6 +15,12 @@ namespace dressi {
 struct VkContext;
 using VkContextPtr = std::shared_ptr<VkContext>;
 
+// macOS/iOS: sets the MoltenVK configuration dressi needs and, on macOS,
+// points the Vulkan loader at the SDK's MoltenVK manifest and layers, unless
+// the environment already chose. DressiAD does this itself; call it before
+// creating any other VkInstance first. No-op elsewhere.
+void PrepareVulkanLoaderEnv();
+
 // DressiAD: DR-specialized AD library class (Appendix A of the Dressi paper).
 // Owns the Vulkan context and the staged build pipeline of execStep():
 // backward construction, optimizer wiring, graph traversal, substage/stage
@@ -97,6 +103,10 @@ public:
     // Vulkan physical-device name (e.g. "Adreno (TM) 740"); empty until a
     // context exists (shared-context construction or the first execStep).
     std::string getDeviceName() const;
+    // VkPhysicalDeviceProperties::driverVersion as hex. The encoding is vendor
+    // specific, so it is kept raw; empty until a context exists.
+    std::string getDriverVersion() const;
+    PackingMode getPackingMode() const;
 
     // Execute one step of rendering and optimization
     void execStep();

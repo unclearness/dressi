@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    Run every example's benchmark into one output root, one bench.json per run.
+    Run every example's benchmark into one output root, one bench.json per run,
+    under the conditions in docs/benchmarks.md ("Measurement conditions").
 
 .DESCRIPTION
     A thin wrapper that just *executes* the example exes with headless flags
@@ -29,6 +30,9 @@
     One or more label substrings; only matching benchmarks run
     (e.g. -Only silhouette,texture). Default: run all.
 
+.PARAMETER Reps
+    Runs per benchmark, into <OutRoot>/run<k>/<Label> (default: 3).
+
 .PARAMETER List
     Print the benchmark labels/commands and exit without running anything.
 
@@ -45,6 +49,7 @@ param(
     [string]  $BuildDir = 'build/examples/Release',
     [string]  $DataDir  = 'data',
     [string[]]$Only,
+    [int]     $Reps     = 3,
     [switch]  $List
 )
 
@@ -58,11 +63,11 @@ Set-Location $repo
 $benches = @(
     @{ Label = 'image_fitting'
        Exe   = 'image_fitting'
-       Args  = @() }
+       Args  = @('--no-view=1') }
 
     @{ Label = 'texture_optimization'
        Exe   = 'texture_optimization'
-       Args  = @("$DataDir/bunny", '--view-interval=0') }
+       Args  = @("$DataDir/bunny", '--no-view=1') }
 
     @{ Label = 'silhouette_hardsoftras'
        Exe   = 'silhouette_optimization'
@@ -74,15 +79,15 @@ $benches = @(
 
     @{ Label = 'pbr_material_optimization'
        Exe   = 'pbr_material_optimization'
-       Args  = @('--view-interval=0') }
+       Args  = @('--no-view=1') }
 
     @{ Label = 'pbr_envmap_optimization'
        Exe   = 'pbr_envmap_optimization'
-       Args  = @('--view-interval=0') }
+       Args  = @('--no-view=1') }
 
     @{ Label = 'pbr_shading'
        Exe   = 'pbr_shading'
-       Args  = @('--frames=60') }
+       Args  = @('--frames=200', '--no-view=1') }
 )
 
 if ($Only) {
@@ -97,7 +102,7 @@ if ($List) {
     foreach ($b in $benches) {
         $exe = Join-Path $BuildDir "$($b.Exe).exe"
         "{0,-28} {1} {2} --out-dir={3}" -f $b.Label, $exe, ($b.Args -join ' '),
-            (Join-Path $OutRoot $b.Label)
+            (Join-Path $OutRoot "run<k>/$($b.Label)")
     }
     return
 }
@@ -105,23 +110,28 @@ if ($List) {
 New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null
 
 $results = @()
+foreach ($rep in 1..$Reps) {
 foreach ($b in $benches) {
+    $tag = "run$rep/$($b.Label)"
     $exe = Join-Path $BuildDir "$($b.Exe).exe"
     if (-not (Test-Path $exe)) {
         Write-Warning "$($b.Label): missing $exe (build with 'cmake --build --preset release') - skipped"
-        $results += [pscustomobject]@{ Label = $b.Label; Status = 'MISSING' }
+        $results += [pscustomobject]@{ Label = $tag; Status = 'MISSING' }
         continue
     }
-    $out = Join-Path $OutRoot $b.Label
+    $out = Join-Path $OutRoot $tag
+    # A failed run must not leave an older record behind
+    Remove-Item (Join-Path $out 'bench.json') -Force -ErrorAction SilentlyContinue
     $runArgs = @($b.Args) + "--out-dir=$out"
 
-    Write-Host "==> $($b.Label): $exe $($runArgs -join ' ')" -ForegroundColor Cyan
+    Write-Host "==> ${tag}: $exe $($runArgs -join ' ')" -ForegroundColor Cyan
     & $exe @runArgs
     $code = $LASTEXITCODE
 
     $status = if ($code -eq 0) { 'OK' } else { "EXIT $code" }
-    $results += [pscustomobject]@{ Label = $b.Label; Status = $status }
-    if ($code -ne 0) { Write-Warning "$($b.Label) exited with code $code" }
+    $results += [pscustomobject]@{ Label = $tag; Status = $status }
+    if ($code -ne 0) { Write-Warning "$tag exited with code $code" }
+}
 }
 
 Write-Host ''

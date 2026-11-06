@@ -6,6 +6,7 @@
 #include <map>
 
 #include "dressi/variable.h"
+#include "pack/packing.h"
 #include "pack/substage.h"
 #include "vk/context.h"
 
@@ -14,13 +15,13 @@ namespace dressi {
 // Built Vulkan objects for a packed stage list ("ParseStagesAsVulkanObjects"
 // of the Dressi paper). Images persist across rebuilds via the map passed in.
 struct GpuPlan {
-    std::map<Variable, vkw::ImagePackPtr> imgs;
-    std::map<Variable, vkw::TexturePackPtr> textures;  // nearest samplers
+    VarMap<vkw::ImagePackPtr> imgs;
+    VarMap<vkw::TexturePackPtr> textures;  // nearest samplers
     // Vertex/index buffers for RASTER inputs (leaf geometry data)
-    std::map<Variable, vkw::BufferPackPtr> vtx_bufs;
+    VarMap<vkw::BufferPackPtr> vtx_bufs;
     // One vec4 UBO per {1,1} uniform input (uif_vars), refreshed on the GPU
     // by an image->buffer copy after the producing stage
-    std::map<Variable, vkw::BufferPackPtr> uif_bufs;
+    VarMap<vkw::BufferPackPtr> uif_bufs;
     std::vector<vkw::ImagePackPtr> depth_imgs;  // one per RASTER stage
     std::vector<vkw::RenderPassPackPtr> render_passes;
     std::vector<vkw::FrameBufferPackPtr> frame_buffers;
@@ -41,7 +42,7 @@ struct GpuPlan {
 // so GPU-resident data survives rebuilds), builds render passes/pipelines/
 // descriptor sets from the stages, and records the full command buffer.
 GpuPlan BuildGpuPlan(const VkContext& ctx, const Stages& stages,
-                     const std::map<Variable, Variable>& upd_inp_map,
+                     const VarMap<Variable>& upd_inp_map,
                      GpuPlan prev_plan);
 
 // Submits the recorded command buffer and waits for completion.
