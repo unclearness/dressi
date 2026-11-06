@@ -149,12 +149,16 @@ report a raw mean-over-all-iters:
   app never turned it off); `run_benches` now does, so its output does not
   compare with them. M5 Pro: 583 FPS on, ~1200 off. Keep conditions equal
   before comparing devices.
+- **Experiment conditions are defined in `docs/benchmarks.md`
+  ("Measurement conditions"): follow it, and state the viewer condition
+  (`none` / `idle` / `live`) and timed scope with every figure.**
+  `--view-interval=0` does NOT remove the viewer (`idle`: it is created, never
+  updated); only `--no-view=1` does (`none`, silhouette and shape_texture only).
+  The Android app can only measure `live`.
 - **Disable the live viewer when benchmarking.** The display path perturbs
   the measured execStep median even though it sits outside the timed
   section (image_fitting: 0.063 ms with `--view-interval=0` vs ~0.21 ms
-  with its per-iter viewer on this box). Use `--view-interval=0` (and
-  silhouette's `--no-view=1`); the README table's image_fitting rows are
-  viewer-less numbers.
+  with its per-iter viewer on this box).
 - **README demo GIFs** regenerate via `scripts/make_readme_gifs.sh` from
   `--snapshot=1 --view-interval=0` runs (every example has `--snapshot=N`
   progress dumps); outputs land in git-ignored `out/gifs/` and are

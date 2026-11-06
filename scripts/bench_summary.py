@@ -7,8 +7,12 @@ parameters, the MEDIAN steady-state ms per iteration (warmup excluded),
 the one-time build/warmup overhead in ms (pack + GLSL compile + Vulkan
 build + reactive rebuilds; ``first_build_ms`` is iter 0 alone), and the
 example's quality metric. Collect those files from every
-machine/phone and render one table per example, one row per run, sorted
-by median time.
+machine/phone and render one table per example and condition, sorted by
+median time. Repeated runs of one configuration collapse into one row: the
+median of the run medians, with the min-max range (docs/benchmarks.md,
+"Measurement conditions"). Records with a different viewer condition or timed
+scope never share a table; records from before those keys existed are
+grouped as "unknown".
 
 Usage:
     python scripts/bench_summary.py [path ...]
@@ -17,17 +21,14 @@ Each path may be a bench*.json file or a directory (searched
 recursively; build trees and .git are skipped). With no arguments the
 current directory is searched — e.g. after:
 
-    # desktop runs write ./texopt_out/bench.json etc. in place
-    ./build/examples/Release/texture_optimization.exe data/bunny
-    ./build/examples/Release/silhouette_optimization.exe data/bunny --no-view=1
+    python scripts/run_benches.py -o bench_results/desktop
+    python scripts/run_benches.py --target android -o bench_results/pixel8
 
-    # pull one file per example per Android device (any filename works)
-    adb shell run-as org.dressi.examples cat files/out/texture_optimization/bench.json > bench_results/pixel_texopt.json
-
-    python scripts/bench_summary.py texopt_out silopt_out_hardsoftras bench_results
+    python scripts/bench_summary.py bench_results
 """
 
 import json
+import statistics
 import sys
 from pathlib import Path
 
@@ -76,8 +77,11 @@ def params_of(rec):
                 f"tex{rec.get('tex', '?')} {rec.get('views', '?')}v "
                 f"{rec.get('iters', '?')}it")
     if ex == "pbr_envmap_optimization":
-        return (f"{rec.get('screen', '?')}px env{rec.get('envres', '?')} "
-                f"{rec.get('views', '?')}v {rec.get('iters', '?')}it")
+        p = (f"{rec.get('screen', '?')}px env{rec.get('envres', '?')} "
+             f"{rec.get('views', '?')}v {rec.get('iters', '?')}it")
+        if "fg_only" in rec:
+            p += f" fg_only={int(rec['fg_only'])}"
+        return p
     if ex == "pbr_shading":
         return f"{rec.get('screen', '?')}px {rec.get('frames', '?')} frames"
     return ""
@@ -109,7 +113,7 @@ def packing_of(rec):
     return str(stages)
 
 
-def quality_of(rec):
+def quality_of(rec, median_ms):
     if "mean_iou" in rec:
         return f"IoU {rec['mean_iou']:.4f}"
     if "accurate_pct" in rec:
@@ -117,7 +121,7 @@ def quality_of(rec):
     if "psnr_db" in rec:
         return f"PSNR {rec['psnr_db']:.2f} dB"
     if "fps" in rec:
-        return f"{rec['fps']:.0f} FPS"
+        return f"{1000.0 / median_ms:.0f} FPS"
     if "max_err" in rec:
         return f"max err {rec['max_err']:.4f}"
     return ""
@@ -137,26 +141,57 @@ def host_of(rec):
     return ", ".join(parts) or rec.get("platform", "")
 
 
+def group_of(rec):
+    # One row: a configuration on one device from one build. Two builds or
+    # drivers stay on separate rows even under the same condition.
+    return (rec.get("device", "?"), rec.get("platform", "?"), params_of(rec),
+            rec.get("build_type", "?"), rec.get("git_commit", "?"),
+            rec.get("driver_version", "?"), rec.get("packing_mode", "?"))
+
+
+def row_of(runs):
+    medians = [r.get("median_ms_per_iter", float("nan")) for r in runs]
+    # median_low: an even run count must not average two run medians
+    median = statistics.median_low(medians)
+    # Warmup, packing, and quality are shown for the run behind the median
+    rec = runs[medians.index(median)]
+    return median, min(medians), max(medians), len(runs), rec
+
+
+def print_table(example, viewer, scope, rows):
+    print(f"## {example} (viewer: {viewer}, timed scope: {scope})\n")
+    print("| device | host | parameters | median ms/iter | min-max | runs "
+          "| warmup ms (first) | packing f->s->st | quality | commit |")
+    print("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |")
+    groups = {}
+    for r in rows:
+        groups.setdefault(group_of(r), []).append(r)
+    for median, low, high, n, r in sorted(map(row_of, groups.values()),
+                                          key=lambda row: row[0]):
+        print(f"| {r.get('device', '?')} | {host_of(r)} "
+              f"| {params_of(r)} "
+              f"| {median:.3f} "
+              f"| {low:.3f}-{high:.3f} "
+              f"| {n} "
+              f"| {warmup_of(r)} "
+              f"| {packing_of(r)} "
+              f"| {quality_of(r, median)} "
+              f"| {r.get('git_commit', '?')} |")
+    print()
+
+
 def main():
     records = find_records(sys.argv[1:] or ["."])
     if not records:
         print("no bench*.json records found", file=sys.stderr)
         return 1
-    for example in sorted({r.get("example", "?") for r in records}):
-        rows = [r for r in records if r.get("example") == example]
-        rows.sort(key=lambda r: r.get("median_ms_per_iter", float("inf")))
-        print(f"## {example}\n")
-        print("| device | host | parameters | median ms/iter "
-              "| warmup ms (first) | packing f->s->st | quality |")
-        print("| --- | --- | --- | ---: | ---: | ---: | --- |")
-        for r in rows:
-            print(f"| {r.get('device', '?')} | {host_of(r)} "
-                  f"| {params_of(r)} "
-                  f"| {r.get('median_ms_per_iter', float('nan')):.3f} "
-                  f"| {warmup_of(r)} "
-                  f"| {packing_of(r)} "
-                  f"| {quality_of(r)} |")
-        print()
+    tables = {}
+    for r in records:
+        key = (r.get("example", "?"), r.get("viewer", "unknown"),
+               r.get("timed_scope", "unknown"))
+        tables.setdefault(key, []).append(r)
+    for key in sorted(tables):
+        print_table(*key, tables[key])
     return 0
 
 

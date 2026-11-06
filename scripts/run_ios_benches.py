@@ -2,13 +2,13 @@
 """Run the example benchmarks on an iPhone and pull one bench.json per run.
 
 Needs DressiExamples installed (README-ios.md) and the device unlocked. Each run
-launches the app with `--run=<entry> --view-interval=0`, copies its bench.json
+launches the app with `--run=<entry> --no-view=1`, copies its bench.json
 out of the app container, and rests so the phone cools down. The app exits
 between runs, so the home screen is normal for most of the time this takes.
 
 Usage:
     python3 scripts/run_ios_benches.py --device <udid> [-o out_root]
-        [--reps 2] [--only label,label] [--cool 90] [--avocado]
+        [--reps 3] [--only label,label] [--cool 90] [--avocado]
     python3 scripts/bench_summary.py bench_results/ios
 
 --avocado adds the one-view Avocado resolution sweep (docs/benchmarks.md) under
@@ -66,7 +66,7 @@ def run(device, root, entry, tag, extra, timeout):
             code = devicectl(
                     "process", "launch", "--console", "--terminate-existing",
                     "--device", device, BUNDLE_ID, f"--run={entry}",
-                    "--view-interval=0", *extra,
+                    "--no-view=1", *extra,
                     stdout=f, stderr=subprocess.STDOUT,
                     timeout=timeout).returncode
     except subprocess.TimeoutExpired:
@@ -90,7 +90,7 @@ def main():
     p.add_argument("--device", required=True,
                    help="udid from `xcrun devicectl list devices`")
     p.add_argument("-o", "--out-root", default="bench_results/ios")
-    p.add_argument("--reps", type=int, default=2)
+    p.add_argument("--reps", type=int, default=3)
     p.add_argument("--only", default="",
                    help="comma-separated entry substrings to keep")
     p.add_argument("--cool", type=int, default=90,
@@ -115,7 +115,7 @@ def main():
                     run(args.device, root, entry,
                         f"avocado/{label}_{res}_r{rep}",
                         [f"--mesh={mesh}", "--views=1", f"--screen={res}",
-                         "--iters=300", "--no-view=1", *opts], 400)
+                         "--iters=300", *opts], 400)
                     time.sleep(30)
 
 

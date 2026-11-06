@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <optional>
 
 #include <spdlog/spdlog.h>
@@ -222,6 +223,20 @@ std::string DressiAD::getDeviceName() const {
     }
     const auto props = vkw::GetPhysicalProperties(m_impl->ctx->physical_device);
     return std::string(props->deviceName.data());
+}
+
+std::string DressiAD::getDriverVersion() const {
+    if (!m_impl->ctx) {
+        return {};
+    }
+    const auto props = vkw::GetPhysicalProperties(m_impl->ctx->physical_device);
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "0x%08x", unsigned(props->driverVersion));
+    return buf;
+}
+
+DressiAD::PackingMode DressiAD::getPackingMode() const {
+    return m_impl->packing_mode;
 }
 
 size_t DressiAD::getFuncCount() const {

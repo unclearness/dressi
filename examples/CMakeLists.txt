@@ -21,6 +21,21 @@ if(MSVC)
                                                         /utf-8)
 endif()
 
+# bench.json records the build. The commit is regenerated on every build, not
+# at configure time, so a record cannot name a stale commit.
+set(_git_commit_h "${CMAKE_CURRENT_BINARY_DIR}/generated/dressi_git_commit.h")
+add_custom_target(dressi_git_commit
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DOUTPUT=${_git_commit_h}
+            -P ${PROJECT_SOURCE_DIR}/cmake/GitCommit.cmake
+    BYPRODUCTS "${_git_commit_h}"
+    VERBATIM)
+add_dependencies(dressi_examples_core dressi_git_commit)
+target_include_directories(dressi_examples_core PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_compile_definitions(dressi_examples_core PRIVATE
+    DRESSI_BUILD_TYPE="$<CONFIG>")
+
 if(NOT DRESSI_MOBILE)
     add_library(dressi_examples_desktop STATIC
         common/vk_viewer.cpp

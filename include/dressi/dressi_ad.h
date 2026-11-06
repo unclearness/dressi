@@ -103,6 +103,10 @@ public:
     // Vulkan physical-device name (e.g. "Adreno (TM) 740"); empty until a
     // context exists (shared-context construction or the first execStep).
     std::string getDeviceName() const;
+    // VkPhysicalDeviceProperties::driverVersion as hex. The encoding is vendor
+    // specific, so it is kept raw; empty until a context exists.
+    std::string getDriverVersion() const;
+    PackingMode getPackingMode() const;
 
     // Execute one step of rendering and optimization
     void execStep();

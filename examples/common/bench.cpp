@@ -1,5 +1,8 @@
 #include "bench.h"
 
+#include "dressi/dressi_ad.h"
+#include "dressi_git_commit.h"
+
 #include <spdlog/fmt/fmt.h>
 
 #include <algorithm>
@@ -182,6 +185,16 @@ double MedianMs(std::vector<double> samples) {
     return samples[samples.size() / 2];
 }
 
+std::string ViewerCondition(bool viewer_open, int view_interval) {
+    if (!viewer_open) {
+        return "none";
+    }
+    if (view_interval == 0) {
+        return "idle";
+    }
+    return view_interval == 1 ? "live" : "partial";
+}
+
 double WarmupMs(const std::vector<double>& warmup_samples,
                 double steady_median) {
     double sum = 0.0;
@@ -231,11 +244,20 @@ void BenchRecord::add(const std::string& key, bool value) {
     m_json += fmt::format(",\"{}\":{}", key, value ? "true" : "false");
 }
 
-void BenchRecord::addPacking(int64_t funcs, int64_t substages,
-                             int64_t stages) {
-    add("funcs", funcs);
-    add("substages", substages);
-    add("stages", stages);
+void BenchRecord::addRun(const dressi::DressiAD& ad, const std::string& viewer,
+                         const std::string& timed_scope) {
+    add("viewer", viewer);
+    add("timed_scope", timed_scope);
+    add("build_type", std::string(DRESSI_BUILD_TYPE));
+    add("git_commit", std::string(DRESSI_GIT_COMMIT));
+    add("driver_version", ad.getDriverVersion());
+    add("packing_mode",
+        std::string(ad.getPackingMode() == dressi::DressiAD::PackingMode::RSP
+                            ? "rsp"
+                            : "naive"));
+    add("funcs", int64_t(ad.getFuncCount()));
+    add("substages", int64_t(ad.getSubStageCount()));
+    add("stages", int64_t(ad.getStageCount()));
 }
 
 void BenchRecord::save(const std::string& path) const {

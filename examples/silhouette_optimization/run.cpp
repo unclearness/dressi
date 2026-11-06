@@ -542,6 +542,7 @@ int dressi_examples::RunSilhouetteOptimization(
     }
     bool viewer_open = viewer_target && viewer_target->valid() &&
                        viewer_pred->valid();
+    const std::string viewer_cond = ViewerCondition(viewer_open, opt.view_interval);
     if (!viewer_open && !opt.no_view) {
         spdlog::warn("live viewer unavailable; continuing headless");
     }
@@ -684,8 +685,7 @@ int dressi_examples::RunSilhouetteOptimization(
                  warmup_ms, first_build_ms);
     {
         BenchRecord rec("silhouette_optimization", ad.getDeviceName());
-        rec.addPacking(ad.getFuncCount(), ad.getSubStageCount(),
-                       ad.getStageCount());
+        rec.addRun(ad, viewer_cond, "execStep");
         rec.add("technique", opt.technique);
         rec.add("screen", int64_t(opt.screen));
         rec.add("views", int64_t(opt.n_views));

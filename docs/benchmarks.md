@@ -5,8 +5,10 @@ headline summary.
 
 ## Methodology
 
-Every figure is the **median steady-state `execStep` wall time** with a 20-iter
-warmup excluded — reproduce it exactly; do NOT report a raw mean-over-all-iters.
+Every figure is the **median steady-state wall time of the example's timed
+scope** with a 20-iter warmup excluded — reproduce it exactly; do NOT report a
+raw mean-over-all-iters. [Measurement conditions](#measurement-conditions)
+defines the scope and every other condition a figure depends on.
 
 - **Exclude a warmup.** The first `execStep` runs the full build (pack + GLSL
   compile + Vulkan objects, ~250 ms) and the reactive cache does a fast rebuild
@@ -21,6 +23,157 @@ warmup excluded — reproduce it exactly; do NOT report a raw mean-over-all-iter
 Every example writes a `bench.json` (GPU device, host os/cpu/ram — phone model
 on Android and iOS — parameters, median steady-state ms/iter, warmup, and quality) into
 its `--out-dir`; `scripts/bench_summary.py <dirs>` renders the comparison table.
+
+## Measurement conditions
+
+A figure means nothing without its condition. Two figures may be compared only
+if they match on viewer condition, timed scope, parameters, and build. The rules
+below apply to new measurements; [Current status](#current-status) lists where
+the harnesses and the published tables do not meet them yet.
+
+### Viewer condition
+
+Every run is in exactly one of these conditions. "Viewer off" is not a condition:
+it has meant both `none` and `idle`.
+
+| condition | viewer object | display update | selected by |
+| --- | --- | --- | --- |
+| `none` | not created | never | `--no-view=1` (silhouette and shape_texture only), or no display available |
+| `idle` | created | never | `--view-interval=0` |
+| `live` | created | every iteration | default (`--view-interval=1`) |
+
+- **`none` is the reference condition.** Cross-device tables use it.
+- `idle` is accepted only for examples that have no `--no-view`, and only until
+  they do. Whether `idle` differs from `none` has not been measured.
+- `live` compares only within one platform, because the display path differs:
+  FIFO swapchain present on desktop, a CPU blit on Android, `UIImageView` on iOS.
+  It moves the median in either direction (`pbr_shading`: M5 Pro 583 to about
+  1200 FPS with it off, A14 86 to 74 FPS). Why was not investigated.
+- A `--view-interval` other than 0 or 1 is not a benchmark condition.
+- A desktop run with no usable display falls back to `none` silently, so the
+  condition is what the run actually did, not which flags it was given.
+
+### Timed scope
+
+`median_ms_per_iter` does not measure the same thing in every example. Figures
+from different scopes are not interchangeable, and only `execStep` rows are pure
+`execStep` time.
+
+| example | scope | timed section |
+| --- | --- | --- |
+| image_fitting | `execStep` | `execStep` |
+| silhouette_optimization | `execStep` | `execStep` |
+| pbr_envmap_optimization | `execStep` | `execStep` |
+| texture_optimization | `send+execStep` | camera jitter upload + `execStep` |
+| pbr_material_optimization | `send+execStep` | camera jitter upload + `execStep` |
+| pbr_shading | `send+execStep+recv` | per-frame uploads + `execStep` + frame readback |
+
+### Parameters
+
+Each benchmark runs its defaults, plus only the flags listed here and
+`--out-dir`. On mobile the app supplies the data paths.
+
+| label | flags | samples |
+| --- | --- | ---: |
+| image_fitting | none | 130 |
+| texture_optimization | `<data>/bunny` | 1480 |
+| silhouette_hardsoftras | `<data>/bunny --technique=hardsoftras` | 130 |
+| silhouette_aa | `<data>/bunny --technique=aa` | 130 |
+| pbr_material_optimization | none | 1180 |
+| pbr_envmap_optimization | none (`--fg-only=1` is the default) | 1480 |
+| pbr_shading | `--frames=200` on every platform | 180 |
+
+Add the viewer flag for the condition. Do not add `--snapshot`: it writes PNGs
+inside the loop.
+
+### Build and environment
+
+- Release build. Android's debug APK has no optimization.
+- `SPDLOG_LEVEL` and `DRESSI_VK_DEBUG` unset: debug logging adds per-stage GPU
+  timestamps and `DRESSI_VK_DEBUG` adds validation layers.
+- Default packing mode. Do not set `MVK_CONFIG_*` on Apple platforms.
+- iOS always writes per-stage timestamps and Apple platforms run with Metal
+  argument buffers off. Both are part of those platforms' figures.
+
+### Device state
+
+- One benchmark at a time on the device, and no other GPU workload.
+- Laptops and tablets: record whether they ran on AC, USB, or battery.
+- Mobile: release build, app in the foreground, screen on and unlocked, no
+  touches during the run.
+- Mobile: thermal status 0 before each run (`adb shell dumpsys thermalservice`),
+  and a 90 s rest between runs.
+- Do not poll the device during a run with `uiautomator` or screen capture.
+  Detect completion from logcat or from `bench.json` appearing.
+
+### Repetition and reporting
+
+- Run each benchmark 3 times in one session, deleting `bench.json` first so a
+  failed run cannot pass as a result.
+- Report the median of the three run medians, and the min–max range next to it.
+  One run is not a figure: two runs of one Adreno 740 build gave 37.4 and 41.2 ms
+  on texture_optimization.
+- Never average run medians, and never mix repetition rules in one table.
+
+### Comparing two builds
+
+- Use the same device, session, condition, and parameters.
+- Interleave the builds (A B A B A B) so drift and heat hit both equally.
+- Claim a difference only if the two min–max ranges do not overlap.
+- Never compare against a stored record or a published table: code, driver, and
+  device state have all moved since it was taken.
+
+### Record
+
+`bench.json` must carry what the figure depends on, so that nothing has to be
+inferred later:
+
+| key | value |
+| --- | --- |
+| `viewer` | `none`, `idle`, or `live`, from what the run actually did |
+| `timed_scope` | `execStep`, `send+execStep`, or `send+execStep+recv` |
+| `build_type` | `Release` or `Debug` |
+| `git_commit` | commit of the build, with `-dirty` if modified |
+| `driver_version` | Vulkan driver version |
+| `fg_only` | pbr_envmap_optimization only |
+| `packing_mode` | `rsp` or `naive` |
+
+`bench_summary.py` must not put records with different `viewer` or `timed_scope`
+values in one table.
+
+### Current status
+
+Conditions the harnesses produce today:
+
+| harness | image_fitting | texture, material, envmap | silhouette | pbr_shading |
+| --- | --- | --- | --- | --- |
+| `run_benches` (Windows, Linux, macOS) | `idle` | `idle` | `none` | `idle` |
+| `run_ios_benches.py` | `idle` | `idle` | `idle` (Avocado sweep: `none`) | `idle` |
+| Android app | `live` | `live` | `live` | `live` |
+
+Not implemented yet:
+
+- `--no-view` in image_fitting, texture_optimization, pbr_material_optimization,
+  pbr_envmap_optimization, and pbr_shading.
+- A way to leave the viewer off in the Android app. It has no flag or headless
+  entry, so Android can only measure `live`.
+- `--no-view=1` in the main list of `run_ios_benches.py`.
+- `--frames=200` on desktop: `run_benches` still passes `--frames=60`.
+- The record keys above, and the table check in `bench_summary.py`.
+- A batch runner with 3 repetitions on desktop and Android.
+
+The [cross-device table](#cross-device--10-vulkan-devices) predates these rules
+and mixes conditions:
+
+- Android rows are `live`, except where a record predates the viewer. The Adreno
+  740 image_fitting figure (0.225 ms) is most likely `none`: that APK was
+  installed before the example gained a viewer (bab660f), and the same device
+  gives about 0.71 ms with one.
+- `pbr_shading` rows are `live`; the other Apple rows are `idle`, and iOS
+  silhouette is `idle` where desktop silhouette is `none`.
+- `pbr_shading` used 60 frames on desktop and 200 on mobile.
+- Repetition varies: one run on most devices, the median of three on the M5 Pro,
+  the mean of two on the A14.
 
 ## Cross-device — 10 Vulkan devices
 
