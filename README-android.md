@@ -107,6 +107,7 @@ and needs Git Bash / WSL.
 # per Android device: install the RELEASE build (see "Build & run") and keep the
 # device awake and unlocked. This starts each example with no viewer, three
 # times, and pulls every bench.json. Conditions: docs/benchmarks.md.
+python scripts/run_android_benches.py -s <serial> --reps 1 -o out/discard   # after an install
 python scripts/run_android_benches.py -s <serial> -o bench_results/<device>
 python scripts/bench_summary.py bench_results/<device>
 ```

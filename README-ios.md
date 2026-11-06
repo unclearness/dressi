@@ -104,6 +104,7 @@ in `pbr_shading`. Conditions and the full procedure are in
 [docs/benchmarks.md](docs/benchmarks.md#ios).
 
 ```sh
+python3 scripts/run_ios_benches.py --device <udid> --reps 1 -o out/discard   # after an install
 python3 scripts/run_ios_benches.py --device <udid> -o bench_results/<device>
 python3 scripts/bench_summary.py bench_results/<device>
 ```

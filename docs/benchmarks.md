@@ -102,6 +102,10 @@ inside the loop.
 - Mobile: release build, app in the foreground, screen on and unlocked, no
   touches during the run.
 - Mobile: a 90 s rest between runs.
+- Mobile: after installing the app, run every benchmark once and discard that
+  pass. It can move ms/iter as well as warmup: A14 image_fitting gave 1.572 ms in
+  the first run after an install and 2.12–2.19 ms in the next five. The cause was
+  not investigated, and Android has not been checked.
 - Android: thermal status 0 before each run (`adb shell dumpsys thermalservice`).
   `run_ios_benches.py` has no such check on iOS, so only the rest applies there.
 - Do not poll the device during a run with `uiautomator` or screen capture.
@@ -151,6 +155,12 @@ Every batch runner measures `none`, with 3 runs per benchmark:
 `run_benches` (Windows, Linux, macOS), `run_android_benches.py`, and
 `run_ios_benches.py`. The apps stay `live` when started by hand, unless the
 Android app's "No viewer" box is ticked.
+
+The M5 Pro and A14 have been measured again under these rules at `fa748c1`, but
+the tables below do not carry those figures yet. The A14 pass came straight after
+an install, before the discard rule existed. Its image_fitting figure is
+therefore a separate three-run session, 2.162 ms (2.130–2.167). The other A14
+rows keep all three runs, because their first pass is not an outlier.
 
 The [cross-device table](#cross-device--10-vulkan-devices) predates these rules
 and mixes conditions:
@@ -479,6 +489,7 @@ python scripts/run_benches.py -o bench_results/<device>
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json python scripts/run_benches.py -o bench_results/llvmpipe
 
 # Android: install the RELEASE build, keep the device awake and unlocked
+python scripts/run_android_benches.py -s <serial> --reps 1 -o out/discard   # after an install
 python scripts/run_android_benches.py -s <serial> -o bench_results/<device>
 
 # all: one table per example and condition
@@ -517,6 +528,7 @@ xcodebuild -project build-ios-device/dressi.xcodeproj \
     -sdk iphoneos -allowProvisioningUpdates
 xcrun devicectl device install app --device <udid> \
     build-ios-device/ios/Release-iphoneos/DressiExamples.app
+python3 scripts/run_ios_benches.py --device <udid> --reps 1 -o out/discard   # after an install
 python3 scripts/run_ios_benches.py --device <udid> -o bench_results/<device>
 python3 scripts/bench_summary.py bench_results/<device>
 ```
@@ -524,6 +536,9 @@ python3 scripts/bench_summary.py bench_results/<device>
 Keep the phone unlocked and connected. The app exits between runs, so the home
 screen is normal. Add `--avocado` for the
 [resolution sweep](#same-sweep-on-apple-devices), which takes much longer.
+
+Keep the discarded pass out of `bench_results`: `bench_summary.py` would count it
+as a fourth run.
 
 ### Check a result
 
