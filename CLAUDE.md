@@ -173,7 +173,8 @@ report a raw mean-over-all-iters:
   examples now keep; it is wall-clock and rough by design (for the per-phase
   breakdown — substage-pack / vulkan-build / upload — use `SPDLOG_LEVEL=debug`,
   which prints each `execStep`'s phase timings). The summary table shows a
-  `warmup ms (first)` column.
+  `warmup ms (first)` column, each the median across runs, because the first
+  run after an install can be a cold start.
 - **When you improve the Python (`dressi.torch`) speed, ALWAYS also
   re-measure the C++ path** (`silhouette_optimization` /
   `scripts/dressi_native_bench.py`) for the same workload — several

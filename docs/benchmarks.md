@@ -114,6 +114,9 @@ inside the loop.
 - Report the median of the three run medians, and the min–max range next to it.
   One run is not a figure: two runs of one Adreno 740 build gave 37.4 and 41.2 ms
   on texture_optimization.
+- Report warmup as the median across runs, taken separately from the ms/iter
+  median. The first run after an install can be a cold start: hardsoftras on the
+  A14 took 8985 ms in that run and about 1340 ms in the next two.
 - Never average run medians, and never mix repetition rules in one table.
 
 ### Comparing two builds

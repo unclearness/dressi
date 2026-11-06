@@ -87,14 +87,22 @@ def params_of(rec):
     return ""
 
 
-def warmup_of(rec):
+def warmup_of(runs):
     # One-time build/warmup overhead (ms), with the single largest build
     # (iter 0) in parentheses. "-" for older records without the field.
-    if "warmup_ms" not in rec:
+    # Each is the median across runs, separately from the ms/iter median: the
+    # first run after an install can be a cold start, 6.7x longer on the A14.
+    def median_of(key):
+        values = [r[key] for r in runs if key in r]
+        return statistics.median_low(values) if values else None
+
+    warmup = median_of("warmup_ms")
+    if warmup is None:
         return "-"
-    s = f"{rec['warmup_ms']:.0f}"
-    if "first_build_ms" in rec:
-        s += f" ({rec['first_build_ms']:.0f})"
+    s = f"{warmup:.0f}"
+    first = median_of("first_build_ms")
+    if first is not None:
+        s += f" ({first:.0f})"
     return s
 
 
@@ -153,9 +161,9 @@ def row_of(runs):
     medians = [r.get("median_ms_per_iter", float("nan")) for r in runs]
     # median_low: an even run count must not average two run medians
     median = statistics.median_low(medians)
-    # Warmup, packing, and quality are shown for the run behind the median
+    # Packing and quality are shown for the run behind the median
     rec = runs[medians.index(median)]
-    return median, min(medians), max(medians), len(runs), rec
+    return median, min(medians), max(medians), len(runs), rec, warmup_of(runs)
 
 
 def print_table(example, viewer, scope, rows):
@@ -166,14 +174,14 @@ def print_table(example, viewer, scope, rows):
     groups = {}
     for r in rows:
         groups.setdefault(group_of(r), []).append(r)
-    for median, low, high, n, r in sorted(map(row_of, groups.values()),
-                                          key=lambda row: row[0]):
+    for median, low, high, n, r, warmup in sorted(map(row_of, groups.values()),
+                                                  key=lambda row: row[0]):
         print(f"| {r.get('device', '?')} | {host_of(r)} "
               f"| {params_of(r)} "
               f"| {median:.3f} "
               f"| {low:.3f}-{high:.3f} "
               f"| {n} "
-              f"| {warmup_of(r)} "
+              f"| {warmup} "
               f"| {packing_of(r)} "
               f"| {quality_of(r, median)} "
               f"| {r.get('git_commit', '?')} |")
