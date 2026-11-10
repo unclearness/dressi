@@ -97,7 +97,10 @@ inside the loop.
 
 ### Device state
 
-- One benchmark at a time on the device, and no other GPU workload.
+- One benchmark at a time on the device, and no other GPU workload. Quit apps
+  that draw on the GPU, overlays included: on the RTX PRO 6000, a session with a
+  game launcher (and its overlay process) and a music player open gave
+  image_fitting 0.085–0.095 ms, against 0.058–0.060 ms once they were closed.
 - Laptops and tablets: record whether they ran on AC, USB, or battery.
 - Mobile: release build, app in the foreground, screen on and unlocked, no
   touches during the run.
@@ -482,11 +485,14 @@ Every runner writes `<out_root>/run<k>/<label>/bench.json`. Build from a clean
 commit: a modified tree records `-dirty` in `git_commit`.
 
 ```sh
-# Windows, Linux
+# Windows
 python scripts/run_benches.py -o bench_results/<device>
 
+# Linux: Ninja puts the binaries in build/examples, with no Release/ level
+python3 scripts/run_benches.py -b build/examples -o bench_results/<device>
+
 # llvmpipe (CPU software Vulkan): select the lavapipe ICD
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json python scripts/run_benches.py -o bench_results/llvmpipe
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json python3 scripts/run_benches.py -b build/examples -o bench_results/llvmpipe
 
 # Android: install the RELEASE build, keep the device awake and unlocked
 python scripts/run_android_benches.py -s <serial> --reps 1 -o out/discard   # after an install
