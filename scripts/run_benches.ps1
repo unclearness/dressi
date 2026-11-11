@@ -108,6 +108,11 @@ if ($List) {
 }
 
 New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null
+# GPU state during each run (docs/benchmarks.md, "Device state"): some drivers
+# keep a GPU with no window in a power-saving state. bench_summary.py checks it.
+$smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+$smiArgs = @('--query-gpu=timestamp,name,pstate,clocks.sm,clocks.max.sm,power.draw',
+             '--format=csv', '-lms', '200')
 
 $results = @()
 foreach ($rep in 1..$Reps) {
@@ -124,9 +129,22 @@ foreach ($b in $benches) {
     Remove-Item (Join-Path $out 'bench.json') -Force -ErrorAction SilentlyContinue
     $runArgs = @($b.Args) + "--out-dir=$out"
 
+    $gpuLog = Join-Path $out 'gpu_state.csv'
+    Remove-Item $gpuLog -Force -ErrorAction SilentlyContinue
+    $sampler = $null
+    if ($smi) {
+        New-Item -ItemType Directory -Force -Path $out | Out-Null
+        $sampler = Start-Process -FilePath $smi.Source -ArgumentList $smiArgs `
+            -RedirectStandardOutput $gpuLog -NoNewWindow -PassThru
+    }
+
     Write-Host "==> ${tag}: $exe $($runArgs -join ' ')" -ForegroundColor Cyan
     & $exe @runArgs
     $code = $LASTEXITCODE
+    if ($sampler) {
+        Stop-Process -Id $sampler.Id -Force -ErrorAction SilentlyContinue
+        $sampler.WaitForExit()
+    }
 
     $status = if ($code -eq 0) { 'OK' } else { "EXIT $code" }
     $results += [pscustomobject]@{ Label = $tag; Status = $status }

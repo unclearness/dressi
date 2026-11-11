@@ -86,6 +86,10 @@ if [ "$list_only" -eq 1 ]; then
 fi
 
 mkdir -p "$out_root"
+# GPU state during each run (docs/benchmarks.md, "Device state"): some drivers
+# keep a GPU with no window in a power-saving state. bench_summary.py checks it.
+have_smi=0
+command -v nvidia-smi >/dev/null 2>&1 && have_smi=1
 
 fail=0
 declare -a summary
@@ -105,11 +109,24 @@ for row in "${benches[@]}"; do
     # A failed run must not leave an older record behind
     rm -f "$out/bench.json"
 
+    rm -f "$out/gpu_state.csv"
+    sampler=''
+    if [ "$have_smi" -eq 1 ]; then
+        mkdir -p "$out"
+        nvidia-smi --query-gpu=timestamp,name,pstate,clocks.sm,clocks.max.sm,power.draw \
+            --format=csv -lms 200 > "$out/gpu_state.csv" 2>/dev/null &
+        sampler=$!
+    fi
+
     # shellcheck disable=SC2086  # args is an intentional word-split arg string
     echo "==> run$rep/$label: $bin $args --out-dir=$out"
     # shellcheck disable=SC2086
     "$bin" $args "--out-dir=$out"
     code=$?
+    if [ -n "$sampler" ]; then
+        kill "$sampler" 2>/dev/null
+        wait "$sampler" 2>/dev/null
+    fi
 
     if [ "$code" -eq 0 ]; then
         summary+=("run$rep/$label	OK")

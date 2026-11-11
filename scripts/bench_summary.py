@@ -27,6 +27,7 @@ current directory is searched — e.g. after:
     python scripts/bench_summary.py bench_results
 """
 
+import csv
 import json
 import statistics
 import sys
@@ -166,6 +167,40 @@ def row_of(runs):
     return median, min(medians), max(medians), len(runs), rec, warmup_of(runs)
 
 
+def mhz(value):
+    try:
+        return int(value.split()[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def gpu_state_warning(rec):
+    # The desktop runners sample nvidia-smi into gpu_state.csv next to each
+    # bench.json. Some drivers keep a GPU with no window in a power-saving
+    # state (RTX 3090: P3 at 780 MHz, 2.3x slower), so a run that spent most
+    # samples outside P0 did not measure the GPU at full speed. Only samples
+    # of the benchmarked GPU count (llvmpipe on an NVIDIA host has none), and
+    # fewer than 3 are not judged.
+    path = Path(rec["_file"]).parent / "gpu_state.csv"
+    if not path.is_file():
+        return None
+    with path.open(newline="", encoding="utf-8", errors="replace") as f:
+        samples = [{(k or "").strip(): (v or "").strip()
+                    for k, v in row.items() if isinstance(v, str)}
+                   for row in csv.DictReader(f, skipinitialspace=True)]
+    samples = [x for x in samples if x.get("name") == rec.get("device")]
+    if len(samples) < 3:
+        return None
+    states = [x.get("pstate", "?") for x in samples]
+    top = max(sorted(set(states)), key=states.count)
+    if top == "P0":
+        return None
+    clocks = [c for c in (mhz(x.get("clocks.current.sm [MHz]", ""))
+                          for x in samples) if c is not None]
+    clock = f", SM {statistics.median_low(clocks)} MHz" if clocks else ""
+    return f"{top} in {states.count(top)} of {len(states)} samples{clock}"
+
+
 def print_table(example, viewer, scope, rows):
     print(f"## {example} (viewer: {viewer}, timed scope: {scope})\n")
     print("| device | host | parameters | median ms/iter | min-max | runs "
@@ -174,6 +209,14 @@ def print_table(example, viewer, scope, rows):
     groups = {}
     for r in rows:
         groups.setdefault(group_of(r), []).append(r)
+    warnings = []
+    for runs in groups.values():
+        for r in runs:
+            w = gpu_state_warning(r)
+            if w:
+                run = Path(r["_file"]).parent.parent.name
+                warnings.append(f"- {r.get('device', '?')}, {params_of(r)}, "
+                                f"{run}: {w}")
     for median, low, high, n, r, warmup in sorted(map(row_of, groups.values()),
                                                   key=lambda row: row[0]):
         print(f"| {r.get('device', '?')} | {host_of(r)} "
@@ -186,6 +229,10 @@ def print_table(example, viewer, scope, rows):
               f"| {quality_of(r, median)} "
               f"| {r.get('git_commit', '?')} |")
     print()
+    if warnings:
+        print("GPU state warning: not at full performance (docs/benchmarks.md, "
+              "\"Device state\")\n")
+        print("\n".join(sorted(warnings)) + "\n")
 
 
 def main():

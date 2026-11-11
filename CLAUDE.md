@@ -157,6 +157,12 @@ report a raw mean-over-all-iters:
   `none`, 3 runs each: `run_benches`, `run_android_benches.py`,
   `run_ios_benches.py`. After a mobile install, run one pass with `--reps 1 -o
   out/discard` first: the first launch can move ms/iter too.
+- **Desktop GPUs must run at full clocks.** With no window, some drivers keep
+  the GPU in a power-saving state (RTX 3090, Windows: P3, pbr_envmap 2.3x
+  slower; the RTX PRO 6000 stays at P0). `run_benches` writes `nvidia-smi`
+  samples to `gpu_state.csv` per run and `bench_summary.py` prints a "GPU state
+  warning" when a run was mostly outside P0. Fix on NVIDIA/Windows: "Prefer
+  maximum performance" for the example exes in the NVIDIA Control Panel.
 - **Disable the live viewer when benchmarking.** The display path perturbs
   the measured execStep median even though it sits outside the timed
   section (image_fitting: 0.063 ms with `--view-interval=0` vs ~0.21 ms

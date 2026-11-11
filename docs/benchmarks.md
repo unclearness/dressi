@@ -101,6 +101,20 @@ inside the loop.
   that draw on the GPU, overlays included: on the RTX PRO 6000, a session with a
   game launcher (and its overlay process) and a music player open gave
   image_fitting 0.085–0.095 ms, against 0.058–0.060 ms once they were closed.
+- Desktop GPUs run at full performance for the whole run. Some drivers keep a
+  GPU with no window in a power-saving state. With no viewer, an RTX 3090 on
+  Windows (driver 610.88) ran pbr_envmap at P3 and 780 MHz, 31.1 ms against
+  13.8 ms at P0 once a window existed. The RTX PRO 6000 (driver 597.30) stays at
+  P0 either way. On NVIDIA under Windows, set "Power management mode" to "Prefer
+  maximum performance" for every example exe (NVIDIA Control Panel, Manage 3D
+  settings, Program Settings). The Linux counterpart is PowerMizer in
+  `nvidia-settings`. Neither setting has been tested yet, so the result has to
+  be checked:
+  `run_benches` samples `nvidia-smi` every 200 ms into `gpu_state.csv` next to
+  each `bench.json`, and `bench_summary.py` prints a "GPU state warning" under a
+  table when a run spent most of its samples outside P0. Runs with fewer than 3
+  samples of the benchmarked GPU are not judged, and other vendors are not
+  checked.
 - Laptops and tablets: record whether they ran on AC, USB, or battery.
 - Mobile: release build, app in the foreground, screen on and unlocked, no
   touches during the run.
@@ -164,6 +178,9 @@ the tables below do not carry those figures yet. The A14 pass came straight afte
 an install, before the discard rule existed. Its image_fitting figure is
 therefore a separate three-run session, 2.162 ms (2.130–2.167). The other A14
 rows keep all three runs, because their first pass is not an outlier.
+
+The RTX 3090 measured at `0ba1fd8` ran with the GPU at P3 on the GPU-bound
+rows and has to be measured again under the full-performance rule.
 
 The [cross-device table](#cross-device--10-vulkan-devices) predates these rules
 and mixes conditions:
@@ -485,7 +502,7 @@ Every runner writes `<out_root>/run<k>/<label>/bench.json`. Build from a clean
 commit: a modified tree records `-dirty` in `git_commit`.
 
 ```sh
-# Windows
+# Windows (NVIDIA: set the power mode in "Device state" first)
 python scripts/run_benches.py -o bench_results/<device>
 
 # Linux: Ninja puts the binaries in build/examples, with no Release/ level
@@ -553,6 +570,7 @@ Before using a table, confirm these in `bench_summary.py`'s output:
 - The heading says `viewer: none`.
 - `runs` is 3. A failed run is missing from the row, not marked in it.
 - `commit` has no `-dirty`.
+- No "GPU state warning" follows the table.
 - Quality matches the other devices.
 
 `bench_summary.py` needs a real Python (`.venv\Scripts\python` or `uv run
