@@ -78,5 +78,12 @@ endif()
 
 set(ENV{VULKAN_SDK} "${_dressi_sdk_root}")
 list(APPEND CMAKE_PREFIX_PATH "${DRESSI_VULKAN_SDK_LIB}/cmake")
+# Linux tarballs from 1.4.350.1 on ship the loader under lib/VulkanLoader/lib
+# instead of lib/, where FindVulkan looks. Without libvulkan-dev installed,
+# find_package(Vulkan) then fails with "missing: Vulkan_LIBRARY". Searched
+# before the system paths, as lib/ was for older tarballs.
+if(IS_DIRECTORY "${DRESSI_VULKAN_SDK_LIB}/VulkanLoader/lib")
+    list(APPEND CMAKE_LIBRARY_PATH "${DRESSI_VULKAN_SDK_LIB}/VulkanLoader/lib")
+endif()
 set(DRESSI_VULKAN_SDK_ROOT "${_dressi_sdk_root}")
 message(STATUS "Vulkan SDK: ${DRESSI_VULKAN_SDK_ROOT}")
