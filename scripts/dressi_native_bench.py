@@ -6,6 +6,7 @@
 # recovers C++-level speed from Python when the eager nvdiffrast-style
 # API's per-op transfers dominate. Run with PYTHONPATH=python.
 import os
+import statistics
 import sys
 import time
 
@@ -100,10 +101,12 @@ def main():
         n_warm, n_meas = 50, 200
         for _ in range(n_warm):
             ad.exec_step()
-        t0 = time.perf_counter()
+        samples = []
         for _ in range(n_meas):
+            t0 = time.perf_counter()
             ad.exec_step()
-        ms = (time.perf_counter() - t0) / n_meas * 1e3
+            samples.append(time.perf_counter() - t0)
+        ms = statistics.median(samples) * 1e3
         final_loss = ad.recv_img(loss).sum()
         print(f"dressi.native {res}x{res}: {ms:.3f} ms/iter"
               f"  (final loss {final_loss:.6f})")

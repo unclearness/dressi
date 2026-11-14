@@ -71,6 +71,7 @@ int dressi_examples::RunPbrMaterialOptimization(
     uint32_t size = 256, tex_max = 512, n_views = 6;
     int n_iters = 1200;  // albedo PSNR ~20.7 dB (21.2 at 2000; slow log climb)
     int view_interval = 1;  // live-viewer refresh cadence (iters); 0 = off
+    bool no_view = false;  // no viewer at all: the `none` benchmark condition
     int snapshot = 0;  // save pred view 0 every N iters (0 = off; for GIFs)
     float lr = 0.02f;
     for (const std::string& arg : args) {
@@ -90,6 +91,8 @@ int dressi_examples::RunPbrMaterialOptimization(
             n_views = uint32_t(std::stoul(arg.substr(8)));
         } else if (arg.rfind("--iters=", 0) == 0) {
             n_iters = std::stoi(arg.substr(8));
+        } else if (arg.rfind("--no-view", 0) == 0) {
+            no_view = arg != "--no-view=0";
         } else if (arg.rfind("--view-interval=", 0) == 0) {
             view_interval = std::stoi(arg.substr(16));
         } else if (arg.rfind("--snapshot=", 0) == 0) {
@@ -329,15 +332,18 @@ int dressi_examples::RunPbrMaterialOptimization(
     const uint32_t win_w = screen.w * tile_cols;
     const uint32_t win_h = screen.h * tile_rows;
     auto viewer_target =
-            host.makeViewer(win_w, win_h, "targets (GT, fixed views)");
-    auto viewer_pred = host.makeViewer(win_w, win_h, "optimized render");
-    auto viewer_tex = host.makeViewer(
+            MakeViewer(host, no_view,
+                       win_w, win_h, "targets (GT, fixed views)");
+    auto viewer_pred =
+            MakeViewer(host, no_view, win_w, win_h, "optimized render");
+    auto viewer_tex = MakeViewer(host, no_view, 
             512, 256, "texture " + optimize + " (GT | optimized)");
     viewer_target->setPosition(60, 60);
     viewer_pred->setPosition(60 + int(win_w) + 16, 60);
     viewer_tex->setPosition(60, 60 + int(win_h) + 46);
     bool viewer_open = viewer_target->valid() && viewer_pred->valid() &&
                        viewer_tex->valid();
+    const std::string viewer_cond = ViewerCondition(viewer_open, view_interval);
     CpuImage target_tile;
     const CpuImage gt_tex_disp = display_gamma(gt_opt);
 
@@ -428,8 +434,7 @@ int dressi_examples::RunPbrMaterialOptimization(
                  median_ms, opt_warmup, warmup_ms, first_build_ms);
     {
         BenchRecord rec("pbr_material_optimization", ad.getDeviceName());
-        rec.addPacking(ad.getFuncCount(), ad.getSubStageCount(),
-                       ad.getStageCount());
+        rec.addRun(ad, viewer_cond, "send+execStep");
         rec.add("optimize", optimize);
         rec.add("screen", int64_t(size));
         rec.add("tex", int64_t(tex_max));

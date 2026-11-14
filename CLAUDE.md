@@ -23,6 +23,9 @@ ctest --preset release -LE gpu       # CPU-only (no Vulkan device needed)
 ./build/examples/Release/pbr_shading.exe --frames=60      # headless orbit + PNGs
 ```
 
+macOS: `cmake --preset macos`, `cmake --build --preset macos-release`,
+`ctest --preset macos-release`; binaries lack the `Release/` level and `.exe`.
+
 - Datasets live in `data/` (git-ignored — large/licensed) and are downloaded
   at configure time by `cmake/FetchAssets.cmake` (bunny zip + Avocado glTF +
   the PBS env-map EXR; hash-verified, skipped once present). Avocado is copied
@@ -79,6 +82,32 @@ ctest --preset release -LE gpu       # CPU-only (no Vulkan device needed)
   launch, outputs in `files/out/<example>/` (adb: `run-as
   org.dressi.examples`).
 
+## Apple (macOS / iOS, see README-ios.md)
+
+- MoltenVK everywhere. macOS goes through the SDK loader;
+  `PrepareVulkanLoaderEnv()` points it at the compiled-in SDK's ICD manifest
+  unless the environment chose. iOS links `MoltenVK.xcframework` statically
+  (`VKW_STATIC_VULKAN`, no GLFW: `VKW_NO_WINDOW`), and shares the Android branch
+  for the source-built SPIR-V stack (`DRESSI_MOBILE`).
+- `PrepareVulkanLoaderEnv()` also sets
+  `MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=0`. Do NOT remove it: MoltenVK misreads
+  shaders mixing input attachments with argument-buffer descriptors, which is
+  what RSP fusion produces. Symptoms: aligned 8x8 NaN blocks on macOS, wrong
+  values on the simulator, Naive unaffected.
+- Limits Vulkan does not report come from the MTLDevice GPU family at runtime
+  (`src/vk/metal_limits.mm`): color attachment bytes per pixel, and the
+  simulator's 8192 texture cap. No per-platform constants; the executor asserts
+  them, since Metal corrupts or aborts past them rather than failing.
+- iOS writes a GPU timestamp after every stage (`stage_timestamps`): without
+  them long frames die with "GPU Hang Error" although no pass is slow. Keep it
+  unless the frame is split some other way.
+- `ios/` needs the Xcode generator for signing; iOS tests are one app
+  (`DressiTests`) because a bare binary cannot run there. Launch arguments
+  `--run=` / `--run-all` drive the examples app unattended.
+- Map/set of `Variable`/`Function` must use `VarMap` / `VarSet` /
+  `FunctionLess`: libc++ turns `std::less<Key>` into `std::less<void>`, so a
+  `std::less` specialization is silently bypassed.
+
 ## Benchmarking (how README / perf numbers are produced)
 
 Every performance figure in the README is a **median steady-state
@@ -111,12 +140,33 @@ report a raw mean-over-all-iters:
   `examples/common/bench.h`; `scripts/bench_summary.py <dirs/files>`
   renders the Markdown comparison table (Android: pull the files with
   `adb shell run-as org.dressi.examples cat files/out/<example>/bench.json`).
+- **Apple:** `scripts/run_benches.sh -b build/examples` on macOS,
+  `scripts/run_ios_benches.py` on a device (viewer off, rests between runs, only
+  pulls `bench.json` after exit 0: a failed run leaves the previous one in the
+  container). Sub-millisecond runs on M5 Pro have two speed modes, so compare
+  C++ and Python within one mode; the cause is unknown.
+- **`pbr_shading` table rows are viewer-ON** (older batch runs and the Android
+  app never turned it off); `run_benches` now does, so its output does not
+  compare with them. M5 Pro: 583 FPS on, ~1200 off. Keep conditions equal
+  before comparing devices.
+- **Experiment conditions are defined in `docs/benchmarks.md`
+  ("Measurement conditions"): follow it, and state the viewer condition
+  (`none` / `idle` / `live`) and timed scope with every figure.**
+  `--view-interval=0` does NOT remove the viewer (`idle`: it is created, never
+  updated); only `--no-view=1` does (`none`). The batch runners all measure
+  `none`, 3 runs each: `run_benches`, `run_android_benches.py`,
+  `run_ios_benches.py`. After a mobile install, run one pass with `--reps 1 -o
+  out/discard` first: the first launch can move ms/iter too.
+- **Desktop GPUs must run at full clocks.** With no window, some drivers keep
+  the GPU in a power-saving state (RTX 3090, Windows: P3, pbr_envmap 2.3x
+  slower; the RTX PRO 6000 stays at P0). `run_benches` writes `nvidia-smi`
+  samples to `gpu_state.csv` per run and `bench_summary.py` prints a "GPU state
+  warning" when a run was mostly outside P0. Fix on NVIDIA/Windows: "Prefer
+  maximum performance" for the example exes in the NVIDIA Control Panel.
 - **Disable the live viewer when benchmarking.** The display path perturbs
   the measured execStep median even though it sits outside the timed
   section (image_fitting: 0.063 ms with `--view-interval=0` vs ~0.21 ms
-  with its per-iter viewer on this box). Use `--view-interval=0` (and
-  silhouette's `--no-view=1`); the README table's image_fitting rows are
-  viewer-less numbers.
+  with its per-iter viewer on this box).
 - **README demo GIFs** regenerate via `scripts/make_readme_gifs.sh` from
   `--snapshot=1 --view-interval=0` runs (every example has `--snapshot=N`
   progress dumps); outputs land in git-ignored `out/gifs/` and are
@@ -130,7 +180,8 @@ report a raw mean-over-all-iters:
   examples now keep; it is wall-clock and rough by design (for the per-phase
   breakdown — substage-pack / vulkan-build / upload — use `SPDLOG_LEVEL=debug`,
   which prints each `execStep`'s phase timings). The summary table shows a
-  `warmup ms (first)` column.
+  `warmup ms (first)` column, each the median across runs, because the first
+  run after an install can be a cold start.
 - **When you improve the Python (`dressi.torch`) speed, ALWAYS also
   re-measure the C++ path** (`silhouette_optimization` /
   `scripts/dressi_native_bench.py`) for the same workload — several
@@ -205,7 +256,7 @@ inputs changed (reactive cache).
 - Public headers in `include/dressi/` mirror Appendix A names; internal
   code includes `"core/..."` etc. relative to `src/`.
 - `operator<` on `Variable` builds comparison graphs (appendix semantics:
-  `0.f < x`); map ordering uses a `std::less` specialization by node id.
+  `0.f < x`); map ordering uses `VariableLess` by node id (`VarMap`/`VarSet`).
 - Component-wise ops rely on default inference (`infer == nullptr`); codegen
   uses that to decide GLSL scalar→vector promotion (`pow()` etc. do not
   broadcast scalars).

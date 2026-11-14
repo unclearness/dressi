@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.Gravity
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -12,6 +13,7 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -28,6 +30,7 @@ class MainActivity : Activity(), NativeBridge.Listener {
     private lateinit var runView: LinearLayout
     private lateinit var capsText: TextView
     private lateinit var exampleList: LinearLayout
+    private lateinit var noViewBox: CheckBox
     private lateinit var runTitle: TextView
     private lateinit var streamBar: LinearLayout
     private lateinit var logText: TextView
@@ -54,6 +57,7 @@ class MainActivity : Activity(), NativeBridge.Listener {
                 caps = runCatching { JSONObject(capsJson) }.getOrNull()
                 capsText.text = formatCaps(capsJson)
                 populateExamples()
+                startFromIntent()
             }
         }
     }
@@ -78,9 +82,14 @@ class MainActivity : Activity(), NativeBridge.Listener {
             setPadding(24, 24, 24, 24)
         }
         exampleList = vbox()
+        noViewBox = CheckBox(this).apply {
+            text = "No viewer (benchmark condition `none`)"
+            setPadding(24, 8, 24, 8)
+        }
         setupBox.addView(header("Device"))
         setupBox.addView(capsText)
         setupBox.addView(header("Examples"))
+        setupBox.addView(noViewBox)
         setupBox.addView(exampleList)
 
         runView = vbox().apply { visibility = View.GONE }
@@ -259,6 +268,11 @@ class MainActivity : Activity(), NativeBridge.Listener {
     // device limit is hit; full optimization runs take ~5-8 min). Only the
     // paths differ from desktop. Tweak here for shorter runs.
     private fun defaultArgs(name: String, technique: String?): Array<String> {
+        val args = exampleArgs(name, technique)
+        return if (noViewBox.isChecked) args + "--no-view=1" else args
+    }
+
+    private fun exampleArgs(name: String, technique: String?): Array<String> {
         val data = dataDir!!
         // Technique variants (silhouette) get a per-technique out-dir so their
         // bench.json records do not overwrite each other.
@@ -288,6 +302,18 @@ class MainActivity : Activity(), NativeBridge.Listener {
                 "--mesh=$mesh", "--env=$env", "--out-dir=$out")
             else -> arrayOf()
         }
+    }
+
+    // Unattended entry for scripts/run_android_benches.py:
+    //   am start -n org.dressi.examples/.MainActivity
+    //       -e run <out-dir name> --ez no_view true
+    // The run ends with the "finished with exit code" line in logcat.
+    private fun startFromIntent() {
+        val run = intent.getStringExtra("run") ?: return
+        noViewBox.isChecked = intent.getBooleanExtra("no_view", false)
+        val technique = listOf("hardsoftras", "aa")
+            .firstOrNull { run.endsWith("_$it") }
+        startExample(run.removeSuffix("_${technique ?: ""}"), technique)
     }
 
     private fun startExample(name: String, technique: String? = null) {
@@ -388,7 +414,9 @@ class MainActivity : Activity(), NativeBridge.Listener {
             }
             Toast.makeText(this, "$name finished: $verdict (exit $exitCode)",
                 Toast.LENGTH_LONG).show()
-            onLog("== $name finished with exit code $exitCode ==")
+            val line = "== $name finished with exit code $exitCode =="
+            Log.i("dressi", line)
+            onLog(line)
             stopButton.isEnabled = false
             backButton.isEnabled = true
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

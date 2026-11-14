@@ -101,6 +101,7 @@ int dressi_examples::RunPbrEnvmapOptimization(
     uint32_t size = 192, env_w = 64, n_views = 4;
     int n_iters = 1500;
     int view_interval = 1;  // live-viewer refresh cadence (iters); 0 = off
+    bool no_view = false;  // no viewer at all: the `none` benchmark condition
     int snapshot = 0;  // save pred view 0 + env every N iters (0 = off)
     float lr = 0.05f;
     // Spatial smoothness prior on the recovered env (0 = off). The 4-view
@@ -135,6 +136,8 @@ int dressi_examples::RunPbrEnvmapOptimization(
             n_views = uint32_t(std::stoi(arg.substr(8)));
         } else if (arg.rfind("--iters=", 0) == 0) {
             n_iters = std::stoi(arg.substr(8));
+        } else if (arg.rfind("--no-view", 0) == 0) {
+            no_view = arg != "--no-view=0";
         } else if (arg.rfind("--view-interval=", 0) == 0) {
             view_interval = std::stoi(arg.substr(16));
         } else if (arg.rfind("--snapshot=", 0) == 0) {
@@ -376,16 +379,20 @@ int dressi_examples::RunPbrEnvmapOptimization(
     const uint32_t win_h = screen.h * tile_rows;
     const uint32_t env_up = std::max(1u, 512u / env_size.w);
     auto viewer_target =
-            host.makeViewer(win_w, win_h, "targets (GT env, fixed views)");
-    auto viewer_pred = host.makeViewer(win_w, win_h, "optimized-env render");
+            MakeViewer(host, no_view,
+                       win_w, win_h, "targets (GT env, fixed views)");
+    auto viewer_pred =
+            MakeViewer(host, no_view, win_w, win_h, "optimized-env render");
     auto viewer_env =
-            host.makeViewer(env_size.w * env_up, env_size.h * env_up * 2,
+            MakeViewer(host, no_view,
+                       env_size.w * env_up, env_size.h * env_up * 2,
                             "env map (GT / optimized)");
     viewer_target->setPosition(60, 60);
     viewer_pred->setPosition(60 + int(win_w) + 16, 60);
     viewer_env->setPosition(60, 60 + int(win_h) + 46);
     bool viewer_open = viewer_target->valid() && viewer_pred->valid() &&
                        viewer_env->valid();
+    const std::string viewer_cond = ViewerCondition(viewer_open, view_interval);
     CpuImage target_tile;
     const CpuImage env_gt_disp = Upscale(TonemapForView(env_gt_img), env_up);
 
@@ -529,10 +536,10 @@ int dressi_examples::RunPbrEnvmapOptimization(
                  warmup_ms, first_build_ms);
     {
         BenchRecord rec("pbr_envmap_optimization", ad.getDeviceName());
-        rec.addPacking(ad.getFuncCount(), ad.getSubStageCount(),
-                       ad.getStageCount());
+        rec.addRun(ad, viewer_cond, "execStep");
         rec.add("screen", int64_t(size));
         rec.add("envres", int64_t(env_size.w));
+        rec.add("fg_only", fg_only);
         rec.add("views", int64_t(n_views));
         rec.add("iters", int64_t(n_iters));
         rec.add("median_ms_per_iter", steady_median);

@@ -3,7 +3,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
+#include <set>
 #include <vector>
 
 #include "dressi/types.h"
@@ -52,22 +54,30 @@ using Variables = std::vector<Variable>;
 
 }  // namespace dressi
 
+namespace dressi {
+
+// Orders by creation id; operator< on Variables is reserved for building
+// comparison graphs (e.g. `0.f < edge_dist`). Not a std::less specialization:
+// libc++ rewrites std::less<Key> in map/set to std::less<void>, which would
+// bypass it and call that operator<.
+struct VariableLess {
+    bool operator()(const Variable& a, const Variable& b) const {
+        const uint64_t l = a ? a.id() : 0;
+        const uint64_t r = b ? b.id() : 0;
+        return l < r;
+    }
+};
+
+template <typename T>
+using VarMap = std::map<Variable, T, VariableLess>;
+using VarSet = std::set<Variable, VariableLess>;
+
+}  // namespace dressi
+
 template <>
 struct std::hash<dressi::Variable> {
     size_t operator()(const dressi::Variable& v) const {
         return v ? std::hash<uint64_t>()(v.id()) : 0;
-    }
-};
-
-// std::map<Variable, ...> orders by creation id. (operator< on Variables is
-// reserved for building comparison graphs, e.g. `0.f < edge_dist`.)
-template <>
-struct std::less<dressi::Variable> {
-    bool operator()(const dressi::Variable& a,
-                    const dressi::Variable& b) const {
-        const uint64_t l = a ? a.id() : 0;
-        const uint64_t r = b ? b.id() : 0;
-        return l < r;
     }
 };
 
