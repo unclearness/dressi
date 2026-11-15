@@ -59,6 +59,7 @@ int dressi_examples::RunPbrShading(const std::vector<std::string>& args,
     uint32_t size = 512;
     int max_frames = 0;  // 0 = until the window is closed
     int view_interval = 1;  // live-viewer refresh cadence (frames); 0 = off
+    bool no_view = false;  // no viewer at all: the `none` benchmark condition
     int snapshot = 0;  // save the frame every N frames (0 = off; for GIFs)
     for (const std::string& arg : args) {
         if (arg.rfind("--mesh=", 0) == 0) {
@@ -71,6 +72,8 @@ int dressi_examples::RunPbrShading(const std::vector<std::string>& args,
             size = uint32_t(std::stoi(arg.substr(7)));
         } else if (arg.rfind("--frames=", 0) == 0) {
             max_frames = std::stoi(arg.substr(9));
+        } else if (arg.rfind("--no-view", 0) == 0) {
+            no_view = arg != "--no-view=0";
         } else if (arg.rfind("--view-interval=", 0) == 0) {
             view_interval = std::stoi(arg.substr(16));
         } else if (arg.rfind("--snapshot=", 0) == 0) {
@@ -177,8 +180,11 @@ int dressi_examples::RunPbrShading(const std::vector<std::string>& args,
             Vec3Img(light_pos[0], light_pos[1], light_pos[2]);
     const CpuImage light_col_img = Vec3Img(20.f, 20.f, 20.f);
 
-    auto viewer = host.makeViewer(screen.w, screen.h, "pbr_shading (Dressi)");
+    auto viewer =
+            MakeViewer(host, no_view,
+                       screen.w, screen.h, "pbr_shading (Dressi)");
     bool viewer_open = viewer->valid();
+    const std::string viewer_cond = ViewerCondition(viewer_open, view_interval);
     if (!viewer_open && max_frames == 0) {
         max_frames = 60;
         spdlog::warn("live viewer unavailable; rendering {} frames headless",
@@ -285,8 +291,7 @@ int dressi_examples::RunPbrShading(const std::vector<std::string>& args,
         // Benchmark record for scripts/bench_summary.py (a viewer, not an
         // optimization — the metric is exec+readback per frame)
         BenchRecord rec("pbr_shading", ad.getDeviceName());
-        rec.addPacking(ad.getFuncCount(), ad.getSubStageCount(),
-                       ad.getStageCount());
+        rec.addRun(ad, viewer_cond, "send+execStep+recv");
         rec.add("screen", int64_t(screen.w));
         rec.add("frames", int64_t(frame_idx));
         rec.add("median_ms_per_iter", med);

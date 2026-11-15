@@ -21,6 +21,41 @@
                 "CMAKE_C_COMPILER": "gcc",
                 "CMAKE_CXX_COMPILER": "g++"
             }
+        },
+        {
+            "name": "macos",
+            "displayName": "macOS (Ninja, Apple Clang, MoltenVK)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "ios-simulator",
+            "displayName": "iOS Simulator (Xcode, static MoltenVK)",
+            "generator": "Xcode",
+            "binaryDir": "${sourceDir}/build-ios-simulator",
+            "cacheVariables": {
+                "CMAKE_SYSTEM_NAME": "iOS",
+                "CMAKE_OSX_SYSROOT": "iphonesimulator",
+                "CMAKE_OSX_ARCHITECTURES": "arm64",
+                "CMAKE_OSX_DEPLOYMENT_TARGET": "16.0",
+                "CMAKE_SUPPRESS_REGENERATION": "ON"
+            }
+        },
+        {
+            "name": "ios-device",
+            "displayName": "iOS device (Xcode, static MoltenVK)",
+            "generator": "Xcode",
+            "binaryDir": "${sourceDir}/build-ios-device",
+            "cacheVariables": {
+                "CMAKE_SYSTEM_NAME": "iOS",
+                "CMAKE_OSX_SYSROOT": "iphoneos",
+                "CMAKE_OSX_ARCHITECTURES": "arm64",
+                "CMAKE_OSX_DEPLOYMENT_TARGET": "16.0",
+                "CMAKE_SUPPRESS_REGENERATION": "ON"
+            }
         }
     ],
     "buildPresets": [
@@ -37,6 +72,20 @@
         {
             "name": "linux-release",
             "configurePreset": "linux"
+        },
+        {
+            "name": "macos-release",
+            "configurePreset": "macos"
+        },
+        {
+            "name": "ios-simulator-release",
+            "configurePreset": "ios-simulator",
+            "configuration": "Release"
+        },
+        {
+            "name": "ios-device-release",
+            "configurePreset": "ios-device",
+            "configuration": "Release"
         }
     ],
     "testPresets": [
@@ -49,6 +98,11 @@
         {
             "name": "linux-release",
             "configurePreset": "linux",
+            "output": { "outputOnFailure": true }
+        },
+        {
+            "name": "macos-release",
+            "configurePreset": "macos",
             "output": { "outputOnFailure": true }
         }
     ]

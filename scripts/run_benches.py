@@ -10,9 +10,8 @@ flags — nothing more. Execution and aggregation stay separate, so this only
 Targets:
   windows   -> powershell scripts/run_benches.ps1   (desktop exes)
   linux     -> bash       scripts/run_benches.sh     (desktop exes)
-  android   -> bash       scripts/pull_android_benches.sh
-               (collects bench.json the on-device app already produced; there
-               is no headless adb run — start each example from the app first)
+  android   -> python     scripts/run_android_benches.py
+               (drives the app on a connected device and pulls each bench.json)
 
 `--target auto` (default) picks windows or linux from the host OS; android must
 be requested explicitly because it talks to a connected device, not this host.
@@ -52,15 +51,12 @@ def _find_bash():
 def build_command(args):
     """Return the argv list for the selected platform script."""
     if args.target == "android":
-        script = SCRIPTS / "pull_android_benches.sh"
-        cmd = _bash(script)
-        cmd += ["-o", args.out_root]
+        cmd = [sys.executable, str(SCRIPTS / "run_android_benches.py"),
+               "-o", args.out_root, "--reps", str(args.reps)]
         if args.only:
-            cmd += ["-n", args.only]
+            cmd += ["--only", args.only]
         if args.serial:
             cmd += ["-s", args.serial]
-        if args.package:
-            cmd += ["-p", args.package]
         if args.list:
             cmd += ["-l"]
         return cmd
@@ -72,7 +68,8 @@ def build_command(args):
             sys.exit("error: neither pwsh nor powershell found on PATH")
         cmd = [pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass",
                "-File", str(script), "-OutRoot", args.out_root,
-               "-BuildDir", args.build_dir, "-DataDir", args.data_dir]
+               "-BuildDir", args.build_dir, "-DataDir", args.data_dir,
+               "-Reps", str(args.reps)]
         if args.only:
             cmd += ["-Only", args.only]  # PowerShell splits "a,b" into an array
         if args.list:
@@ -82,7 +79,8 @@ def build_command(args):
     # linux (and macOS)
     script = SCRIPTS / "run_benches.sh"
     cmd = _bash(script)
-    cmd += ["-o", args.out_root, "-b", args.build_dir, "-d", args.data_dir]
+    cmd += ["-o", args.out_root, "-b", args.build_dir, "-d", args.data_dir,
+            "-r", str(args.reps)]
     if args.only:
         cmd += ["-n", args.only]
     if args.list:
@@ -114,8 +112,9 @@ def main():
                    help="dataset root for the mesh examples (desktop targets)")
     p.add_argument("-n", "--only", default="",
                    help="comma-separated label substrings; only matches run")
+    p.add_argument("-r", "--reps", type=int, default=3,
+                   help="runs per benchmark (default: 3)")
     p.add_argument("--serial", default="", help="adb device serial (android)")
-    p.add_argument("--package", default="", help="app package (android)")
     p.add_argument("-l", "--list", action="store_true",
                    help="list the commands/examples and exit")
     args = p.parse_args()

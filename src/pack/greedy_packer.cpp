@@ -32,7 +32,7 @@ InputAccess AccessOf(const Function& func, size_t input_idx) {
 // Tries to add `func` in front of the substage (producers join after their
 // consumers). Returns false if the placement is structurally impossible.
 bool PushFrontFuncIntoSubStage(const Function& func, SubStage& ss,
-                               const std::set<Variable>& used_vars) {
+                               const VarSet& used_vars) {
     const Variable y = func.getOutputVar();
     const ImgSize y_size = y.getImgSize();
 
@@ -140,6 +140,23 @@ bool PushFrontFuncIntoSubStage(const Function& func, SubStage& ss,
     return true;
 }
 
+}  // namespace
+
+uint32_t ColorBytesPerPixel(const SubStage& ss) {
+    if (ss.shader_type == COMP) {
+        return 0;
+    }
+    uint32_t bytes = 0;
+    for (const auto& v : ss.out_vars) {
+        // VEC3 is stored padded to RGBA32F
+        const uint32_t n = NumComponents(v.getVType());
+        bytes += (n == 3 ? 4 : n) * uint32_t(sizeof(float));
+    }
+    return bytes;
+}
+
+namespace {
+
 bool IsSubStageVkLimitsSatisfied(const SubStage& ss,
                                  const PackingLimits& limits) {
     if (ss.inp_vars.size() > limits.max_input_attachments) {
@@ -157,7 +174,7 @@ bool IsSubStageVkLimitsSatisfied(const SubStage& ss,
             return false;
         }
     }
-    return true;
+    return ColorBytesPerPixel(ss) <= limits.max_color_bytes_per_pixel;
 }
 
 // Edges between `func` and the active substage: consumers of its output
@@ -397,7 +414,7 @@ SubStages PackFunctionsIntoSubStages(const Functions& dirty_funcs,
     }
     // Remaining functions and, per variable, how many remaining functions
     // consume it (for CollectLatestFuncs)
-    std::set<Function> remaining(packable.begin(), packable.end());
+    std::set<Function, FunctionLess> remaining(packable.begin(), packable.end());
     std::unordered_map<uint64_t, uint32_t> pending_consumers;
     for (const auto& f : remaining) {
         for (const auto& x : f.getInputVars()) {
@@ -405,7 +422,7 @@ SubStages PackFunctionsIntoSubStages(const Functions& dirty_funcs,
         }
     }
 
-    std::set<Variable> used_vars(root_vars.begin(), root_vars.end());
+    VarSet used_vars(root_vars.begin(), root_vars.end());
     SubStages substages;  // collected in reverse execution order
     SubStage active;
 
@@ -554,7 +571,7 @@ Stages PackSubStagesIntoStages(SubStages substages,
         }
         if (compatible) {
             // Attachment budget: writes + external input attachments
-            std::set<Variable> attachments;
+            VarSet attachments;
             for (const auto& prev : current.substages) {
                 for (const auto& v : prev.out_vars) {
                     attachments.insert(v);

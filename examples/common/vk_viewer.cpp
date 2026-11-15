@@ -10,6 +10,8 @@
 #include <cstring>
 #include <vector>
 
+#include "dressi/dressi_ad.h"
+
 namespace dressi_examples {
 
 using dressi::CpuImage;
@@ -52,6 +54,7 @@ struct VkViewer::Impl {
 };
 
 bool VkViewer::Impl::init(const std::string& title) {
+    dressi::PrepareVulkanLoaderEnv();
     if (!glfwInit() || !glfwVulkanSupported()) {
         return false;
     }
@@ -67,6 +70,7 @@ bool VkViewer::Impl::init(const std::string& title) {
 
     uint32_t n_glfw_exts = 0;
     const char** glfw_exts = glfwGetRequiredInstanceExtensions(&n_glfw_exts);
+    std::vector<const char*> inst_exts(glfw_exts, glfw_exts + n_glfw_exts);
     VkApplicationInfo app{};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.pApplicationName = "dressi_viewer";
@@ -74,8 +78,13 @@ bool VkViewer::Impl::init(const std::string& title) {
     VkInstanceCreateInfo ici{};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
-    ici.enabledExtensionCount = n_glfw_exts;
-    ici.ppEnabledExtensionNames = glfw_exts;
+#if defined(__APPLE__)
+    // MoltenVK is a portability driver: hidden from the loader without this
+    inst_exts.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+    ici.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#endif
+    ici.enabledExtensionCount = uint32_t(inst_exts.size());
+    ici.ppEnabledExtensionNames = inst_exts.data();
     if (vkCreateInstance(&ici, nullptr, &instance) != VK_SUCCESS) {
         return false;
     }
@@ -119,13 +128,16 @@ bool VkViewer::Impl::init(const std::string& title) {
     qci.queueFamilyIndex = queue_family;
     qci.queueCount = 1;
     qci.pQueuePriorities = &prio;
-    const char* dev_exts[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    std::vector<const char*> dev_exts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+#if defined(__APPLE__)
+    dev_exts.push_back("VK_KHR_portability_subset");
+#endif
     VkDeviceCreateInfo dci{};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    dci.enabledExtensionCount = 1;
-    dci.ppEnabledExtensionNames = dev_exts;
+    dci.enabledExtensionCount = uint32_t(dev_exts.size());
+    dci.ppEnabledExtensionNames = dev_exts.data();
     if (vkCreateDevice(phys, &dci, nullptr, &device) != VK_SUCCESS) {
         return false;
     }

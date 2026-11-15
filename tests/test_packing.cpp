@@ -21,7 +21,7 @@ bool Contains(const Variables& vars, const Variable& v) {
 // Every substage input must be produced by an earlier substage or be a leaf;
 // functions inside a substage must be creation-ordered consistently.
 void CheckTopologicalValidity(const Stages& stages) {
-    std::set<Variable> produced;
+    VarSet produced;
     for (const auto& stage : stages) {
         for (const auto& ss : stage.substages) {
             for (const auto& v : ss.slt_vars) {
@@ -121,6 +121,26 @@ TEST(Packing, OutputLimitForcesSplit) {
         }
     }
     EXPECT_GE(CountSubstages(stages), 3u);
+    CheckLimits(stages, limits);
+}
+
+TEST(Packing, ColorByteBudgetForcesSplit) {
+    // 6 VEC4 outputs = 96 bytes; the budget fits two (VEC3 pads to VEC4)
+    Variable x(VEC3, {8, 8});
+    Variables roots;
+    for (int i = 0; i < 6; i++) {
+        roots.push_back(F::Sin(x * float(i + 1)));
+    }
+    Functions funcs = TraverseFuncs(roots);
+    PackingLimits limits;
+    limits.max_color_bytes_per_pixel = 32;
+    Stages stages = GreedyPack(funcs, roots, limits);
+
+    for (const auto& stage : stages) {
+        for (const auto& ss : stage.substages) {
+            EXPECT_LE(ss.out_vars.size(), 2u);
+        }
+    }
     CheckLimits(stages, limits);
 }
 

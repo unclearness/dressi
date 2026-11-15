@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.28)
 
 project(dressi CXX C)
+if(APPLE)
+    enable_language(OBJC OBJCXX)  # src/vk/metal_limits.mm; OBJC keeps GLFW .m as C
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,13 +19,21 @@ option(DRESSI_BUILD_EXAMPLES "Build examples" ON)
 option(DRESSI_BUILD_PYTHON "Build the Python (torch) bindings" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+# Android and iOS have no prebuilt SPIR-V stack for their targets and no GLFW.
+if(ANDROID OR IOS)
+    set(DRESSI_MOBILE ON)
+else()
+    set(DRESSI_MOBILE OFF)
+endif()
 if(NOT ANDROID)
-    # The desktop Vulkan SDK provides headers/libs (glslang etc.). On Android
-    # everything comes from source-built Khronos repos + the NDK's
-    # libvulkan.so instead; find_package(Vulkan) would create a
-    # Vulkan::Headers target that collides with the fetched Vulkan-Headers
-    # project, so it is skipped there.
+    # The desktop Vulkan SDK provides headers/libs (glslang etc.). iOS only
+    # takes the MoltenVK xcframework from it.
     include(FindVulkanSdk)
+endif()
+if(NOT DRESSI_MOBILE)
+    # On mobile everything else comes from source-built Khronos repos;
+    # find_package(Vulkan) would create a Vulkan::Headers target that collides
+    # with the fetched Vulkan-Headers project, so it is skipped there.
     find_package(Vulkan REQUIRED)
 endif()
 
@@ -31,14 +42,14 @@ include(FetchContent)
 # glslang (runtime GLSL -> SPIR-V compilation for vkw).
 # Desktop: from the Vulkan SDK — its glslang-config.cmake is broken
 # (references a nonexistent <SDK>/Lib/lib/... path), so link the static libs
-# directly. Android: the SDK ships x86_64 archives only, so build the whole
+# directly. Android/iOS: the SDK ships host archives only, so build the whole
 # SPIR-V stack from source, pinned to the SDK's lockstep tag (the three repos
 # tag every SDK release in mutually compatible states).
 add_library(dressi_glslang INTERFACE)
 set(_glslang_libs
     glslang SPIRV MachineIndependent GenericCodeGen OSDependent
     glslang-default-resource-limits SPIRV-Tools-opt SPIRV-Tools)
-if(ANDROID)
+if(DRESSI_MOBILE)
     set(DRESSI_GLSLANG_TAG "vulkan-sdk-1.4.350.0"
         CACHE STRING "Lockstep vulkan-sdk tag for glslang/SPIRV-Tools/SPIRV-Headers")
     set(SPIRV_SKIP_TESTS ON CACHE BOOL "" FORCE)
@@ -76,6 +87,11 @@ if(ANDROID)
     # FetchContent only sets the lowercased spirv-headers_SOURCE_DIR.
     set(SPIRV-Headers_SOURCE_DIR "${spirv-headers_SOURCE_DIR}" CACHE PATH "" FORCE)
     FetchContent_MakeAvailable(spirv-tools glslang)
+    # Both attach the rule generating build-version.inc; Xcode's build system
+    # requires one to depend on the other.
+    if(CMAKE_GENERATOR STREQUAL "Xcode")
+        add_dependencies(SPIRV-Tools-shared SPIRV-Tools-static)
+    endif()
     # Source-built targets propagate their own include dirs; no manual paths.
     target_link_libraries(dressi_glslang INTERFACE
         glslang SPIRV glslang-default-resource-limits SPIRV-Tools-opt SPIRV-Tools)
@@ -102,13 +118,19 @@ else()
     foreach(_lib IN LISTS _glslang_libs)
         list(APPEND _glslang_paths "${DRESSI_VULKAN_SDK_LIB}/lib${_lib}.a")
     endforeach()
-    target_link_libraries(dressi_glslang INTERFACE
-        -Wl,--start-group ${_glslang_paths} -Wl,--end-group)
+    if(APPLE)
+        # ld64 rescans archives on its own and has no --start-group.
+        target_link_libraries(dressi_glslang INTERFACE ${_glslang_paths})
+    else()
+        target_link_libraries(dressi_glslang INTERFACE
+            -Wl,--start-group ${_glslang_paths} -Wl,--end-group)
+    endif()
 endif()
 
 # GLFW: vkw.h includes <GLFW/glfw3.h> on desktop even for headless use.
-# On Android vkw.h switches to <android/native_window.h> and GLFW is unused.
-if(NOT ANDROID)
+# On Android vkw.h switches to <android/native_window.h>; on iOS it builds
+# without a window system. GLFW is unused on both.
+if(NOT DRESSI_MOBILE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
@@ -168,8 +190,9 @@ target_include_directories(dressi_assets SYSTEM INTERFACE
 # glad Vulkan loader (user-provided) for the example live viewer.
 # The SDK include path comes first so the full vk_video header set is used
 # (the glad drop bundles only a subset). Desktop-only: the Android app blits
-# via ANativeWindow instead of a second Vulkan instance.
-if(NOT ANDROID)
+# via ANativeWindow and the iOS app via UIImageView instead of a second Vulkan
+# instance.
+if(NOT DRESSI_MOBILE)
     add_library(dressi_glad STATIC third_party/glad/src/vulkan.c)
     target_include_directories(dressi_glad SYSTEM PUBLIC
         "${DRESSI_VULKAN_SDK_INCLUDE}"
@@ -208,8 +231,29 @@ if(ANDROID)
     # shadow the sysroot's older vulkan.h; the NDK's libvulkan.so is linked
     # directly. vkw.h uses ANativeWindow + __android_log under __ANDROID__.
     target_link_libraries(dressi_vkw PUBLIC Vulkan::Headers vulkan android log)
+elseif(IOS)
+    # Apps cannot dlopen a loader: MoltenVK links statically, with no loader
+    # or ICD manifest involved. Device and simulator slices differ.
+    if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+        set(_mvk_slice "ios-arm64_x86_64-simulator")
+    else()
+        set(_mvk_slice "ios-arm64")
+    endif()
+    target_compile_definitions(dressi_vkw PUBLIC VKW_STATIC_VULKAN=1)
+    target_link_libraries(dressi_vkw PUBLIC Vulkan::Headers
+        "${DRESSI_VULKAN_SDK_LIB}/MoltenVK.xcframework/${_mvk_slice}/libMoltenVK.a"
+        "-framework Metal" "-framework Foundation" "-framework QuartzCore"
+        "-framework CoreGraphics" "-framework IOSurface" "-framework UIKit")
 else()
     target_link_libraries(dressi_vkw PUBLIC Vulkan::Vulkan glfw)
+endif()
+if(APPLE AND NOT IOS)
+    # MoltenVK is a loader ICD here, and the SDK does not register it anywhere
+    # the loader looks by default; dressi points the loader at this manifest
+    # at startup unless VK_DRIVER_FILES / VK_ICD_FILENAMES is already set.
+    target_compile_definitions(dressi_vkw PUBLIC
+        DRESSI_MOLTENVK_ICD="${DRESSI_VULKAN_SDK_ROOT}/share/vulkan/icd.d/MoltenVK_icd.json"
+        DRESSI_VK_LAYER_DIR="${DRESSI_VULKAN_SDK_ROOT}/share/vulkan/explicit_layer.d")
 endif()
 if(NOT WIN32)
     # The glslang/SPIRV-Tools static archives pull in pthread and dlopen.
@@ -221,9 +265,15 @@ endif()
 # dressi: the Dressi-AD library
 # ------------------------------------------------------------------------------
 file(GLOB_RECURSE DRESSI_SOURCES CONFIGURE_DEPENDS src/*.cpp)
+if(APPLE)
+    list(APPEND DRESSI_SOURCES src/vk/metal_limits.mm)
+endif()
 add_library(dressi STATIC ${DRESSI_SOURCES})
 target_include_directories(dressi PUBLIC include PRIVATE src)
 target_link_libraries(dressi PUBLIC dressi_vkw PRIVATE spdlog::spdlog)
+if(APPLE)
+    target_link_libraries(dressi PUBLIC "-framework Metal" "-framework Foundation")
+endif()
 if(MSVC)
     target_compile_options(dressi PRIVATE /W4 /permissive- /bigobj /utf-8)
 endif()
@@ -234,8 +284,8 @@ endif()
 
 # Provision example / test datasets into data/ (large, .gitignore'd). Only
 # needed when something consumes them; skipped for a library-only build and
-# on Android (the app bundles a curated subset via Gradle).
-if((DRESSI_BUILD_TESTS OR DRESSI_BUILD_EXAMPLES) AND NOT ANDROID)
+# on mobile (the apps bundle a curated subset from a desktop checkout's data/).
+if((DRESSI_BUILD_TESTS OR DRESSI_BUILD_EXAMPLES) AND NOT DRESSI_MOBILE)
     include(FetchAssets)
 endif()
 
@@ -246,9 +296,13 @@ endif()
 
 if(DRESSI_BUILD_EXAMPLES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/CMakeLists.txt")
     add_subdirectory(examples)
-    if(NOT ANDROID)
+    if(NOT DRESSI_MOBILE)
         add_subdirectory(tools)
     endif()
+endif()
+
+if(IOS)
+    add_subdirectory(ios)
 endif()
 
 if(DRESSI_BUILD_PYTHON)

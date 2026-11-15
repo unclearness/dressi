@@ -19,8 +19,8 @@ public:
     void clearCache();
 
 private:
-    std::map<Variable, CpuTensor> m_bindings;
-    std::map<Variable, CpuTensor> m_cache;
+    VarMap<CpuTensor> m_bindings;
+    VarMap<CpuTensor> m_cache;
 };
 
 CpuTensor CpuTensorFromImage(const CpuImage& img, VType vtype);

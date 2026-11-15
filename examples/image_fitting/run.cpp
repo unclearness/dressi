@@ -25,11 +25,14 @@ int dressi_examples::RunImageFitting(const std::vector<std::string>& args,
     std::string out_dir = "imgfit_out";  // holds only bench.json
     int snapshot = 0;  // save the tonemapped param every N iters (0 = off)
     int view_interval = 1;  // live-viewer refresh cadence (iters); 0 = off
+    bool no_view = false;  // no viewer at all: the `none` benchmark condition
     for (const std::string& arg : args) {
         if (arg.rfind("--out-dir=", 0) == 0) {
             out_dir = arg.substr(10);
         } else if (arg.rfind("--snapshot=", 0) == 0) {
             snapshot = std::stoi(arg.substr(11));
+        } else if (arg.rfind("--no-view", 0) == 0) {
+            no_view = arg != "--no-view=0";
         } else if (arg.rfind("--view-interval=", 0) == 0) {
             view_interval = std::stoi(arg.substr(16));
         }
@@ -81,9 +84,10 @@ int dressi_examples::RunImageFitting(const std::vector<std::string>& args,
 
     // Live view: the evolving tonemapped parameter next to the target
     // (display cost is excluded from the timed section)
-    auto viewer = host.makeViewer(512, 256,
+    auto viewer = MakeViewer(host, no_view, 512, 256,
                                   "image fitting (rendered | target)");
     bool viewer_open = viewer->valid();
+    const std::string viewer_cond = ViewerCondition(viewer_open, view_interval);
     const auto tonemapped_param = [&]() {
         CpuImage img = dressi_ad.recvImg(param);
         for (float& v : img.data) {
@@ -150,8 +154,7 @@ int dressi_examples::RunImageFitting(const std::vector<std::string>& args,
                  median_ms, opt_warmup, warmup_ms, first_build_ms);
     std::filesystem::create_directories(out_dir);
     BenchRecord rec("image_fitting", dressi_ad.getDeviceName());
-    rec.addPacking(dressi_ad.getFuncCount(), dressi_ad.getSubStageCount(),
-                   dressi_ad.getStageCount());
+    rec.addRun(dressi_ad, viewer_cond, "execStep");
     rec.add("screen", int64_t(W));
     rec.add("iters", int64_t(n_iters));
     rec.add("median_ms_per_iter", median_ms);

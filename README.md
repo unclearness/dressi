@@ -47,7 +47,7 @@ Shader Packing and Soft Rasterization"* (Takimoto et al., Eurographics 2022,
 </table>
 
 All sequences are live optimization / rendering progress on the Vulkan
-engine (every example also runs unmodified on Android — see below):
+engine (every example also runs unmodified on Android and iOS — see below):
 
 📹 **shape_texture_optimization on a phone** — camera capture of the
 on-device run (Xiaomi 17T Pro, Dimensity 9500 / Mali-G1-Ultra), showing the
@@ -61,8 +61,8 @@ specialized for differentiable rendering: computational graphs of 2D images
 are compiled to GLSL fragment shaders, packed into a minimal number of Vulkan
 render passes (**Reactive Shader Packing**), and executed on any Vulkan-capable
 GPU. Because the backend is portable Vulkan — not CUDA — the *same* graph runs
-on a workstation GPU, an integrated GPU, a pure-CPU software rasterizer, and a
-phone, to the same numerical quality. The public C++ API follows Appendix A of
+on a workstation GPU, an integrated GPU, Apple Silicon through MoltenVK, a
+pure-CPU software rasterizer, and a phone, to the same numerical quality. The public C++ API follows Appendix A of
 the paper.
 
 Vertex-position gradients come from two techniques: **HardSoftRas** from the
@@ -74,25 +74,26 @@ builds on the same engine.
 
 ### Highlights
 
-- **Hardware-agnostic.** One Vulkan engine, verified across 8 devices — three
-  NVIDIA discrete GPUs, an Intel iGPU, two phones (Dimensity 9500 / Mali-G1-Ultra,
-  Xiaomi 17T Pro and Dimensity 9200+ / Mali-G715, Xiaomi 13T Pro), a tablet
+- **Hardware-agnostic.** One Vulkan engine, verified across 12 devices — four
+  discrete GPUs (three NVIDIA, one AMD), two Intel iGPUs, Apple M5 Pro
+  (MoltenVK), three phones (Dimensity 9500 / Mali-G1-Ultra, Xiaomi 17T Pro;
+  Dimensity 9200+ / Mali-G715, Xiaomi 13T Pro; A14, iPhone 12 Pro), a tablet
   (Snapdragon 8 Gen 2 / Adreno 740, Xiaomi Pad 6S), and CPU software Vulkan
   (llvmpipe).
 - **Faster than the baselines below 2048².** Beats nvdiffrast (GL & CUDA) and
   DRTK at every resolution on the paper's silhouette task, by baking the whole
   forward + backward + optimizer into pre-recorded command buffers with zero
   per-iteration host traffic.
-- **Runs on phones, unmodified.** Every example runs on Android with the
-  same parameters and results as desktop (see
-  [README-android.md](README-android.md)).
+- **Runs on phones, unmodified.** Every example runs on Android and iOS with
+  the same parameters and results as desktop (see
+  [README-android.md](README-android.md) and [README-ios.md](README-ios.md)).
 - **PyTorch drop-in.** `dressi.torch` is an nvdiffrast-compatible API with no
   CUDA requirement.
 
 ## Contents
 
 - [Building](#building) — [Windows](#windows), [Linux](#linux),
-  [Android](#android), [PyTorch bindings](#pytorch-bindings-dressitorch)
+  [macOS](#macos), [iOS](#ios), [Android](#android), [PyTorch bindings](#pytorch-bindings-dressitorch)
 - [Examples](#examples)
 - [Performance](#performance) · full tables in [docs/benchmarks.md](docs/benchmarks.md)
 - [How it works](#how-it-works) · details in [docs/algorithm.md](docs/algorithm.md)
@@ -140,6 +141,55 @@ ctest --preset linux-release
 ./build/examples/image_fitting
 ```
 
+### macOS
+
+Runs on MoltenVK; tested on Apple Silicon (M5 Pro, macOS 26). You need the Xcode
+command line tools, CMake and Ninja (for example from Homebrew), and the
+[Vulkan SDK](https://vulkan.lunarg.com/) from the LunarG installer. The SDK is
+found under `~/VulkanSDK/<ver>/macOS` even if `setup-env.sh` was not sourced,
+and the loader is pointed at its MoltenVK at runtime, so no environment
+variables are needed.
+
+```sh
+xcode-select --install
+brew install cmake ninja
+git clone --recursive <this repo>
+cmake --preset macos               # Ninja, Release; also downloads the datasets
+cmake --build --preset macos-release
+ctest --preset macos-release       # all tests (labels: cpu / gpu)
+./build/examples/image_fitting
+./build/examples/texture_optimization data/bunny
+```
+
+Binaries sit in `build/examples/`, without the `Release/` level or `.exe` of the
+Windows commands below.
+
+### iOS
+
+`ios/` builds two apps with static MoltenVK: `DressiExamples` (every example,
+with a live view) and `DressiTests` (all gtest suites). Build on a Mac with
+Xcode and the Vulkan SDK, including its iOS component. Run the macOS configure
+first: it downloads the datasets that get bundled into the app. The presets use
+the Xcode generator because device builds must be signed.
+
+```sh
+# one-time: datasets, plus the small env map the app bundles
+cmake --preset macos
+cmake --build --preset macos-release --target downsample_exr
+./build/tools/downsample_exr data/suburban_garden_4k.exr data/suburban_garden_512.exr 512
+
+# device (use the ios-simulator preset and -sdk iphonesimulator for the simulator)
+cmake --preset ios-device -DDRESSI_IOS_TEAM=<team id>
+xcodebuild -project build-ios-device/dressi.xcodeproj \
+    -target DressiTests -target DressiExamples -configuration Release \
+    -sdk iphoneos -allowProvisioningUpdates
+xcrun devicectl device install app --device <udid> \
+    build-ios-device/ios/Release-iphoneos/DressiExamples.app
+```
+
+Simulator steps, signing, unattended runs and platform notes:
+**[README-ios.md](README-ios.md)**.
+
 ### Android
 
 `android/` is an Android Studio project bundling all the examples into one APK
@@ -167,6 +217,16 @@ uv sync
 cmake --preset msvc -DDRESSI_BUILD_PYTHON=ON -DPython_EXECUTABLE=.venv/Scripts/python.exe
 cmake --build --preset release --target dressi_py
 uv run pytest tests/python
+```
+
+On macOS `uv sync` installs the CPU build of torch, and the bindings run on
+MoltenVK:
+
+```sh
+uv sync
+cmake --preset macos -DDRESSI_BUILD_PYTHON=ON -DPython_EXECUTABLE=$PWD/.venv/bin/python
+cmake --build --preset macos-release --target dressi_py
+PYTHONPATH=python uv run pytest tests/python
 ```
 
 ### Datasets
@@ -239,26 +299,35 @@ so median (not mean) is the stable metric.
 
 ### On-device / cross-device
 
-The identical backward graph runs from a workstation GPU, through an Intel
-integrated GPU, down to phones — to the **same quality**. Median ms/iter
-(default parameters):
+The identical backward graph runs from a workstation GPU, through AMD and
+Intel GPUs and Apple Silicon, down to phones — to the **same quality**.
+Median ms/iter of three runs (pbr_shading: FPS), default parameters, no viewer;
+the fastest device per example in bold:
 
-| example (params) | RTX PRO 6000 | Iris Xe (iGPU) | Adreno 740 (tablet) | Mali-G1-Ultra (phone) | Mali-G715 (phone) | quality |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| image_fitting 64px | 0.056 | 0.32 | 0.23 | 1.01 | 2.04 | max err 0.0005 |
-| texture_optimization 256px | 0.96 | 15.7 | 48.4 | 23.6 | 24.3 | 98.7% |
-| silhouette (aa) 128px | 1.21 | 3.34 | 21.6 | 11.5 | 21.2 | IoU 0.95 |
-| silhouette (hardsoftras) 128px | 2.16 | 9.96 | 23.7 | 32.5 | 36.6 | IoU 0.95 |
-| pbr_material 256px | 2.73 | 17.9 | 55.2 | 40.9 | 47.0 | PSNR 20.6 dB |
-| pbr_envmap 192px | 8.53 | 105 | 304 | 181 | 200 | PSNR 18.1 dB |
-| pbr_shading 512px | 677 FPS | 116 FPS | 56 FPS | 19 FPS | 42 FPS | — |
+| device | image_fitting<br>64px | texture<br>256px | silhouette aa<br>128px | silhouette hardsoftras<br>128px | pbr_material<br>256px | pbr_envmap<br>192px | pbr_shading<br>512px (FPS) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| RTX PRO 6000 Blackwell | 0.059 | 0.96 | **1.19** | **2.10** | **2.75** | 8.64 | 840 |
+| RTX 6000 Ada | **0.045** | **0.88** | 1.24 | 2.93 | 3.52 | **8.09** | 1023 |
+| RTX 3090 | 0.086 | 2.17 | 2.00 | 3.59 | 5.54 | 14.2 | 412 |
+| AMD RX 9070 XT | 0.067 | 1.93 | 2.27 | 3.92 | 4.58 | 11.4 | 723 |
+| Intel Iris Xe (iGPU) | 0.33 | 15.8 | 3.76 | 14.3 | 20.4 | 138 | 152 |
+| Intel UHD 730 (iGPU) | 0.13 | 55.3 | 5.84 | 9.05 | 28.4 | 332 | 180 |
+| Apple M5 Pro | 0.29 | 4.66 | 2.05 | 5.90 | 4.62 | 45.8 | **1360** |
+| Adreno 740 (tablet) | 0.39 | 32.4 | 16.3 | 25.3 | 62.4 | 316 | 63 |
+| Mali-G1-Ultra (phone) | 0.43 | 23.2 | 13.0 | 32.2 | 43.6 | 184 | 18 |
+| Mali-G715 (phone) | 2.41 | 19.3 | 17.7 | 31.3 | 45.1 | 203 | 42 |
+| Apple A14 (iPhone 12 Pro) | 2.16 | 52.6 | 31.7 | 29.5 | 56.8 | 367 | 75 |
+| llvmpipe (CPU) | 0.67 | 127 | 27.7 | 45.7 | 121 | 657 | 83 |
+| *quality (all devices)* | max err 0.0005 | 98.7% | IoU 0.94–0.96 | IoU 0.94–0.95 | PSNR 20.65 dB (llvmpipe 20.48) | PSNR 18.1 dB | — |
 
-Quality is device-independent (validated across all 8 devices). Verified on
-three discrete NVIDIA GPUs, the Intel iGPU, two phones (Dimensity 9500 /
-Mali-G1-Ultra, Xiaomi 17T Pro and Dimensity 9200+ / Mali-G715, Xiaomi 13T Pro),
-a tablet (Snapdragon 8 Gen 2 / Adreno 740, Xiaomi Pad 6S), and CPU software
-Vulkan (llvmpipe) — the full 8-device table, warmup and packing columns are in
-**[docs/benchmarks.md](docs/benchmarks.md)**.
+Quality is device-independent (last row). The phones are Dimensity 9500 /
+Mali-G1-Ultra (Xiaomi 17T Pro), Dimensity 9200+ / Mali-G715 (Xiaomi 13T Pro),
+and A14 (iPhone 12 Pro); the tablet is Snapdragon 8 Gen 2 / Adreno 740 (Xiaomi
+Pad 6S). The Apple rows run on MoltenVK with its Metal argument buffers
+disabled, and iOS also writes a GPU timestamp after every stage; both are
+workarounds that cost some speed. The Iris Xe figures vary 14–32% between runs
+on every example but pbr_envmap. The same figures with ranges, warmup, packing,
+and per-device quality are in **[docs/benchmarks.md](docs/benchmarks.md)**.
 
 ### vs the paper, nvdiffrast, and DRTK
 
@@ -270,8 +339,10 @@ buffers with zero per-iteration host traffic, so below 2048² — where the PyTo
 baselines are host-launch bound — it runs at the cost of the GPU work itself,
 and rematerialization keeps it ahead at 4096² too. The scaling shape matches the
 paper (fixed per-pass overhead at low resolution, pixel work above 1024²). Full
-tables (vs the paper's Table 4, vs nvdiffrast GL/CUDA and DRTK) and the
-discussion: **[docs/benchmarks.md](docs/benchmarks.md)**.
+tables (vs the paper's Table 4, vs nvdiffrast GL/CUDA and DRTK), the same sweep
+on Apple M5 Pro and iPhone 12 Pro, and the discussion:
+**[docs/benchmarks.md](docs/benchmarks.md)**. The baselines need CUDA, so they
+have no Apple numbers.
 
 ## How it works
 
@@ -367,5 +438,6 @@ examples/         image_fitting / texture_optimization / silhouette_optimization
                   / shape_texture_optimization / pbr_shading
                   / pbr_material_optimization / pbr_envmap_optimization
 android/          one-APK Android app (all examples; Kotlin + JNI)
+ios/              iOS examples app + gtest host (UIKit, static MoltenVK)
 tests/            GoogleTest suites (ctest labels: cpu / gpu) + tests/python
 ```

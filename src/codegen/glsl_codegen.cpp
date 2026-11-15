@@ -118,7 +118,7 @@ std::string GenerateShaderImpl(const SubStage& ss, bool comp,
 
     // Substage-local normalized names: inputs first, then generated vars,
     // deterministically ordered for stable golden tests and shader caching.
-    std::map<Variable, std::string> names;
+    VarMap<std::string> names;
     uint32_t next_local = 0;
     const auto local_name = [&](const Variable& v) {
         auto it = names.find(v);
@@ -510,7 +510,7 @@ vec2 dressi_hammersley(uint i, uint n) {
                code.rfind("__prefilter_conv__", 0) == 0 ||
                code.rfind("__brdf_lut__", 0) == 0;
     };
-    std::map<Variable, size_t> slt_binding;
+    VarMap<size_t> slt_binding;
     for (size_t i = 0; i < ss.slt_vars.size(); i++) {
         slt_binding[ss.slt_vars[i]] = i;
     }
@@ -540,12 +540,12 @@ vec2 dressi_hammersley(uint i, uint n) {
             }
         }
     }
-    std::map<Variable, size_t> tex_binding;
+    VarMap<size_t> tex_binding;
     for (size_t i = 0; i < ss.tex_vars.size(); i++) {
         tex_binding[ss.tex_vars[i]] = i;
     }
     // tex/sampled inputs are referenced through {sN} markers, never loaded
-    std::map<Variable, bool> needs_generic_load;
+    VarMap<bool> needs_generic_load;
     for (const auto& f : ss.funcs) {
         const bool special = is_special(f);
         const std::string& code = NodeAccess::Node(f)->fwd_code;

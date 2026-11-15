@@ -1,11 +1,13 @@
 # Build directories
 /build/
 /build-android/
+/build-ios-*/
 /out/
 /cmake-build-*/
 
 # Android app (Gradle)
 /android/.gradle/
+/android/.kotlin/
 /android/local.properties
 /android/app/build/
 /android/app/.cxx/
@@ -22,12 +24,14 @@ CMakeUserPresets.json
 
 # Misc
 *.log
+.DS_Store
 Testing/
 
 # Python
 /.venv/
 __pycache__/
 *.pyd
+python/dressi/_C*.so
 .pytest_cache/
 
 # Example outputs

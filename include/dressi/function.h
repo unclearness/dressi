@@ -54,20 +54,23 @@ using Functions = std::vector<Function>;
 
 }  // namespace dressi
 
+namespace dressi {
+
+// Orders by creation id (see VariableLess for why this is not std::less).
+struct FunctionLess {
+    bool operator()(const Function& a, const Function& b) const {
+        const uint64_t l = a ? a.id() : 0;
+        const uint64_t r = b ? b.id() : 0;
+        return l < r;
+    }
+};
+
+}  // namespace dressi
+
 template <>
 struct std::hash<dressi::Function> {
     size_t operator()(const dressi::Function& f) const {
         return f ? std::hash<uint64_t>()(f.id()) : 0;
-    }
-};
-
-template <>
-struct std::less<dressi::Function> {
-    bool operator()(const dressi::Function& a,
-                    const dressi::Function& b) const {
-        const uint64_t l = a ? a.id() : 0;
-        const uint64_t r = b ? b.id() : 0;
-        return l < r;
     }
 };
 

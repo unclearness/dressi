@@ -5,7 +5,18 @@
 #include <string>
 #include <vector>
 
+namespace dressi {
+class DressiAD;
+}
+
 namespace dressi_examples {
+
+// The run's viewer condition (docs/benchmarks.md, "Measurement conditions"),
+// from what actually happened rather than from the flags: `viewer_open` is
+// false for --no-view and for a host without a display. "partial" is a live
+// viewer updated less often than every iteration, which is not a benchmark
+// condition.
+std::string ViewerCondition(bool viewer_open, int view_interval);
 
 // Median of per-iteration wall-time samples (0 when empty). Steady-state
 // median with the warmup excluded is THE cross-device metric — see
@@ -34,13 +45,16 @@ public:
     void add(const std::string& key, int64_t value);
     void add(const std::string& key, bool value);
 
-    // Record the packing reduction as three keys (funcs, substages, stages):
-    // the unpacked backward-graph op count collapsed by substage packing then
-    // by stage packing into Vulkan render passes. Pass the steady-state build's
-    // DressiAD::getFuncCount()/getSubStageCount()/getStageCount(). The packed
-    // counts are DEVICE-DEPENDENT — greedy fusion is bounded by the physical
-    // device's Vulkan limits, so the same graph packs differently per GPU.
-    void addPacking(int64_t funcs, int64_t substages, int64_t stages);
+    // Records what the figure depends on: the viewer condition, the timed
+    // scope (execStep, send+execStep, or send+execStep+recv), build type,
+    // commit, driver version, packing mode, and the packing reduction as three
+    // keys (funcs, substages, stages): the unpacked backward-graph op count
+    // collapsed by substage packing then by stage packing into Vulkan render
+    // passes. Call it after the steady-state build. The packed counts are
+    // DEVICE-DEPENDENT — greedy fusion is bounded by the physical device's
+    // Vulkan limits, so the same graph packs differently per GPU.
+    void addRun(const dressi::DressiAD& ad, const std::string& viewer,
+                const std::string& timed_scope);
 
     void save(const std::string& path) const;
 

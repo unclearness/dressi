@@ -10,8 +10,7 @@ FetchContent_MakeAvailable(googletest)
 
 include(GoogleTest)
 
-# CPU-only tests (always runnable)
-add_executable(dressi_tests_cpu
+set(_cpu_sources
     test_graph.cpp
     test_infer.cpp
     test_cpu_eval.cpp
@@ -20,19 +19,8 @@ add_executable(dressi_tests_cpu
     test_codegen.cpp
     test_softras.cpp
     test_antialias.cpp)
-target_link_libraries(dressi_tests_cpu PRIVATE dressi GTest::gtest_main)
-target_include_directories(dressi_tests_cpu PRIVATE ${CMAKE_SOURCE_DIR}/src)
-if(MSVC)
-    target_compile_options(dressi_tests_cpu PRIVATE /W4 /permissive- /bigobj)
-endif()
-gtest_discover_tests(dressi_tests_cpu PROPERTIES LABELS cpu)
-
-# GPU-dependent tests (require a Vulkan device; excluded via `ctest -LE gpu`)
-add_executable(test_vk_smoke test_vk_smoke.cpp)
-target_link_libraries(test_vk_smoke PRIVATE dressi_vkw GTest::gtest_main)
-gtest_discover_tests(test_vk_smoke PROPERTIES LABELS gpu)
-
-add_executable(dressi_tests_gpu
+set(_smoke_sources test_vk_smoke.cpp)
+set(_gpu_sources
     test_executor_naive.cpp
     test_executor_rsp.cpp
     test_reactive.cpp
@@ -41,6 +29,33 @@ add_executable(dressi_tests_gpu
     test_antialias_gpu.cpp
     test_grad_export.cpp
     test_ibl_gpu.cpp)
+
+if(IOS)
+    # An iOS binary only runs as an app: ios/ hosts all three suites.
+    list(TRANSFORM _cpu_sources PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
+    list(TRANSFORM _smoke_sources PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
+    list(TRANSFORM _gpu_sources PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
+    set(DRESSI_TESTS_CPU_SOURCES ${_cpu_sources} PARENT_SCOPE)
+    set(DRESSI_TESTS_SMOKE_SOURCES ${_smoke_sources} PARENT_SCOPE)
+    set(DRESSI_TESTS_GPU_SOURCES ${_gpu_sources} PARENT_SCOPE)
+    return()
+endif()
+
+# CPU-only tests (always runnable)
+add_executable(dressi_tests_cpu ${_cpu_sources})
+target_link_libraries(dressi_tests_cpu PRIVATE dressi GTest::gtest_main)
+target_include_directories(dressi_tests_cpu PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(MSVC)
+    target_compile_options(dressi_tests_cpu PRIVATE /W4 /permissive- /bigobj)
+endif()
+gtest_discover_tests(dressi_tests_cpu PROPERTIES LABELS cpu)
+
+# GPU-dependent tests (require a Vulkan device; excluded via `ctest -LE gpu`)
+add_executable(test_vk_smoke ${_smoke_sources})
+target_link_libraries(test_vk_smoke PRIVATE dressi GTest::gtest_main)
+gtest_discover_tests(test_vk_smoke PROPERTIES LABELS gpu)
+
+add_executable(dressi_tests_gpu ${_gpu_sources})
 target_link_libraries(dressi_tests_gpu PRIVATE dressi GTest::gtest_main)
 target_include_directories(dressi_tests_gpu PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(MSVC)

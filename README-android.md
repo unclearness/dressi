@@ -104,16 +104,19 @@ they drive the device over USB. On Windows run them in **Git Bash**
 and needs Git Bash / WSL.
 
 ```sh
-# desktop: run the examples normally; bench.json lands in texopt_out/,
-# silopt_out_hardsoftras/ etc.
-
-# per Android device: run the examples in the app (RELEASE build — see
-# "Build & run"), then pull every bench.json in one shot. Silhouette runs
-# as two technique buttons, each into its own out-dir
-# (files/out/silhouette_optimization_hardsoftras and _aa).
-scripts/pull_android_benches.sh -o bench_results/<device>
+# per Android device: install the RELEASE build (see "Build & run") and keep the
+# device awake and unlocked. This starts each example with no viewer, three
+# times, and pulls every bench.json. Conditions: docs/benchmarks.md.
+python scripts/run_android_benches.py -s <serial> --reps 1 -o out/discard   # after an install
+python scripts/run_android_benches.py -s <serial> -o bench_results/<device>
 python scripts/bench_summary.py bench_results/<device>
 ```
+
+To collect runs started by hand in the app instead, use
+`scripts/pull_android_benches.sh -o bench_results/<device>`. Those are `live`
+unless the "No viewer" box was ticked. Silhouette runs as two technique buttons,
+each into its own out-dir (files/out/silhouette_optimization_hardsoftras and
+_aa).
 
 The pull script uses `run-as`, so it needs a debuggable build — the
 release benchmarking build above qualifies. To pull a single record by

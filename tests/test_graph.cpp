@@ -26,7 +26,7 @@ TEST(Graph, IdOrderingAndMapKey) {
     Variable b;
     EXPECT_LT(a.id(), b.id());
 
-    std::map<Variable, int> m;
+    VarMap<int> m;
     m[a] = 1;
     m[b] = 2;
     EXPECT_EQ(m.at(a), 1);

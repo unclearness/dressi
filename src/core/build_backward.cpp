@@ -70,7 +70,7 @@ std::tuple<Variables, Variables> BuildBackward(const Variable& loss_var) {
                  "Loss must be a float scalar/vector Variable");
 
     // Mapping from a forward variable to its gradient contributions
-    std::map<Variable, Variables> fwd_bwds_map;
+    VarMap<Variables> fwd_bwds_map;
 
     // Pops the latest-created function first. Creation order is a valid
     // topological order (a function only consumes older variables), so all

@@ -1,5 +1,8 @@
 #include "bench.h"
 
+#include "dressi/dressi_ad.h"
+#include "dressi_git_commit.h"
+
 #include <spdlog/fmt/fmt.h>
 
 #include <algorithm>
@@ -14,6 +17,11 @@
 #include <windows.h>
 #elif defined(__ANDROID__)
 #include <sys/system_properties.h>
+#include <unistd.h>
+#elif defined(__APPLE__)
+#include <TargetConditionals.h>
+#include <sys/sysctl.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 #else
 #include <sys/utsname.h>
@@ -35,7 +43,16 @@ std::string SysProp(const char* name) {
 }
 #endif
 
-#if !defined(_WIN32) && !defined(__ANDROID__)
+#if defined(__APPLE__)
+std::string SysctlString(const char* name) {
+    char buf[256] = {};
+    size_t n = sizeof(buf);
+    return sysctlbyname(name, buf, &n, nullptr, 0) == 0 ? std::string(buf)
+                                                        : std::string();
+}
+#endif
+
+#if !defined(_WIN32) && !defined(__ANDROID__) && !defined(__APPLE__)
 // First value of "<key><spaces>: value" in a /proc- or os-release-style file
 std::string FileValue(const char* path, const std::string& key,
                       char delim = ':') {
@@ -88,6 +105,15 @@ std::string OsString() {
         os += " (" + (manu.empty() ? "" : manu + " ") + model + ")";
     }
     return os;
+#elif defined(__APPLE__)
+    // kern.osproductversion is the marketing version; hw.machine names the
+    // phone/tablet model on iOS and just "arm64" on a Mac.
+    std::string os = "Apple OS " + SysctlString("kern.osproductversion");
+    const std::string model = SysctlString("hw.machine");
+    if (!model.empty()) {
+        os += " (" + model + ")";
+    }
+    return os;
 #else
     std::string os = FileValue("/etc/os-release", "PRETTY_NAME", '=');
     if (os.empty()) {
@@ -118,6 +144,8 @@ std::string CpuString() {
         return manu.empty() ? model : manu + " " + model;
     }
     return SysProp("ro.hardware");
+#elif defined(__APPLE__)
+    return SysctlString("machdep.cpu.brand_string");
 #else
     return FileValue("/proc/cpuinfo", "model name");
 #endif
@@ -131,6 +159,12 @@ double RamGb() {
         return double(st.ullTotalPhys) / (1024.0 * 1024.0 * 1024.0);
     }
     return 0.0;
+#elif defined(__APPLE__)
+    uint64_t bytes = 0;
+    size_t n = sizeof(bytes);
+    return sysctlbyname("hw.memsize", &bytes, &n, nullptr, 0) == 0
+                   ? double(bytes) / (1024.0 * 1024.0 * 1024.0)
+                   : 0.0;
 #else
     const long pages = sysconf(_SC_PHYS_PAGES);
     const long page = sysconf(_SC_PAGE_SIZE);
@@ -151,6 +185,16 @@ double MedianMs(std::vector<double> samples) {
     return samples[samples.size() / 2];
 }
 
+std::string ViewerCondition(bool viewer_open, int view_interval) {
+    if (!viewer_open) {
+        return "none";
+    }
+    if (view_interval == 0) {
+        return "idle";
+    }
+    return view_interval == 1 ? "live" : "partial";
+}
+
 double WarmupMs(const std::vector<double>& warmup_samples,
                 double steady_median) {
     double sum = 0.0;
@@ -164,7 +208,11 @@ double WarmupMs(const std::vector<double>& warmup_samples,
 
 BenchRecord::BenchRecord(const std::string& example,
                          const std::string& device) {
-#ifdef __ANDROID__
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    const char* platform = "ios";
+#elif defined(__APPLE__)
+    const char* platform = "macos";
+#elif defined(__ANDROID__)
     const char* platform = "android";
 #elif defined(_WIN32)
     const char* platform = "windows";
@@ -196,11 +244,20 @@ void BenchRecord::add(const std::string& key, bool value) {
     m_json += fmt::format(",\"{}\":{}", key, value ? "true" : "false");
 }
 
-void BenchRecord::addPacking(int64_t funcs, int64_t substages,
-                             int64_t stages) {
-    add("funcs", funcs);
-    add("substages", substages);
-    add("stages", stages);
+void BenchRecord::addRun(const dressi::DressiAD& ad, const std::string& viewer,
+                         const std::string& timed_scope) {
+    add("viewer", viewer);
+    add("timed_scope", timed_scope);
+    add("build_type", std::string(DRESSI_BUILD_TYPE));
+    add("git_commit", std::string(DRESSI_GIT_COMMIT));
+    add("driver_version", ad.getDriverVersion());
+    add("packing_mode",
+        std::string(ad.getPackingMode() == dressi::DressiAD::PackingMode::RSP
+                            ? "rsp"
+                            : "naive"));
+    add("funcs", int64_t(ad.getFuncCount()));
+    add("substages", int64_t(ad.getSubStageCount()));
+    add("stages", int64_t(ad.getStageCount()));
 }
 
 void BenchRecord::save(const std::string& path) const {
