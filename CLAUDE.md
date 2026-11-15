@@ -38,7 +38,7 @@ macOS: `cmake --preset macos`, `cmake --build --preset macos-release`,
   d-suffix selection. Only the Release config is exercised regularly.
 - `third_party/VulkanWrapper` is a git submodule pointing at the fork
   `unclearness/VulkanWrapper`, branch `dressi2-sdk-compat` (SDK 1.4.x compat
-  patches). Never `add_subdirectory` it — its bundled third_party breaks under
+  patches, plus MoltenVK portability enumeration and iOS support). Never `add_subdirectory` it — its bundled third_party breaks under
   CMake 4.x; the `dressi_vkw` target compiles `vkw.cpp` against SDK libs.
 - `SPDLOG_LEVEL=debug` prints per-phase execStep timings plus a per-stage
   GPU timestamp breakdown every 100 frames; `DRESSI_VK_DEBUG=1` enables
