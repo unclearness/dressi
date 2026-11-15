@@ -18,10 +18,10 @@ source) → MoltenVK → Metal. Requires iOS 16+ on arm64.
 | iPhone 12 Pro (A14, iOS 18.7) | 132/132 | all 8 entries, default parameters |
 | iOS Simulator | 132/132 | 6 of 8 entries; see below |
 
-Median steady-state on the iPhone 12 Pro: image_fitting 2.4 ms/iter,
-texture_optimization 52.1, silhouette (hardsoftras) 28.9, silhouette (aa) 32.5,
-pbr_shading 13.4 ms/frame (74 FPS), pbr_material_optimization 57.4,
-pbr_envmap_optimization 362, all with the viewer off. Quality matches the desktop builds. The other
+Median steady-state on the iPhone 12 Pro, viewer off, median of three runs:
+image_fitting 2.16 ms/iter, texture_optimization 52.6, silhouette (hardsoftras)
+29.5, silhouette (aa) 31.7, pbr_shading 13.3 ms/frame (75 FPS),
+pbr_material_optimization 56.8, pbr_envmap_optimization 367. Quality matches the desktop builds. The other
 devices and the Avocado resolution sweep are in
 [docs/benchmarks.md](docs/benchmarks.md).
 

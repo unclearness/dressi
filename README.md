@@ -74,11 +74,12 @@ builds on the same engine.
 
 ### Highlights
 
-- **Hardware-agnostic.** One Vulkan engine, verified across 10 devices — three
-  NVIDIA discrete GPUs, an Intel iGPU, Apple M5 Pro (MoltenVK), three phones
-  (Dimensity 9500 / Mali-G1-Ultra, Xiaomi 17T Pro; Dimensity 9200+ / Mali-G715,
-  Xiaomi 13T Pro; A14, iPhone 12 Pro), a tablet (Snapdragon 8 Gen 2 / Adreno 740,
-  Xiaomi Pad 6S), and CPU software Vulkan (llvmpipe).
+- **Hardware-agnostic.** One Vulkan engine, verified across 12 devices — four
+  discrete GPUs (three NVIDIA, one AMD), two Intel iGPUs, Apple M5 Pro
+  (MoltenVK), three phones (Dimensity 9500 / Mali-G1-Ultra, Xiaomi 17T Pro;
+  Dimensity 9200+ / Mali-G715, Xiaomi 13T Pro; A14, iPhone 12 Pro), a tablet
+  (Snapdragon 8 Gen 2 / Adreno 740, Xiaomi Pad 6S), and CPU software Vulkan
+  (llvmpipe).
 - **Faster than the baselines below 2048².** Beats nvdiffrast (GL & CUDA) and
   DRTK at every resolution on the paper's silhouette task, by baking the whole
   forward + backward + optimizer into pre-recorded command buffers with zero
@@ -298,31 +299,30 @@ so median (not mean) is the stable metric.
 
 ### On-device / cross-device
 
-The identical backward graph runs from a workstation GPU, through an Intel
-integrated GPU and Apple Silicon, down to phones — to the **same quality**.
-Median ms/iter (default parameters):
+The identical backward graph runs from a workstation GPU, through AMD and
+Intel GPUs and Apple Silicon, down to phones — to the **same quality**.
+Median ms/iter of three runs, default parameters, no viewer:
 
-| example (params) | RTX PRO 6000 | Apple M5 Pro | Iris Xe (iGPU) | Adreno 740 (tablet) | Mali-G1-Ultra (phone) | Mali-G715 (phone) | Apple A14 (iPhone 12 Pro) | quality |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| image_fitting 64px | 0.056 | 0.32 | 0.32 | 0.23 | 1.01 | 2.04 | 2.4 | max err 0.0005 |
-| texture_optimization 256px | 0.96 | 4.66 | 15.7 | 48.4 | 23.6 | 24.3 | 52.1 | 98.7% |
-| silhouette (aa) 128px | 1.21 | 2.05 | 3.34 | 21.6 | 11.5 | 21.2 | 32.5 | IoU 0.95 |
-| silhouette (hardsoftras) 128px | 2.16 | 6.42 | 9.96 | 23.7 | 32.5 | 36.6 | 28.9 | IoU 0.95 |
-| pbr_material 256px | 2.73 | 4.11 | 17.9 | 55.2 | 40.9 | 47.0 | 57.4 | PSNR 20.6 dB |
-| pbr_envmap 192px | 8.53 | 45.8 | 105 | 304 | 181 | 200 | 362 | PSNR 18.1 dB |
-| pbr_shading 512px (viewer on) | 677 FPS | 583 FPS | 116 FPS | 56 FPS | 19 FPS | 42 FPS | 86 FPS | — |
+| example (params) | RTX PRO 6000 | RX 9070 XT | Apple M5 Pro | Iris Xe (iGPU) | Adreno 740 (tablet) | Mali-G1-Ultra (phone) | Mali-G715 (phone) | Apple A14 (iPhone 12 Pro) | quality |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| image_fitting 64px | 0.059 | 0.067 | 0.29 | 0.33 | 0.39 | 0.43 | 2.41 | 2.16 | max err 0.0005 |
+| texture_optimization 256px | 0.96 | 1.93 | 4.66 | 15.8 | 32.4 | 23.2 | 19.3 | 52.6 | 98.7% |
+| silhouette (aa) 128px | 1.19 | 2.27 | 2.05 | 3.76 | 16.3 | 13.0 | 17.7 | 31.7 | IoU 0.95 |
+| silhouette (hardsoftras) 128px | 2.10 | 3.92 | 5.90 | 14.3 | 25.3 | 32.2 | 31.3 | 29.5 | IoU 0.95 |
+| pbr_material 256px | 2.75 | 4.58 | 4.62 | 20.4 | 62.4 | 43.6 | 45.1 | 56.8 | PSNR 20.6 dB |
+| pbr_envmap 192px | 8.64 | 11.4 | 45.8 | 138 | 316 | 184 | 203 | 367 | PSNR 18.1 dB |
+| pbr_shading 512px (FPS) | 840 FPS | 723 FPS | 1360 FPS | 152 FPS | 63 FPS | 18 FPS | 42 FPS | 75 FPS | — |
 
-Quality is device-independent (validated across all 10 devices). Verified on
-three discrete NVIDIA GPUs, the Intel iGPU, Apple M5 Pro, three phones
-(Dimensity 9500 / Mali-G1-Ultra, Xiaomi 17T Pro; Dimensity 9200+ / Mali-G715,
-Xiaomi 13T Pro; A14, iPhone 12 Pro), a tablet (Snapdragon 8 Gen 2 / Adreno 740,
-Xiaomi Pad 6S), and CPU software Vulkan (llvmpipe). The Apple columns run on
-MoltenVK with its Metal argument buffers disabled, and iOS also writes a GPU
-timestamp after every stage; both are workarounds that cost some speed.
-`pbr_shading` rows keep the live viewer on, as the older rows were recorded, and
-it matters: the M5 Pro reaches about 1200 FPS with it off. The full 10-device
-table, warmup and packing columns are in
-**[docs/benchmarks.md](docs/benchmarks.md)**.
+Quality is device-independent (validated across all 12 devices). Verified on
+three discrete NVIDIA GPUs, an AMD RX 9070 XT, two Intel iGPUs (Iris Xe, UHD
+730), Apple M5 Pro, three phones (Dimensity 9500 / Mali-G1-Ultra, Xiaomi 17T Pro;
+Dimensity 9200+ / Mali-G715, Xiaomi 13T Pro; A14, iPhone 12 Pro), a tablet
+(Snapdragon 8 Gen 2 / Adreno 740, Xiaomi Pad 6S), and CPU software Vulkan
+(llvmpipe). The Apple columns run on MoltenVK with its Metal argument buffers
+disabled, and iOS also writes a GPU timestamp after every stage; both are
+workarounds that cost some speed. The Iris Xe figures vary 14–32% between runs
+on every row but pbr_envmap. The full 12-device table, with ranges, warmup, and
+packing, is in **[docs/benchmarks.md](docs/benchmarks.md)**.
 
 ### vs the paper, nvdiffrast, and DRTK
 

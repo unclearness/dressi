@@ -145,9 +145,11 @@ report a raw mean-over-all-iters:
   pulls `bench.json` after exit 0: a failed run leaves the previous one in the
   container). Sub-millisecond runs on M5 Pro have two speed modes, so compare
   C++ and Python within one mode; the cause is unknown.
-- **`pbr_shading` table rows are viewer-ON** (older batch runs and the Android
-  app never turned it off); `run_benches` now does, so its output does not
-  compare with them. M5 Pro: 583 FPS on, ~1200 off. Keep conditions equal
+- **The cross-device tables are `none`, 3 runs, on all 12 devices** (README
+  and `docs/benchmarks.md`). Short rows spread between runs (image_fitting on
+  the phones and UHD 730: 11-54%; every Iris Xe row but pbr_envmap: 14-32%), so
+  compare those as min-max ranges, not medians. `live` moves the median either
+  way (pbr_shading M5 Pro: 583 FPS live, 1360 `none`): keep conditions equal
   before comparing devices.
 - **Experiment conditions are defined in `docs/benchmarks.md`
   ("Measurement conditions"): follow it, and state the viewer condition
@@ -161,8 +163,9 @@ report a raw mean-over-all-iters:
   the GPU in a power-saving state (RTX 3090, Windows: P3, pbr_envmap 2.3x
   slower; the RTX PRO 6000 stays at P0). `run_benches` writes `nvidia-smi`
   samples to `gpu_state.csv` per run and `bench_summary.py` prints a "GPU state
-  warning" when a run was mostly outside P0. Fix on NVIDIA/Windows: "Prefer
-  maximum performance" for the example exes in the NVIDIA Control Panel.
+  warning" when a run was mostly outside P0. Guard on NVIDIA/Windows: "Prefer
+  maximum performance" for the example exes in the NVIDIA Control Panel (the
+  3090 stayed at P0 with it, but also reached P0 without it in that session).
 - **Disable the live viewer when benchmarking.** The display path perturbs
   the measured execStep median even though it sits outside the timed
   section (image_fitting: 0.063 ms with `--view-interval=0` vs ~0.21 ms

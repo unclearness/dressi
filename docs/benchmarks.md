@@ -108,13 +108,15 @@ inside the loop.
   P0 either way. On NVIDIA under Windows, set "Power management mode" to "Prefer
   maximum performance" for every example exe (NVIDIA Control Panel, Manage 3D
   settings, Program Settings). The Linux counterpart is PowerMizer in
-  `nvidia-settings`. Neither setting has been tested yet, so the result has to
-  be checked:
+  `nvidia-settings`. With the setting in place, every RTX 3090 run was at P0,
+  but in that session the default also reached P0, so it guards against the
+  power-saving state rather than being shown to fix it. Check the result:
   `run_benches` samples `nvidia-smi` every 200 ms into `gpu_state.csv` next to
   each `bench.json`, and `bench_summary.py` prints a "GPU state warning" under a
   table when a run spent most of its samples outside P0. Runs with fewer than 3
   samples of the benchmarked GPU are not judged, and other vendors are not
-  checked.
+  checked. Intel's Windows driver UI (Intel Graphics Software 1.100) offers no
+  such power setting.
 - Laptops and tablets: record whether they ran on AC, USB, or battery.
 - Mobile: release build, app in the foreground, screen on and unlocked, no
   touches during the run.
@@ -173,200 +175,237 @@ Every batch runner measures `none`, with 3 runs per benchmark:
 `run_ios_benches.py`. The apps stay `live` when started by hand, unless the
 Android app's "No viewer" box is ticked.
 
-The M5 Pro and A14 have been measured again under these rules at `fa748c1`, but
-the tables below do not carry those figures yet. The A14 pass came straight after
-an install, before the discard rule existed. Its image_fitting figure is
-therefore a separate three-run session, 2.162 ms (2.130–2.167). The other A14
-rows keep all three runs, because their first pass is not an outlier.
+The [cross-device table](#cross-device--12-vulkan-devices) follows these rules on
+all twelve devices: `none`, three runs, a clean Release build, the parameters
+above, and a discarded first pass on Android. The builds range from `c218ebb` to
+`0152ee3`, but the engine and example code is the same in all of them; the later
+commits change only scripts, docs, and the Linux SDK lookup. Where the rows fall
+short of the rules:
 
-The RTX 3090 measured at `0ba1fd8` ran with the GPU at P3 on the GPU-bound
-rows and has to be measured again under the full-performance rule.
+- The A14 pass came straight after an install, before the discard rule existed.
+  Its image_fitting figure is therefore a separate three-run session, 2.162 ms
+  (2.130–2.167), where the first pass had given 1.572 ms. The other A14 rows keep
+  all three runs, because their first run is not an outlier.
+- The RTX PRO 6000 and RTX 6000 Ada were measured before `run_benches` recorded
+  the GPU state. A later full rerun on the RTX PRO 6000 with the sampler was at P0
+  in every run, and its medians are within 2% of the table (image_fitting 0.057
+  against 0.059 ms). The Ada has no GPU-state record.
+- `gpu_state.csv` needs `nvidia-smi`, so the RX 9070 XT, UHD 730, and Iris Xe have
+  none. On the Linux host, sysfs sampled outside the runner showed the UHD 730 at
+  its 1500 MHz maximum while busy, and the RX 9070 XT at 3.34 GHz in 227 of 311
+  busy samples and near 1.56 GHz in the rest. Those samples could not be matched
+  to examples.
+- The Iris Xe did not give stable figures in three sessions (note ¹ under the
+  table), so its rows are published with their ranges.
+- Some idle apps stayed open: a video editor and two browsers on the RTX PRO 6000,
+  Chrome and a remote-desktop session on the Ada and llvmpipe host, VS Code,
+  Chrome, and the Copilot app on the RTX 3090, and VS Code on the Iris Xe (the
+  measuring session ran inside it).
 
-The [cross-device table](#cross-device--10-vulkan-devices) predates these rules
-and mixes conditions:
+## Cross-device — 12 Vulkan devices
 
-- Android rows are `live`, except where a record predates the viewer. The Adreno
-  740 image_fitting figure (0.225 ms) is most likely `none`: that APK was
-  installed before the example gained a viewer (bab660f), and the same device
-  gives about 0.71 ms with one.
-- `pbr_shading` rows are `live`; the other Apple rows are `idle`, and iOS
-  silhouette is `idle` where desktop silhouette is `none`.
-- `pbr_shading` used 60 frames on desktop and 200 on mobile.
-- Repetition varies: one run on most devices, the median of three on the M5 Pro,
-  the mean of two on the A14.
-
-## Cross-device — 10 Vulkan devices
-
-The identical backward graph runs across three discrete NVIDIA GPUs, an Intel
-iGPU, Apple M5 Pro, three phones, a tablet, and a CPU software rasterizer — to
-the same quality.
+The identical backward graph runs on four discrete GPUs (three NVIDIA, one AMD),
+two Intel iGPUs, Apple M5 Pro, three phones, a tablet, and a CPU software
+rasterizer, to the same quality.
 
 Devices:
 
 - **NVIDIA RTX PRO 6000 Blackwell Max-Q** — Ryzen Threadripper 9970X, Win 11 Pro
 - **NVIDIA RTX 6000 Ada** — Xeon w7-3465X, Ubuntu 24.04
-- **NVIDIA GeForce RTX 3090** — Core i9-10850K, Win 11 Pro
-- **Intel Iris Xe Graphics** — Core i7-1370P, Win 11 (integrated GPU)
+- **NVIDIA GeForce RTX 3090** — Core i9-10850K, Win 11 Pro (driver 610.88)
+- **AMD Radeon RX 9070 XT** — Core i3-14100, Ubuntu 24.04, Mesa 25.2.8 (RADV)
+- **Intel Iris Xe Graphics** — Core i7-1370P, Win 11 (integrated GPU, laptop on AC)
+- **Intel UHD Graphics 730** — the same Core i3-14100 host as the RX 9070 XT, Mesa
+  25.2.8 (ANV; integrated GPU)
 - **Apple M5 Pro** — 48 GB, macOS 26.6, MoltenVK 1.4.1
 - **Adreno 740** — Snapdragon 8 Gen 2, Xiaomi Pad 6S, Android 16 (tablet)
 - **Mali-G1-Ultra MC12** — MediaTek Dimensity 9500, Xiaomi 17T Pro, Android 16 (phone)
 - **Mali-G715-Immortalis MC11** — MediaTek Dimensity 9200+, Xiaomi 13T Pro, Android 15 (phone)
 - **Apple A14** — iPhone 12 Pro, iOS 18.7, MoltenVK 1.4.1 (phone)
-- **llvmpipe (LLVM 20.1.2)** — Mesa lavapipe, CPU software Vulkan
+- **llvmpipe (LLVM 20.1.2)** — Mesa lavapipe on the RTX 6000 Ada host, CPU
+  software Vulkan
 
-**Vulkan versions.** Built with the Vulkan SDK **1.4.350.0** (glslang for GLSL
-compilation; the Android build pins glslang / SPIRV-Tools / Vulkan-Headers to
-the matching `vulkan-sdk-1.4.350.0` tag). The engine creates its instance at
-API version **Vulkan 1.1** and requests no feature above it (only the optional
-`geometryShader` device feature, for `gl_PrimitiveID`), so any Vulkan 1.1+
-driver runs the identical graph. All ten devices' drivers report Vulkan 1.1
-or newer — e.g. the primary RTX PRO 6000 Blackwell reports Vulkan **1.4.329**
-(NVIDIA 596.72).
+**Vulkan versions.** Built with the Vulkan SDK **1.4.350.0** (1.4.350.1 on the
+RX 9070 XT / UHD 730 host; glslang for GLSL compilation; the Android build pins
+glslang / SPIRV-Tools / Vulkan-Headers to the matching `vulkan-sdk-1.4.350.0`
+tag). The engine creates its instance at API version **Vulkan 1.1** and requests
+no feature above it (only the optional `geometryShader` device feature, for
+`gl_PrimitiveID`), so any Vulkan 1.1+ driver runs the identical graph. All twelve
+devices' drivers report Vulkan 1.1 or newer.
 
-Median ms/iter (default parameters), `packing f→s→st` = unpacked backward-graph
-ops → substages → Vulkan render passes:
+Every row is `viewer: none`, the median of three run medians with their min–max
+range, and warmup is the median across runs ([Measurement
+conditions](#measurement-conditions)). `packing f→s→st` = unpacked backward-graph
+ops → substages → Vulkan render passes. Timed scopes differ by example (`execStep`
+for image_fitting, silhouette, and pbr_envmap; `send+execStep` for texture and
+pbr_material; `send+execStep+recv` for pbr_shading), so compare within an example
+only. The fastest device per example is in bold.
 
-| example | device | median ms/iter | warmup ms (first) | packing f→s→st | quality |
-| --- | --- | ---: | ---: | ---: | --- |
-| **image_fitting**<br>64px 150it | RTX PRO 6000 Blackwell | 0.056 | 269 (266) | 36→8→8 | max err 0.0005 |
-| | RTX 6000 Ada | **0.048** | 288 (284) | 36→8→8 | max err 0.0005 |
-| | RTX 3090 | 0.116 | 592 (578) | 36→8→8 | max err 0.0005 |
-| | Iris Xe (iGPU) | 0.320 | 136 (127) | 36→8→8 | max err 0.0005 |
-| | Apple M5 Pro | 0.324 | 65 (59) | 36→8→8 | max err 0.0005 |
-| | Adreno 740 (tablet) | 0.225 | 193 (136) | 36→8→8 | max err 0.0005 |
-| | Mali-G1-Ultra (phone) | 1.007 | 171 (123) | 36→8→8 | max err 0.0005 |
-| | Mali-G715 (phone) | 2.038 | 345 (256) | 36→8→8 | max err 0.0005 |
-| | Apple A14 (iPhone) | 2.38 | 105 (102) | 36→8→8 | max err 0.0005 |
-| | llvmpipe (CPU) | 0.729 | 160 (138) | 36→8→8 | max err 0.0005 |
-| **texture_optimization**<br>256px 6v 1500it | RTX PRO 6000 Blackwell | 0.958 | 243 (214) | 232→25→25 | 98.7% |
-| | RTX 6000 Ada | **0.889** | 362 (347) | 232→25→25 | 98.7% |
-| | RTX 3090 | 2.248 | 635 (580) | 232→25→25 | 98.7% |
-| | Iris Xe (iGPU) | 15.695 | 338 (293) | 232→27→25 | 98.7% |
-| | Apple M5 Pro | 4.663 | 160 (116) | 232→38→37 | 98.7% |
-| | Adreno 740 (tablet) | 48.361 | 706 (516) | 232→26→25 | 98.7% |
-| | Mali-G1-Ultra (phone) | 23.565 | 1103 (531) | 232→26→25 | 98.7% |
-| | Mali-G715 (phone) | 24.255 | 1689 (772) | 232→26→25 | 98.7% |
-| | Apple A14 (iPhone) | 52.06 | 383 (274) | 232→38→37 | 98.7% |
-| | llvmpipe (CPU) | 129.7 | 614 (561) | 232→25→25 | 98.7% |
-| **silhouette (aa)**<br>128px 8v 150it | RTX PRO 6000 Blackwell | **1.213** | 644 (496) | 802→38→38 | IoU 0.9529 |
-| | RTX 6000 Ada | 1.261 | 595 (506) | 802→38→38 | IoU 0.9529 |
-| | RTX 3090 | 2.813 | 2256 (1749) | 802→38→38 | IoU 0.9529 |
-| | Iris Xe (iGPU) | 3.339 | 393 (284) | 802→61→53 | IoU 0.9544 |
-| | Apple M5 Pro | 2.049 | 357 (236) | 802→39→38 | IoU 0.9544 |
-| | Adreno 740 (tablet) | 21.572 | 1612 (798) | 802→53→47 | IoU 0.9447 |
-| | Mali-G1-Ultra (phone) | 11.519 | 8131 (2012) | 802→53→47 | IoU 0.9550 |
-| | Mali-G715 (phone) | 21.244 | 2728 (1228) | 802→53→47 | IoU 0.9559 |
-| | Apple A14 (iPhone) | 32.55 | 402 (438) | 802→39→38 | IoU 0.9520 |
-| | llvmpipe (CPU) | 28.20 | 1352 (666) | 802→38→38 | IoU 0.9473 |
-| **silhouette (hardsoftras)**<br>128px 8v 150it | RTX PRO 6000 Blackwell | **2.163** | 1179 (776) | 3962→123→58 | IoU 0.9514 |
-| | RTX 6000 Ada | 3.009 | 951 (695) | 3962→123→58 | IoU 0.9514 |
-| | RTX 3090 | 6.824 | 2900 (2167) | 3962→123→58 | IoU 0.9514 |
-| | Iris Xe (iGPU) | 9.956 | 907 (584) | 3962→202→68 | IoU 0.9491 |
-| | Apple M5 Pro | 6.418 | 772 (478) | 3962→126→61 | IoU 0.9507 |
-| | Adreno 740 (tablet) | 23.661 | 3502 (1587) | 3962→185→64 | IoU 0.9406 |
-| | Mali-G1-Ultra (phone) | 32.455 | 5520 (1794) | 3962→174→64 | IoU 0.9542 |
-| | Mali-G715 (phone) | 36.626 | 6576 (2818) | 3962→174→64 | IoU 0.9512 |
-| | Apple A14 (iPhone) | 28.88 | 1384 (888) | 3962→126→61 | IoU 0.9502 |
-| | llvmpipe (CPU) | 46.91 | 1384 (806) | 3962→123→58 | IoU 0.9506 |
-| **pbr_material_optimization**<br>albedo 256px tex512 6v 1200it | RTX PRO 6000 Blackwell | **2.727** | 1362 (964) | 3593→74→42 | PSNR 20.65 dB |
-| | RTX 6000 Ada | 3.510 | 1220 (927) | 3593→74→42 | PSNR 20.65 dB |
-| | RTX 3090 | 6.042 | 3539 (2661) | 3593→74→42 | PSNR 20.65 dB |
-| | Iris Xe (iGPU) | 17.923 | 1019 (788) | 3593→146→49 | PSNR 20.65 dB |
-| | Apple M5 Pro | 4.107 | 1018 (613) | 3593→89→50 | PSNR 20.65 dB |
-| | Adreno 740 (tablet) | 55.171 | 3786 (1868) | 3593→135→49 | PSNR 20.65 dB |
-| | Mali-G1-Ultra (phone) | 40.891 | 7667 (3336) | 3593→125→49 | PSNR 20.65 dB |
-| | Mali-G715 (phone) | 46.994 | 7875 (3632) | 3593→125→49 | PSNR 20.65 dB |
-| | Apple A14 (iPhone) | 57.41 | 1637 (1338) | 3593→89→50 | PSNR 20.65 dB |
-| | llvmpipe (CPU) | 117.7 | 2098 (1353) | 3593→74→42 | PSNR 20.48 dB |
-| **pbr_envmap_optimization**²<br>192px env64 4v 1500it | RTX PRO 6000 Blackwell | 8.532 | 1980 (1642) | 2436→43→36 | PSNR 18.26 dB |
-| | RTX 6000 Ada | **8.193** | 904 (777) | 2436→43→36 | PSNR 18.26 dB |
-| | RTX 3090 | 14.012 | 6494 (4582) | 2436→43→36 | PSNR 18.26 dB |
-| | Iris Xe (iGPU) | 105.30 | 833 (792) | 2436→54→38 | PSNR 18.26 dB |
-| | Apple M5 Pro³ | 45.78 | 620 (512) | 2444→52→40 | PSNR 18.11 dB |
-| | Adreno 740 (tablet) | 304.1 | 3124 (2041) | 2436→53→38 | PSNR 18.26 dB |
-| | Mali-G1-Ultra (phone) | 181.1 | 8252 (3800) | 2436→50→37 | PSNR 18.23 dB |
-| | Mali-G715 (phone) | 200.2 | 10312 (5076) | 2436→50→37 | PSNR 18.26 dB |
-| | Apple A14 (iPhone)³ | 362.0 | — (1232) | 2444→52→40 | PSNR 18.11 dB |
-| | llvmpipe (CPU) | 669.0 | 2043 (1757) | 2436→43→36 | PSNR 18.25 dB |
-| **pbr_shading**<br>512px 60 frames¹ | RTX PRO 6000 Blackwell | 1.477 (677 FPS) | 305 (289) | 286→5→5 | 677 FPS |
-| | RTX 6000 Ada | **1.040** (961 FPS) | 538 (526) | 286→5→5 | 961 FPS |
-| | RTX 3090 | 2.948 (339 FPS) | 789 (764) | 286→5→5 | 339 FPS |
-| | Iris Xe (iGPU) | 8.660 (116 FPS) | 702 (654) | 286→11→5 | 116 FPS |
-| | Apple M5 Pro | 1.714 (583 FPS) | 179 (173) | 286→5→5 | 583 FPS |
-| | Adreno 740 (tablet) | 17.717 (56 FPS) | 825 (638) | 286→11→5 | 56 FPS |
-| | Mali-G1-Ultra (phone) | 53.746 (19 FPS) | 779 (671) | 286→10→5 | 19 FPS |
-| | Mali-G715 (phone) | 24.044 (42 FPS) | 1206 (973) | 286→10→5 | 42 FPS |
-| | Apple A14 (iPhone) | 11.67 (86 FPS) | 360 (377) | 286→5→5 | 86 FPS |
-| | llvmpipe (CPU) | 11.97 (84 FPS) | 894 (719) | 286→5→5 | 84 FPS |
+| example | device | median ms/iter | min–max | warmup ms (first) | packing f→s→st | quality |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| **image_fitting**<br>64px 150it | RTX PRO 6000 Blackwell | 0.059 | 0.058–0.060 | 212 (210) | 36→8→8 | max err 0.0005 |
+|  | RTX 6000 Ada | **0.045** | 0.044–0.048 | 237 (233) | 36→8→8 | max err 0.0005 |
+|  | RTX 3090 | 0.086 | 0.083–0.090 | 268 (264) | 36→8→8 | max err 0.0005 |
+|  | RX 9070 XT | 0.067 | 0.067–0.067 | 86 (84) | 36→8→8 | max err 0.0005 |
+|  | Iris Xe (iGPU)¹ | 0.334 | 0.318–0.426 | 146 (141) | 36→8→8 | max err 0.0005 |
+|  | UHD 730 (iGPU)⁴ | 0.132 | 0.099–0.170 | 90 (86) | 36→8→8 | max err 0.0005 |
+|  | Apple M5 Pro | 0.285 | 0.277–0.286 | 86 (81) | 36→8→8 | max err 0.0005 |
+|  | Adreno 740 (tablet)⁴ | 0.386 | 0.382–0.425 | 332 (246) | 36→8→8 | max err 0.0005 |
+|  | Mali-G1-Ultra (phone)⁴ | 0.428 | 0.394–0.484 | 244 (180) | 36→8→8 | max err 0.0005 |
+|  | Mali-G715 (phone)⁴ | 2.408 | 2.257–2.700 | 306 (218) | 36→8→8 | max err 0.0005 |
+|  | Apple A14 (iPhone)⁵ | 2.162 | 2.130–2.167 | 95 (98) | 36→8→8 | max err 0.0005 |
+|  | llvmpipe (CPU) | 0.669 | 0.665–0.682 | 154 (133) | 36→8→8 | max err 0.0005 |
+| **texture_optimization**<br>256px 6v 1500it | RTX PRO 6000 Blackwell | 0.956 | 0.954–0.960 | 313 (287) | 232→25→25 | 98.7% |
+|  | RTX 6000 Ada | **0.880** | 0.876–0.887 | 362 (347) | 232→25→25 | 98.7% |
+|  | RTX 3090² | 2.172 | 1.808–2.223 | 404 (373) | 232→25→25 | 98.7% |
+|  | RX 9070 XT | 1.929 | 1.908–1.949 | 163 (154) | 232→25→25 | 98.7% |
+|  | Iris Xe (iGPU)¹ | 15.777 | 14.891–19.015 | 343 (312) | 232→27→25 | 98.7% |
+|  | UHD 730 (iGPU) | 55.251 | 55.202–55.300 | 218 (251) | 232→25→25 | 98.7% |
+|  | Apple M5 Pro | 4.658 | 4.653–4.660 | 180 (139) | 232→38→37 | 98.7% |
+|  | Adreno 740 (tablet) | 32.364 | 32.211–32.408 | 1098 (636) | 232→26→25 | 98.7% |
+|  | Mali-G1-Ultra (phone) | 23.178 | 22.717–23.446 | 1009 (589) | 232→26→25 | 98.7% |
+|  | Mali-G715 (phone) | 19.250 | 19.241–19.375 | 1424 (697) | 232→26→25 | 98.7% |
+|  | Apple A14 (iPhone) | 52.582 | 51.524–53.669 | 316 (285) | 232→38→37 | 98.7% |
+|  | llvmpipe (CPU) | 127.101 | 126.365–127.572 | 594 (559) | 232→25→25 | 98.7% |
+| **silhouette (aa)**<br>128px 8v 150it | RTX PRO 6000 Blackwell | **1.194** | 1.194–1.216 | 655 (509) | 802→38→38 | IoU 0.9529 |
+|  | RTX 6000 Ada | 1.238 | 1.235–1.244 | 587 (498) | 802→38→38 | IoU 0.9529 |
+|  | RTX 3090² | 2.001 | 1.702–2.097 | 964 (734) | 802→38→38 | IoU 0.9529 |
+|  | RX 9070 XT | 2.273 | 2.266–2.276 | 363 (289) | 802→38→38 | IoU 0.9484 |
+|  | Iris Xe (iGPU)¹ | 3.758 | 2.854–3.989 | 507 (392) | 802→61→53 | IoU 0.9544 |
+|  | UHD 730 (iGPU) | 5.839 | 5.833–5.841 | 420 (335) | 802→38→38 | IoU 0.9543 |
+|  | Apple M5 Pro | 2.053 | 2.045–2.096 | 342 (240) | 802→39→38 | IoU 0.9544 |
+|  | Adreno 740 (tablet) | 16.332 | 15.386–16.500 | 1762 (942) | 802→53→47 | IoU 0.9447 |
+|  | Mali-G1-Ultra (phone) | 13.026 | 12.964–13.092 | 7216 (2071) | 802→53→47 | IoU 0.9550 |
+|  | Mali-G715 (phone)³ | 17.748 | 16.068–19.522 | 2777 (1316) | 802→53→47 | IoU 0.9559 |
+|  | Apple A14 (iPhone) | 31.659 | 31.353–31.758 | 438 (441) | 802→39→38 | IoU 0.9520 |
+|  | llvmpipe (CPU) | 27.747 | 27.743–27.883 | 1296 (636) | 802→38→38 | IoU 0.9473 |
+| **silhouette (hardsoftras)**<br>128px 8v 150it | RTX PRO 6000 Blackwell | **2.104** | 2.096–2.138 | 1167 (776) | 3962→123→58 | IoU 0.9514 |
+|  | RTX 6000 Ada | 2.930 | 2.929–2.967 | 969 (698) | 3962→123→58 | IoU 0.9514 |
+|  | RTX 3090 | 3.588 | 3.500–3.730 | 1751 (1132) | 3962→123→58 | IoU 0.9514 |
+|  | RX 9070 XT | 3.917 | 3.888–3.968 | 709 (461) | 3962→123→58 | IoU 0.9494 |
+|  | Iris Xe (iGPU)¹ | 14.285 | 11.499–14.481 | 1328 (875) | 3962→202→68 | IoU 0.9491 |
+|  | UHD 730 (iGPU) | 9.051 | 8.943–9.082 | 742 (498) | 3962→123→58 | IoU 0.9476 |
+|  | Apple M5 Pro | 5.903 | 5.795–5.908 | 741 (464) | 3962→126→61 | IoU 0.9507 |
+|  | Adreno 740 (tablet) | 25.307 | 25.033–26.051 | 3615 (1738) | 3962→185→64 | IoU 0.9406 |
+|  | Mali-G1-Ultra (phone) | 32.190 | 31.701–32.314 | 4940 (1810) | 3962→174→64 | IoU 0.9542 |
+|  | Mali-G715 (phone) | 31.337 | 30.250–32.239 | 6902 (2261) | 3962→174→64 | IoU 0.9512 |
+|  | Apple A14 (iPhone) | 29.537 | 29.454–30.008 | 1339 (891) | 3962→126→61 | IoU 0.9502 |
+|  | llvmpipe (CPU) | 45.707 | 45.296–45.718 | 1404 (798) | 3962→123→58 | IoU 0.9506 |
+| **pbr_material_optimization**<br>albedo 256px tex512 6v 1200it | RTX PRO 6000 Blackwell | **2.749** | 2.698–2.767 | 1365 (990) | 3593→74→42 | PSNR 20.65 dB |
+|  | RTX 6000 Ada | 3.523 | 3.493–3.586 | 1160 (899) | 3593→74→42 | PSNR 20.65 dB |
+|  | RTX 3090² | 5.539 | 4.803–5.592 | 2177 (1564) | 3593→74→42 | PSNR 20.65 dB |
+|  | RX 9070 XT | 4.578 | 4.566–4.731 | 892 (646) | 3593→74→42 | PSNR 20.65 dB |
+|  | Iris Xe (iGPU)¹ | 20.427 | 15.739–20.547 | 1465 (1122) | 3593→146→49 | PSNR 20.65 dB |
+|  | UHD 730 (iGPU) | 28.360 | 28.336–28.363 | 986 (736) | 3593→74→42 | PSNR 20.65 dB |
+|  | Apple M5 Pro | 4.620 | 4.295–4.646 | 1021 (647) | 3593→89→50 | PSNR 20.65 dB |
+|  | Adreno 740 (tablet) | 62.445 | 61.027–62.578 | 3601 (1910) | 3593→135→49 | PSNR 20.65 dB |
+|  | Mali-G1-Ultra (phone) | 43.633 | 43.585–43.657 | 6346 (2121) | 3593→125→49 | PSNR 20.65 dB |
+|  | Mali-G715 (phone) | 45.068 | 44.531–45.333 | 6760 (2564) | 3593→125→49 | PSNR 20.65 dB |
+|  | Apple A14 (iPhone) | 56.793 | 53.686–56.872 | 1752 (1343) | 3593→89→50 | PSNR 20.65 dB |
+|  | llvmpipe (CPU) | 120.816 | 119.839–121.214 | 2063 (1335) | 3593→74→42 | PSNR 20.48 dB |
+| **pbr_envmap_optimization**<br>192px env64 4v 1500it | RTX PRO 6000 Blackwell | 8.641 | 8.608–8.650 | 892 (790) | 2444→43→36 | PSNR 18.11 dB |
+|  | RTX 6000 Ada | **8.091** | 8.091–8.107 | 894 (766) | 2444→43→36 | PSNR 18.11 dB |
+|  | RTX 3090 | 14.238 | 14.037–14.973 | 1409 (1217) | 2444→43→36 | PSNR 18.11 dB |
+|  | RX 9070 XT | 11.424 | 11.404–11.426 | 824 (532) | 2444→43→36 | PSNR 18.12 dB |
+|  | Iris Xe (iGPU) | 137.583 | 137.143–138.210 | 1356 (1107) | 2444→55→38 | PSNR 18.11 dB |
+|  | UHD 730 (iGPU) | 331.504 | 331.438–331.548 | 748 (908) | 2444→43→36 | PSNR 18.11 dB |
+|  | Apple M5 Pro | 45.791 | 45.784–45.802 | 616 (526) | 2444→52→40 | PSNR 18.11 dB |
+|  | Adreno 740 (tablet) | 316.315 | 316.126–316.407 | 3015 (2100) | 2444→53→38 | PSNR 18.12 dB |
+|  | Mali-G1-Ultra (phone) | 183.925 | 183.705–184.073 | 7541 (3086) | 2444→50→37 | PSNR 18.09 dB |
+|  | Mali-G715 (phone) | 202.570 | 202.375–202.616 | 6557 (3013) | 2444→50→37 | PSNR 18.11 dB |
+|  | Apple A14 (iPhone)⁶ | 366.912 | 358.063–370.000 | 0 (1224) | 2444→52→40 | PSNR 18.11 dB |
+|  | llvmpipe (CPU) | 657.250 | 656.355–658.170 | 2044 (1725) | 2444→43→36 | PSNR 18.12 dB |
+| **pbr_shading**<br>512px 200 frames | RTX PRO 6000 Blackwell | 1.190 (840 FPS) | 1.189–1.202 | 381 (363) | 286→5→5 | — |
+|  | RTX 6000 Ada | 0.978 (1023 FPS) | 0.977–0.996 | 553 (541) | 286→5→5 | — |
+|  | RTX 3090 | 2.425 (412 FPS) | 2.397–2.457 | 565 (548) | 286→5→5 | — |
+|  | RX 9070 XT | 1.384 (723 FPS) | 1.343–1.392 | 342 (331) | 286→5→5 | — |
+|  | Iris Xe (iGPU)¹ | 6.589 (152 FPS) | 5.876–6.819 | 453 (428) | 286→11→5 | — |
+|  | UHD 730 (iGPU) | 5.547 (180 FPS) | 5.530–5.599 | 416 (406) | 286→5→5 | — |
+|  | Apple M5 Pro | **0.735** (1360 FPS) | 0.733–0.746 | 206 (187) | 286→5→5 | — |
+|  | Adreno 740 (tablet) | 15.843 (63 FPS) | 14.857–16.108 | 811 (659) | 286→11→5 | — |
+|  | Mali-G1-Ultra (phone) | 54.462 (18 FPS) | 54.151–55.068 | 512 (687) | 286→10→5 | — |
+|  | Mali-G715 (phone) | 23.736 (42 FPS) | 23.509–23.912 | 914 (736) | 286→10→5 | — |
+|  | Apple A14 (iPhone) | 13.287 (75 FPS) | 13.040–13.469 | 378 (394) | 286→5→5 | — |
+|  | llvmpipe (CPU) | 11.982 (83 FPS) | 11.922–11.983 | 910 (733) | 286→5→5 | — |
 
-¹ `pbr_shading` is an interactive viewer; on Android and iOS it runs a
-deterministic 200-frame orbit (vs desktop headless 60) so it self-terminates and emits
-`bench.json`. The metric is exec+readback per frame, so the frame budget does
-not change the median. **All rows have the live viewer on:** the batch script
-that recorded the older desktop rows did not turn it off, and the Android app
-leaves it on. It sits outside the timed section but still moves the result, in
-either direction. With it off, the M5 Pro goes from 583 to about 1200 FPS
-(0.74–1.05 ms over 8 runs) and the A14 from 86 to 74 FPS. `run_benches` now turns
-it off, so new runs of that script do not compare with this table until the
-other rows are measured again.
+¹ **Iris Xe: every row except pbr_envmap is unstable.** Three sessions were run:
+on AC while charging, on AC at full charge with rests between passes, and with
+every other app quit (the table holds the third, at `0152ee3`). In every session
+these rows spread widely between runs: 14–32% min–max in the third, up to 105% in
+the second. Pass 1 was the fastest on most rows in the first and third sessions,
+but not in the second. pbr_envmap, about 4 minutes per run, stays within 1% (4%
+in the second session).
+The ACPI thermal zone was logged in the last two sessions and does not follow the
+spread. The installed Intel Graphics Software (driver 32.0.101.7085) offers no
+power setting, and no GPU frequency log was taken, so the iGPU's clock behaviour
+is the untested suspect. Read these rows as ranges.
 
-² measured with the background-inclusive loss (now `--fg-only=0`). The
-current default masks the loss to the helmet's coverage — the env is
-observed only through the object's shading/reflections — and reaches
-18.11 dB on the RTX PRO 6000 at an unchanged ms/iter (the background
-branch still renders; only the loss mask differs).
+² **RTX 3090: run 2 was 15–19% faster** than runs 1 and 3 on texture, silhouette
+aa, and pbr_material. Every run long enough to sample was at P0
+(`gpu_state.csv`), with "Prefer maximum performance" set for the example exes,
+and silhouette aa held 1695 MHz in every sample of all three runs, so neither the
+P-state nor the SM clock explains it. Not investigated.
 
-³ measured with the current default (`--fg-only=1`), so the PSNR compares with
-the 18.11 dB above, not with the column. The A14 has no warmup figure: its frames
-get slower during the 9-minute run (running median 299 ms at iter 200, 360 ms at
-the end, presumably thermal), so the steady-state median exceeds the warmup
-iterations and the estimate clamps to zero. The parenthesized first build is
-still valid.
+³ **Mali-G715 warmed up during its session**: battery temperature rose from 35.5
+to 42.2 °C despite the 90 s rests, while thermal status stayed 0. silhouette aa
+gave 16.07, 17.75, and 19.52 ms in run order, and image_fitting and hardsoftras
+rose with it. Its long rows stay within 2%. The bench started at full charge with
+the temperature settled.
 
-Apple figures are the median of three runs on the M5 Pro and the mean of two
-runs on the A14, with 90 s rests between examples on the phone (`pbr_shading`:
-five and three runs). The A14 rows other than `pbr_shading` have the viewer off,
-while the Android rows ran with the app's default live view. With the viewer on,
-the A14 moves by +20% on texture (62.2 ms), −4% on pbr_material (55.2 ms), and 0
-to +7% on image_fitting and silhouette. They include two
-workarounds: Metal argument buffers are off (about 20% on hardsoftras
-silhouette), and iOS writes a GPU timestamp after every stage (about 1 ms on the
-shortest frames). Short frames on the M5 Pro vary between runs: image_fitting
-0.26–0.33 ms. The cause was not investigated. The others stayed within 4%.
+⁴ **image_fitting is the shortest row** (150 iterations of under 3 ms), and these
+devices spread 11–54% on it: Adreno 740 11%, Mali-G715 18%, Mali-G1-Ultra 21%,
+UHD 730 54%. The UHD 730 lands on a few discrete levels: 13 more runs gave 0.099,
+0.104, 0.132, 0.170, and 0.214 ms, while the RX 9070 XT on the same host gave
+0.066–0.067 every time.
+
+⁵ A separate three-run session. The main A14 pass followed an install, and its
+first image_fitting run gave 1.572 ms ([Device state](#device-state)).
+
+⁶ The A14 has no warmup figure: its frames get slower during the 9-minute run
+(358 to 370 ms across the three runs, presumably thermal), so the steady-state
+median exceeds the warmup iterations and the estimate clamps to zero. The
+parenthesized first build is still valid.
+
+The Apple rows include two workarounds: Metal argument buffers are off (about
+20% on hardsoftras silhouette), and iOS writes a GPU timestamp after every stage
+(about 1 ms on the shortest frames).
 
 Observations:
 
-- **Quality is device-independent** — the metric matches across all ten
-  devices to within stochastic noise (texture 98.7% everywhere, pbr_envmap
-  18.23–18.26 dB with the background-inclusive loss, silhouette IoU 0.941–0.956),
-  validating the engine.
-- **Packing is device-dependent** — the func count is identical, but each
-  device fuses to a different substage count under its own Vulkan limits: the
-  NVIDIA cards fuse hardest (pbr_material →74), the Intel iGPU least (→146), the
-  phones in between (both Mali →125 / Adreno →135). The render-pass (stage) count
-  that costs draw calls stays low everywhere. M5 Pro and A14 pack identically
-  (pbr_material →89), with more stages than the other devices on texture and
-  pbr_material (texture →37 vs 25, pbr_material →50 vs 42–49). Metal's 16 sampler
-  slots, which the packer honors, are the likely reason.
-- **Mobile spans the same graph** — the three mobile devices (Xiaomi 17T Pro and
-  13T Pro phones, Xiaomi Pad 6S tablet) are ~1-2 orders slower on the heavy
-  optimizers but converge to the same quality. The Dimensity 9500 (Mali-G1-Ultra,
-  17T Pro) beats the Snapdragon 8 Gen 2 (Adreno 740, Pad 6S) on the heavy
-  optimizers yet is slower on light/forward paths and pays a much larger
-  first-build warmup — its shader compiler, not steady-state throughput, is the
-  bottleneck. The older Dimensity 9200+ (Mali-G715, 13T Pro) trails both on the
-  heavy optimizers but leads the Dimensity 9500 on light/forward paths
-  (pbr_shading 42 vs 19 FPS) — the same compile-bound signature, one generation
-  back.
-- **Apple Silicon sits between the iGPU and the discrete cards** on the heavy
-  optimizers: M5 Pro is 1.5–5.4× behind the RTX PRO 6000 and 3.4–4.4× ahead of
-  Iris Xe on texture and pbr_material. pbr_shading is the exception, ahead of the
-  RTX 3090 (583 vs 339 FPS). That row includes per-frame uploads and a 512²
-  readback, and the NVIDIA cards do not rank there as on the other rows (RTX 6000
-  Ada 961, RTX PRO 6000 677, RTX 3090 339 FPS), so it is probably limited by host
-  and transfer cost, where unified memory helps. No NVIDIA breakdown was taken to
-  confirm it, and it says nothing about raw GPU speed. The A14, a 2020 phone, is
-  the fastest mobile device on pbr_shading (86 FPS) and the slowest on pbr_envmap.
+- **Quality is device-independent.** The metric matches across all twelve
+  devices to within stochastic noise: texture 98.7% everywhere, pbr_material
+  20.65 dB (llvmpipe 20.48), pbr_envmap 18.09–18.12 dB, silhouette IoU
+  0.941–0.956. The Adreno 740 has the lowest IoU on both techniques (0.9447 /
+  0.9406). On aa the Mali GPUs pack identically to it (802→53→47) yet reach
+  0.955–0.956; the cause was not investigated.
+- **Packing follows the driver, not the vendor.** The func count is identical,
+  but each driver's Vulkan limits give a different substage count. The NVIDIA
+  cards, the RX 9070 XT, the UHD 730 under Mesa, and llvmpipe fuse hardest
+  (pbr_material →74), while the Iris Xe under Intel's Windows driver fuses least
+  (→146); the phones sit between (Mali →125, Adreno →135). M5 Pro and A14 pack
+  identically (→89), with more render passes than the others on texture (→37
+  against 25). Metal's 16 sampler slots, which the packer honors, are the likely
+  reason. The render-pass count stays low everywhere.
+- **No phone wins every row.** The Mali-G1-Ultra (Dimensity 9500) leads the
+  mobile devices on silhouette aa, pbr_material, and pbr_envmap; the older
+  Mali-G715 (Dimensity 9200+) on texture; the Adreno 740 on hardsoftras and
+  image_fitting; the A14 on pbr_shading (75 FPS against 63 on the Adreno and 18
+  on the Mali-G1-Ultra). The A14 is also the slowest of them on pbr_envmap,
+  texture, and silhouette aa. The Mali GPUs pay the largest first builds, with
+  warmup up to 7.5 s against at most 3.6 s on the Adreno and 1.8 s on the A14.
+- **The RX 9070 XT sits with the discrete NVIDIA cards**: behind the RTX PRO
+  6000 and RTX 6000 Ada on every row, ahead of the RTX 3090 on image_fitting,
+  texture, pbr_material, pbr_envmap, and pbr_shading, behind it on both
+  silhouette rows.
+- **Apple Silicon is close to the discrete cards on some rows only.** The M5 Pro
+  is 1.7× behind the RTX PRO 6000 on silhouette aa and pbr_material, on a par
+  with the RTX 3090 and RX 9070 XT there, but 4.9× behind on texture and 5.3× on
+  pbr_envmap. It is the fastest device on pbr_shading (1360 FPS against 1023 on
+  the RTX 6000 Ada). That row includes per-frame uploads and a 512² readback, and
+  the NVIDIA cards do not rank there as on the other rows (RTX 6000 Ada 1023, RTX
+  PRO 6000 840, RTX 3090 412 FPS), so it is probably limited by host and
+  transfer cost, where unified memory helps. No breakdown was taken to confirm
+  it, and it says nothing about raw GPU speed.
 
 ## vs the paper (Table 4)
 
