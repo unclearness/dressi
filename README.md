@@ -301,28 +301,33 @@ so median (not mean) is the stable metric.
 
 The identical backward graph runs from a workstation GPU, through AMD and
 Intel GPUs and Apple Silicon, down to phones — to the **same quality**.
-Median ms/iter of three runs, default parameters, no viewer:
+Median ms/iter of three runs (pbr_shading: FPS), default parameters, no viewer;
+the fastest device per example in bold:
 
-| example (params) | RTX PRO 6000 | RX 9070 XT | Apple M5 Pro | Iris Xe (iGPU) | Adreno 740 (tablet) | Mali-G1-Ultra (phone) | Mali-G715 (phone) | Apple A14 (iPhone 12 Pro) | quality |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| image_fitting 64px | 0.059 | 0.067 | 0.29 | 0.33 | 0.39 | 0.43 | 2.41 | 2.16 | max err 0.0005 |
-| texture_optimization 256px | 0.96 | 1.93 | 4.66 | 15.8 | 32.4 | 23.2 | 19.3 | 52.6 | 98.7% |
-| silhouette (aa) 128px | 1.19 | 2.27 | 2.05 | 3.76 | 16.3 | 13.0 | 17.7 | 31.7 | IoU 0.95 |
-| silhouette (hardsoftras) 128px | 2.10 | 3.92 | 5.90 | 14.3 | 25.3 | 32.2 | 31.3 | 29.5 | IoU 0.95 |
-| pbr_material 256px | 2.75 | 4.58 | 4.62 | 20.4 | 62.4 | 43.6 | 45.1 | 56.8 | PSNR 20.6 dB |
-| pbr_envmap 192px | 8.64 | 11.4 | 45.8 | 138 | 316 | 184 | 203 | 367 | PSNR 18.1 dB |
-| pbr_shading 512px (FPS) | 840 FPS | 723 FPS | 1360 FPS | 152 FPS | 63 FPS | 18 FPS | 42 FPS | 75 FPS | — |
+| device | image_fitting<br>64px | texture<br>256px | silhouette aa<br>128px | silhouette hardsoftras<br>128px | pbr_material<br>256px | pbr_envmap<br>192px | pbr_shading<br>512px (FPS) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| RTX PRO 6000 Blackwell | 0.059 | 0.96 | **1.19** | **2.10** | **2.75** | 8.64 | 840 |
+| RTX 6000 Ada | **0.045** | **0.88** | 1.24 | 2.93 | 3.52 | **8.09** | 1023 |
+| RTX 3090 | 0.086 | 2.17 | 2.00 | 3.59 | 5.54 | 14.2 | 412 |
+| AMD RX 9070 XT | 0.067 | 1.93 | 2.27 | 3.92 | 4.58 | 11.4 | 723 |
+| Intel Iris Xe (iGPU) | 0.33 | 15.8 | 3.76 | 14.3 | 20.4 | 138 | 152 |
+| Intel UHD 730 (iGPU) | 0.13 | 55.3 | 5.84 | 9.05 | 28.4 | 332 | 180 |
+| Apple M5 Pro | 0.29 | 4.66 | 2.05 | 5.90 | 4.62 | 45.8 | **1360** |
+| Adreno 740 (tablet) | 0.39 | 32.4 | 16.3 | 25.3 | 62.4 | 316 | 63 |
+| Mali-G1-Ultra (phone) | 0.43 | 23.2 | 13.0 | 32.2 | 43.6 | 184 | 18 |
+| Mali-G715 (phone) | 2.41 | 19.3 | 17.7 | 31.3 | 45.1 | 203 | 42 |
+| Apple A14 (iPhone 12 Pro) | 2.16 | 52.6 | 31.7 | 29.5 | 56.8 | 367 | 75 |
+| llvmpipe (CPU) | 0.67 | 127 | 27.7 | 45.7 | 121 | 657 | 83 |
+| *quality (all devices)* | max err 0.0005 | 98.7% | IoU 0.94–0.96 | IoU 0.94–0.95 | PSNR 20.65 dB (llvmpipe 20.48) | PSNR 18.1 dB | — |
 
-Quality is device-independent (validated across all 12 devices). Verified on
-three discrete NVIDIA GPUs, an AMD RX 9070 XT, two Intel iGPUs (Iris Xe, UHD
-730), Apple M5 Pro, three phones (Dimensity 9500 / Mali-G1-Ultra, Xiaomi 17T Pro;
-Dimensity 9200+ / Mali-G715, Xiaomi 13T Pro; A14, iPhone 12 Pro), a tablet
-(Snapdragon 8 Gen 2 / Adreno 740, Xiaomi Pad 6S), and CPU software Vulkan
-(llvmpipe). The Apple columns run on MoltenVK with its Metal argument buffers
+Quality is device-independent (last row). The phones are Dimensity 9500 /
+Mali-G1-Ultra (Xiaomi 17T Pro), Dimensity 9200+ / Mali-G715 (Xiaomi 13T Pro),
+and A14 (iPhone 12 Pro); the tablet is Snapdragon 8 Gen 2 / Adreno 740 (Xiaomi
+Pad 6S). The Apple rows run on MoltenVK with its Metal argument buffers
 disabled, and iOS also writes a GPU timestamp after every stage; both are
 workarounds that cost some speed. The Iris Xe figures vary 14–32% between runs
-on every row but pbr_envmap. The full 12-device table, with ranges, warmup, and
-packing, is in **[docs/benchmarks.md](docs/benchmarks.md)**.
+on every example but pbr_envmap. The same figures with ranges, warmup, packing,
+and per-device quality are in **[docs/benchmarks.md](docs/benchmarks.md)**.
 
 ### vs the paper, nvdiffrast, and DRTK
 
